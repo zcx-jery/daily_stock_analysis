@@ -161,7 +161,7 @@ def _warn_if_assets_missing(artifact_index: Path, frontend_dir: Path) -> None:
             _manual_build_command(frontend_dir),
         )
         logger.warning(
-            "Docker 用户请执行: docker-compose -f ./docker/docker-compose.yml build --no-cache"
+            "Docker 用户请显式携带 .env 重新构建: docker compose --env-file .env -f ./docker/docker-compose.yml build --no-cache"
         )
 
 

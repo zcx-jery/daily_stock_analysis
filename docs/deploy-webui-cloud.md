@@ -88,16 +88,16 @@ WEBUI_PORT=8888
 
 ```bash
 # 同时启动定时分析 + Web 界面（推荐）
-docker-compose -f ./docker/docker-compose.yml up -d
+docker compose --env-file .env -f ./docker/docker-compose.yml up -d
 
 # 或者只启动 Web 界面服务
-docker-compose -f ./docker/docker-compose.yml up -d server
+docker compose --env-file .env -f ./docker/docker-compose.yml up -d server
 ```
 
 启动后查看状态：
 
 ```bash
-docker-compose -f ./docker/docker-compose.yml ps
+docker compose --env-file .env -f ./docker/docker-compose.yml ps
 ```
 
 看到 `server` 服务状态为 `running` 就说明 Web 界面已经在运行了。
@@ -113,9 +113,11 @@ API_PORT=8888
 然后重新启动容器：
 
 ```bash
-docker-compose -f ./docker/docker-compose.yml down
-docker-compose -f ./docker/docker-compose.yml up -d
+docker compose --env-file .env -f ./docker/docker-compose.yml down
+docker compose --env-file .env -f ./docker/docker-compose.yml up -d
 ```
+
+> 注意：这里不要省略 `--env-file .env`。如果你把端口改成了 `API_PORT=8888`、`API_PORT=8001` 之类的值，但启动命令没有显式加载 `.env`，Compose 会退回到默认端口 `8000`。
 
 ---
 
@@ -153,7 +155,7 @@ WebUI 现在会在“系统设置”页展示只读的“版本信息”卡片�
 
 如果 `apps/dsa-web/package.json` 里的版本号仍是占位值 `0.0.0`，页面会自动回退展示本次前端构建生成的 `构建标识`，避免你误把占位版本当成真实发布版本。
 
-当你重新执行 `docker-compose -f ./docker/docker-compose.yml up -d --build`，或者单独重新执行前端 `npm run build` 后，可以刷新浏览器并进入“系统设置”，优先确认“构建时间”是否已经变化；若变化，通常就说明当前加载的静态资源已经切换到最新构建。
+当你重新执行 `docker compose --env-file .env -f ./docker/docker-compose.yml up -d --build`，或者单独重新执行前端 `npm run build` 后，可以刷新浏览器并进入“系统设置”，优先确认“构建时间”是否已经变化；若变化，通常就说明当前加载的静态资源已经切换到最新构建。
 
 在确认本地前端打包链路时，建议执行以下命令用于本次改动的最小验证闭环：
 
@@ -220,9 +222,9 @@ sudo firewall-cmd --reload
 **Docker 用户**：
 
 ```bash
-docker-compose -f ./docker/docker-compose.yml down
-docker-compose -f ./docker/docker-compose.yml build --no-cache
-docker-compose -f ./docker/docker-compose.yml up -d
+docker compose --env-file .env -f ./docker/docker-compose.yml down
+docker compose --env-file .env -f ./docker/docker-compose.yml build --no-cache
+docker compose --env-file .env -f ./docker/docker-compose.yml up -d
 ```
 
 重建完成后，用 `Ctrl+Shift+R` 强制刷新浏览器缓存，再访问页面。

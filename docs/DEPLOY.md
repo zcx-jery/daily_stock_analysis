@@ -46,13 +46,13 @@ vim .env  # 填入真实的 API Key 等配置
 
 ```bash
 # 构建并启动（同时包含定时分析和 Web 界面服务）
-docker-compose -f ./docker/docker-compose.yml up -d
+docker compose --env-file .env -f ./docker/docker-compose.yml up -d
 
 # 查看日志
-docker-compose -f ./docker/docker-compose.yml logs -f
+docker compose --env-file .env -f ./docker/docker-compose.yml logs -f
 
 # 查看运行状态
-docker-compose -f ./docker/docker-compose.yml ps
+docker compose --env-file .env -f ./docker/docker-compose.yml ps
 ```
 
 启动成功后，在浏览器输入 `http://服务器公网IP:8000` 即可打开 Web 管理界面。如果打不开，记得先在云服务器控制台的「安全组」里放行 8000 端口。
@@ -63,22 +63,23 @@ docker-compose -f ./docker/docker-compose.yml ps
 
 ```bash
 # 停止服务
-docker-compose -f ./docker/docker-compose.yml down
+docker compose --env-file .env -f ./docker/docker-compose.yml down
 
 # 重启服务
-docker-compose -f ./docker/docker-compose.yml restart
+docker compose --env-file .env -f ./docker/docker-compose.yml restart
 
 # 更新代码后重新部署
 git pull
-docker-compose -f ./docker/docker-compose.yml build --no-cache
-docker-compose -f ./docker/docker-compose.yml up -d
+bash scripts/deploy-docker.sh rebuild
 
 # 进入容器调试
-docker-compose -f ./docker/docker-compose.yml exec stock-analyzer bash
+docker compose --env-file .env -f ./docker/docker-compose.yml exec stock-analyzer bash
 
 # 手动执行一次分析
-docker-compose -f ./docker/docker-compose.yml exec stock-analyzer python main.py --no-notify
+docker compose --env-file .env -f ./docker/docker-compose.yml exec stock-analyzer python main.py --no-notify
 ```
+
+> 注意：如果你通过 `.env` 设置了 `API_PORT`，部署命令必须显式带上 `--env-file .env`。否则 Compose 会把 `${API_PORT:-8000}` 解析回默认值 `8000`，很容易和 Nginx 反向代理端口不一致，导致 `502 Bad Gateway`。
 
 ### 5. 数据持久化
 
