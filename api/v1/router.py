@@ -17,6 +17,7 @@ from api.v1.endpoints import (
     auth,
     backtest,
     history,
+    market_review,
     market_reports,
     portfolio,
     stocks,
@@ -55,6 +56,12 @@ router.include_router(
     market_reports.router,
     prefix="/market-reports",
     tags=["MarketReports"]
+)
+
+router.include_router(
+    market_review.router,
+    prefix="/market-review",
+    tags=["MarketReview"]
 )
 
 router.include_router(

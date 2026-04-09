@@ -9,6 +9,7 @@ import NotFoundPage from './pages/NotFoundPage';
 import ChatPage from './pages/ChatPage';
 import PortfolioPage from './pages/PortfolioPage';
 import MarketReportsPage from './pages/MarketReportsPage';
+import MarketReviewPage from './pages/MarketReviewPage';
 import { ApiErrorAlert, Shell } from './components/common';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { useAgentChatStore } from './stores/agentChatStore';
@@ -66,6 +67,7 @@ const AppContent: React.FC = () => {
         <Route path="/chat" element={<ChatPage />} />
         <Route path="/portfolio" element={<PortfolioPage />} />
         <Route path="/backtest" element={<BacktestPage />} />
+        <Route path="/market-review" element={<MarketReviewPage />} />
         <Route path="/market-reports" element={<MarketReportsPage />} />
         <Route path="/market-reports/:reportDate" element={<MarketReportsPage />} />
         <Route path="/settings" element={<SettingsPage />} />

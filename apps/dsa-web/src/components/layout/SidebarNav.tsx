@@ -3,7 +3,7 @@ import { motion } from 'motion/react';
 import {
   BarChart3,
   BriefcaseBusiness,
-  FileText,
+  BookOpen,
   Home,
   LogOut,
   MessageSquareQuote,
@@ -36,7 +36,7 @@ const LABELS = {
   chat: '\u95ee\u80a1',
   portfolio: '\u6301\u4ed3',
   backtest: '\u56de\u6d4b',
-  marketReports: '\u5927\u76d8\u590d\u76d8\u62a5\u544a',
+  marketReview: '\u590d\u76d8',
   settings: '\u8bbe\u7f6e',
   mainNav: '\u4e3b\u5bfc\u822a',
   chatBadge: '\u95ee\u80a1\u6709\u65b0\u6d88\u606f',
@@ -52,7 +52,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'chat', label: LABELS.chat, to: '/chat', icon: MessageSquareQuote, badge: 'completion' },
   { key: 'portfolio', label: LABELS.portfolio, to: '/portfolio', icon: BriefcaseBusiness },
   { key: 'backtest', label: LABELS.backtest, to: '/backtest', icon: BarChart3 },
-  { key: 'market-reports', label: LABELS.marketReports, to: '/market-reports', icon: FileText },
+  { key: 'market-review', label: LABELS.marketReview, to: '/market-review', icon: BookOpen },
   { key: 'settings', label: LABELS.settings, to: '/settings', icon: Settings2 },
 ];
 

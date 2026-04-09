@@ -62,14 +62,14 @@ describe('SidebarNav', () => {
     expect(screen.getByRole('button', { name: '切换主题(折叠)' })).toBeInTheDocument();
   });
 
-  it('includes the market reports navigation entry', () => {
+  it('includes the market review navigation entry', () => {
     render(
-      <MemoryRouter initialEntries={['/market-reports']}>
+      <MemoryRouter initialEntries={['/market-review']}>
         <SidebarNav />
       </MemoryRouter>,
     );
 
-    expect(screen.getByRole('link', { name: '大盘复盘报告' })).toHaveAttribute('href', '/market-reports');
+    expect(screen.getByRole('link', { name: '复盘' })).toHaveAttribute('href', '/market-review');
   });
 
   it('opens the logout confirmation and confirms logout', async () => {
