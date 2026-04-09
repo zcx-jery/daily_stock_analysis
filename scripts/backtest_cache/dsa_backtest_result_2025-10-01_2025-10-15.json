@@ -1,0 +1,20 @@
+{
+  "total_return": 0.0,
+  "annual_return": 0.0,
+  "avg_return": 0.0,
+  "std_return": 0.0,
+  "win_rate": 0.0,
+  "profit_loss_ratio": 0.0,
+  "max_drawdown": 0,
+  "sharpe_ratio": 0,
+  "total_trades": 5,
+  "win_count": 0,
+  "loss_count": 5,
+  "trading_days": 1,
+  "daily_returns": [
+    {
+      "date": "2025-10-01",
+      "return": 0.0
+    }
+  ]
+}
