@@ -1,6 +1,14 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { BarChart3, BriefcaseBusiness, Home, LogOut, MessageSquareQuote, Settings2 } from 'lucide-react';
+import {
+  BarChart3,
+  BriefcaseBusiness,
+  FileText,
+  Home,
+  LogOut,
+  MessageSquareQuote,
+  Settings2,
+} from 'lucide-react';
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { useAgentChatStore } from '../../stores/agentChatStore';
@@ -23,12 +31,29 @@ type NavItem = {
   badge?: 'completion';
 };
 
+const LABELS = {
+  home: '\u9996\u9875',
+  chat: '\u95ee\u80a1',
+  portfolio: '\u6301\u4ed3',
+  backtest: '\u56de\u6d4b',
+  marketReports: '\u5927\u76d8\u590d\u76d8\u62a5\u544a',
+  settings: '\u8bbe\u7f6e',
+  mainNav: '\u4e3b\u5bfc\u822a',
+  chatBadge: '\u95ee\u80a1\u6709\u65b0\u6d88\u606f',
+  logout: '\u9000\u51fa',
+  logoutTitle: '\u9000\u51fa\u767b\u5f55',
+  logoutMessage: '\u786e\u8ba4\u9000\u51fa\u5f53\u524d\u767b\u5f55\u72b6\u6001\u5417\uff1f\u9000\u51fa\u540e\u9700\u8981\u91cd\u65b0\u8f93\u5165\u5bc6\u7801\u3002',
+  logoutConfirm: '\u786e\u8ba4\u9000\u51fa',
+  cancel: '\u53d6\u6d88',
+} as const;
+
 const NAV_ITEMS: NavItem[] = [
-  { key: 'home', label: '首页', to: '/', icon: Home, exact: true },
-  { key: 'chat', label: '问股', to: '/chat', icon: MessageSquareQuote, badge: 'completion' },
-  { key: 'portfolio', label: '持仓', to: '/portfolio', icon: BriefcaseBusiness },
-  { key: 'backtest', label: '回测', to: '/backtest', icon: BarChart3 },
-  { key: 'settings', label: '设置', to: '/settings', icon: Settings2 },
+  { key: 'home', label: LABELS.home, to: '/', icon: Home, exact: true },
+  { key: 'chat', label: LABELS.chat, to: '/chat', icon: MessageSquareQuote, badge: 'completion' },
+  { key: 'portfolio', label: LABELS.portfolio, to: '/portfolio', icon: BriefcaseBusiness },
+  { key: 'backtest', label: LABELS.backtest, to: '/backtest', icon: BarChart3 },
+  { key: 'market-reports', label: LABELS.marketReports, to: '/market-reports', icon: FileText },
+  { key: 'settings', label: LABELS.settings, to: '/settings', icon: Settings2 },
 ];
 
 export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNavigate }) => {
@@ -47,7 +72,7 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
         ) : null}
       </div>
 
-      <nav className="flex flex-1 flex-col gap-1.5" aria-label="主导航">
+      <nav className="flex flex-1 flex-col gap-1.5" aria-label={LABELS.mainNav}>
         {NAV_ITEMS.map(({ key, label, to, icon: Icon, exact, badge }) => (
           <NavLink
             key={key}
@@ -61,23 +86,28 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
                 'h-[var(--nav-item-height)]',
                 collapsed ? 'justify-center px-0' : 'px-[var(--nav-item-padding-x)]',
                 isActive
-                  ? 'border-[var(--nav-active-border)] bg-[var(--nav-active-bg)] text-[hsl(var(--primary))] font-medium'
-                  : 'border-transparent text-secondary-text hover:bg-[var(--nav-hover-bg)] hover:text-foreground'
+                  ? 'border-[var(--nav-active-border)] bg-[var(--nav-active-bg)] font-medium text-[hsl(var(--primary))]'
+                  : 'border-transparent text-secondary-text hover:bg-[var(--nav-hover-bg)] hover:text-foreground',
               )
             }
           >
             {({ isActive }) => (
               <>
-                {isActive && (
-                  <motion.div 
+                {isActive ? (
+                  <motion.div
                     layoutId="activeIndicator"
                     className="absolute top-0 bottom-0 left-0 w-[var(--nav-indicator-width)] bg-[var(--nav-indicator-bg)] shadow-[0_0_10px_var(--nav-indicator-shadow)]"
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     transition={{ duration: 0.2 }}
                   />
-                )}
-                <Icon className={cn('ml-1 h-5 w-5 shrink-0', isActive ? 'text-[var(--nav-icon-active)]' : 'text-current')} />
+                ) : null}
+                <Icon
+                  className={cn(
+                    'ml-1 h-5 w-5 shrink-0',
+                    isActive ? 'text-[var(--nav-icon-active)]' : 'text-current',
+                  )}
+                />
                 {!collapsed ? <span className="truncate">{label}</span> : null}
                 {badge === 'completion' && completionBadge ? (
                   <StatusDot
@@ -85,9 +115,9 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
                     data-testid="chat-completion-badge"
                     className={cn(
                       'absolute right-3 border-2 border-background shadow-[0_0_10px_var(--nav-indicator-shadow)]',
-                      collapsed ? 'right-2 top-2' : ''
+                      collapsed ? 'right-2 top-2' : '',
                     )}
-                    aria-label="问股有新消息"
+                    aria-label={LABELS.chatBadge}
                   />
                 ) : null}
               </>
@@ -106,20 +136,21 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
           onClick={() => setShowLogoutConfirm(true)}
           className={cn(
             'mt-5 flex h-11 w-full cursor-pointer select-none items-center gap-3 rounded-2xl border border-transparent px-3 text-sm text-secondary-text transition-all hover:border-border/70 hover:bg-hover hover:text-foreground',
-            collapsed ? 'justify-center px-2' : ''
+            collapsed ? 'justify-center px-2' : '',
           )}
+          aria-label={LABELS.logout}
         >
           <LogOut className="h-5 w-5 shrink-0" />
-          {!collapsed ? <span>退出</span> : null}
+          {!collapsed ? <span>{LABELS.logout}</span> : null}
         </button>
       ) : null}
 
       <ConfirmDialog
         isOpen={showLogoutConfirm}
-        title="退出登录"
-        message="确认退出当前登录状态吗？退出后需要重新输入密码。"
-        confirmText="确认退出"
-        cancelText="取消"
+        title={LABELS.logoutTitle}
+        message={LABELS.logoutMessage}
+        confirmText={LABELS.logoutConfirm}
+        cancelText={LABELS.cancel}
         isDanger
         onConfirm={() => {
           setShowLogoutConfirm(false);

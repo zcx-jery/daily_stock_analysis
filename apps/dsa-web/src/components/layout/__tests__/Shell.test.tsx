@@ -43,7 +43,7 @@ describe('Shell', () => {
             <div>page content</div>
           </Shell>
         </ThemeProvider>
-      </MemoryRouter>
+      </MemoryRouter>,
     );
 
     expect(screen.getAllByRole('button', { name: '切换主题' }).length).toBeGreaterThan(0);
@@ -62,7 +62,7 @@ describe('Shell', () => {
             <div>page content</div>
           </Shell>
         </ThemeProvider>
-      </MemoryRouter>
+      </MemoryRouter>,
     );
 
     fireEvent.click(screen.getAllByRole('button', { name: '切换主题' })[0]);
@@ -78,7 +78,7 @@ describe('Shell', () => {
             <div>page content</div>
           </Shell>
         </ThemeProvider>
-      </MemoryRouter>
+      </MemoryRouter>,
     );
 
     fireEvent.click(screen.getByRole('button', { name: '退出' }));
