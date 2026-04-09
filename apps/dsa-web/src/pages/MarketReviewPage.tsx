@@ -2,7 +2,7 @@ import type React from 'react';
 import { useEffect, useState } from 'react';
 import { marketReviewApi } from '../api/marketReview';
 import { getParsedApiError, type ParsedApiError } from '../api/error';
-import { ApiErrorAlert, Badge, Button, Card, Input } from '../components/common';
+import { ApiErrorAlert, Badge, Button, Card, Drawer, Input } from '../components/common';
 import {
   getSentimentBadgeVariant,
   getStrategyBadgeVariant,
@@ -48,6 +48,7 @@ const MarketReviewPage: React.FC = () => {
   const [error, setError] = useState<ParsedApiError | null>(null);
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
+  const [reportDrawerOpen, setReportDrawerOpen] = useState(false);
 
   useEffect(() => {
     document.title = '大盘复盘 - DSA';
@@ -235,11 +236,39 @@ const MarketReviewPage: React.FC = () => {
                 </div>
               ) : null}
 
-              <div className="mt-4 min-h-0 flex-1 overflow-y-auto rounded-2xl border border-border/60 bg-card/40 p-4">
-                <h3 className="mb-3 text-sm font-medium text-foreground">完整报告</h3>
-                <pre className="whitespace-pre-wrap text-sm leading-7 text-secondary-text">
-                  {selectedReview.content.replace(/^# .*\n+/, '').trim()}
-                </pre>
+              <div className="mt-4 min-h-0 flex-1 overflow-hidden rounded-2xl border border-border/60 bg-card/40 p-4">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <h3 className="text-sm font-medium text-foreground">完整报告</h3>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => setReportDrawerOpen(true)}
+                  >
+                    放大查看
+                  </Button>
+                </div>
+                <div
+                  role="button"
+                  tabIndex={0}
+                  aria-label="打开完整报告"
+                  onClick={() => setReportDrawerOpen(true)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      setReportDrawerOpen(true);
+                    }
+                  }}
+                  className="flex h-full min-h-[240px] cursor-pointer flex-col overflow-hidden rounded-2xl border border-border/50 bg-background/20 transition-colors hover:bg-hover/60 focus:outline-none focus:ring-2 focus:ring-cyan/30"
+                >
+                  <div className="border-b border-border/40 px-4 py-3 text-xs text-secondary-text">
+                    点击预览区域，在弹窗中查看完整内容
+                  </div>
+                  <div className="min-h-0 flex-1 overflow-hidden px-4 py-4">
+                    <pre className="max-h-full overflow-hidden whitespace-pre-wrap text-sm leading-7 text-secondary-text">
+                      {selectedReview.content.replace(/^# .*\n+/, '').trim()}
+                    </pre>
+                  </div>
+                </div>
               </div>
             </div>
           ) : (
@@ -252,6 +281,34 @@ const MarketReviewPage: React.FC = () => {
           )}
         </Card>
       </div>
+
+      <Drawer
+        isOpen={reportDrawerOpen && Boolean(selectedReview)}
+        onClose={() => setReportDrawerOpen(false)}
+        title={selectedReview ? `${selectedReview.reportDate} 完整报告` : '完整报告'}
+        width="max-w-[min(96vw,1200px)]"
+        zIndex={90}
+        backdropClassName="bg-background/84 backdrop-blur-sm"
+      >
+        <div className="flex h-full flex-col">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-medium text-foreground">{selectedReview?.title}</p>
+              <p className="mt-1 text-xs text-secondary-text">弹窗内支持更大阅读区域和独立滚动</p>
+            </div>
+            {selectedReview?.strategy ? (
+              <Badge variant={getStrategyBadgeVariant(selectedReview.strategy)} size="md">
+                {selectedReview.strategy}
+              </Badge>
+            ) : null}
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto rounded-2xl border border-border/60 bg-card/40 p-5">
+            <pre className="whitespace-pre-wrap text-[15px] leading-8 text-secondary-text">
+              {selectedReview?.content.replace(/^# .*\n+/, '').trim()}
+            </pre>
+          </div>
+        </div>
+      </Drawer>
     </div>
   );
 };
