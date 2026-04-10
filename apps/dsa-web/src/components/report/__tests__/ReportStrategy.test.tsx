@@ -67,9 +67,9 @@ describe('ReportStrategy', () => {
 
     expect(screen.getByText('扩展字段')).toBeInTheDocument();
     expect(screen.getByText('字段映射')).toBeInTheDocument();
-    expect(screen.getByText('entry_zone')).toBeInTheDocument();
-    expect(screen.getByText('ideal_buy')).toBeInTheDocument();
-    expect(screen.getByText('pressure_band')).toBeInTheDocument();
+    expect(screen.getByText(/入场区间/)).toBeInTheDocument();
+    expect(screen.getByText(/理想买入点/)).toBeInTheDocument();
+    expect(screen.getByText(/压力区间/)).toBeInTheDocument();
     expect(screen.getByText('13.40-13.55')).toBeInTheDocument();
     expect(screen.getByText('趋势排列')).toBeInTheDocument();
     expect(screen.getByText('弱势多头')).toBeInTheDocument();

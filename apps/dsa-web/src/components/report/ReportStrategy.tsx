@@ -22,6 +22,34 @@ interface StrategyItemProps {
 
 const PLACEHOLDER_VALUES = new Set(['', '-', '—', 'N/A', 'n/a', 'null', 'undefined', '待补充']);
 
+const DRIFT_FIELD_LABELS: Record<string, { zh: string; en: string }> = {
+  ideal_buy: { zh: '理想买入点', en: 'Ideal Entry' },
+  ideal_buy_if_valuation_improves: { zh: '估值改善理想买点', en: 'Ideal Buy If Valuation Improves' },
+  buy_zone: { zh: '买入区间', en: 'Buy Zone' },
+  entry_zone: { zh: '入场区间', en: 'Entry Zone' },
+  idealEntry: { zh: '理想入场区间', en: 'Ideal Entry Range' },
+  secondary_buy: { zh: '次优买入点', en: 'Secondary Entry' },
+  secondary_entry: { zh: '次级入场位', en: 'Secondary Entry Level' },
+  add_on_breakout: { zh: '突破加仓位', en: 'Add-on Breakout Level' },
+  next_buy: { zh: '下一买点', en: 'Next Buy Level' },
+  support: { zh: '支撑位', en: 'Support Level' },
+  support_level: { zh: '支撑位', en: 'Support Level' },
+  immediate_support: { zh: '当前支撑位', en: 'Immediate Support' },
+  resistance: { zh: '阻力位', en: 'Resistance Level' },
+  current_resistance: { zh: '当前阻力位', en: 'Current Resistance' },
+  resistance_1: { zh: '一级阻力位', en: 'Primary Resistance' },
+  resistance_2: { zh: '二级阻力位', en: 'Secondary Resistance' },
+  target_price: { zh: '目标价', en: 'Target Price' },
+  take_profit: { zh: '止盈目标', en: 'Take Profit' },
+  next_breakout_target: { zh: '突破后目标位', en: 'Next Breakout Target' },
+  stop_loss: { zh: '止损位', en: 'Stop Loss' },
+  stopLoss: { zh: '止损位', en: 'Stop Loss' },
+  strong_support_stop_loss: { zh: '强支撑止损位', en: 'Strong Support Stop Loss' },
+  pressure_band: { zh: '压力区间', en: 'Pressure Band' },
+  trend_alignment: { zh: '趋势排列', en: 'Trend Alignment' },
+  volume_signal: { zh: '量价信号', en: 'Volume Signal' },
+};
+
 function formatStrategyValue(value: string | undefined, language: ReportLanguage): string | undefined {
   const text = (value ?? '').trim();
   if (!text || PLACEHOLDER_VALUES.has(text)) {
@@ -38,6 +66,14 @@ function formatStrategyValue(value: string | undefined, language: ReportLanguage
   }
 
   return text;
+}
+
+function getDriftFieldLabel(key: string, language: ReportLanguage): string {
+  const predefined = DRIFT_FIELD_LABELS[key];
+  if (predefined) {
+    return language === 'zh' ? predefined.zh : predefined.en;
+  }
+  return key;
 }
 
 const StrategyItem: React.FC<StrategyItemProps> = ({
@@ -146,9 +182,14 @@ export const ReportStrategy: React.FC<ReportStrategyProps> = ({
                 <div className="space-y-1">
                   {section.entries.map(([key, value]) => (
                     <div key={`${section.key}-${key}`} className="break-words text-foreground/90">
-                      <span className="font-mono text-cyan-300">{key}</span>
+                      <span className="text-foreground">{getDriftFieldLabel(key, reportLanguage)}</span>{' '}
+                      <span className="font-mono text-cyan-300">({key})</span>
                       {section.key === 'mappedAliases' ? ' -> ' : ': '}
-                      <span>{String(value)}</span>
+                      <span>
+                        {section.key === 'mappedAliases'
+                          ? `${getDriftFieldLabel(String(value), reportLanguage)} (${String(value)})`
+                          : String(value)}
+                      </span>
                     </div>
                   ))}
                 </div>

@@ -10,7 +10,7 @@
 3. 定义异步任务队列相关模型
 """
 
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Dict
 from enum import Enum
 
 from pydantic import BaseModel, Field
@@ -234,6 +234,10 @@ class TaskStatus(BaseModel):
         description="选择来源",
         pattern=SELECTION_SOURCE_PATTERN,
     )
+    progress_events: Optional[List[Dict[str, Any]]] = Field(
+        None,
+        description="任务进度时间线",
+    )
     
     class Config:
         json_schema_extra = {
@@ -273,6 +277,10 @@ class TaskInfo(BaseModel):
         None,
         description="选择来源",
         pattern=SELECTION_SOURCE_PATTERN,
+    )
+    progress_events: Optional[List[Dict[str, Any]]] = Field(
+        None,
+        description="任务进度时间线",
     )
     
     class Config:

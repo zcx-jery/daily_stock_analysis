@@ -159,9 +159,17 @@ export interface TaskStatus {
   stockName?: string;
   originalQuery?: string;
   selectionSource?: string;
+  progressEvents?: TaskProgressEvent[];
 }
 
 /** Task details used by task list and SSE events */
+export interface TaskProgressEvent {
+  progress: number;
+  message: string;
+  eventType: string;
+  timestamp: string;
+}
+
 export interface TaskInfo {
   taskId: string;
   stockCode: string;
@@ -176,6 +184,7 @@ export interface TaskInfo {
   error?: string;
   originalQuery?: string;
   selectionSource?: string;
+  progressEvents?: TaskProgressEvent[];
 }
 
 /** Task list response */

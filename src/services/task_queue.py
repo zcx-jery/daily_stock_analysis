@@ -71,6 +71,7 @@ class TaskInfo:
     completed_at: Optional[datetime] = None
     original_query: Optional[str] = None
     selection_source: Optional[str] = None
+    progress_events: List[Dict[str, Any]] = field(default_factory=list)
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert task info into an API-friendly dictionary."""
@@ -88,6 +89,7 @@ class TaskInfo:
             "error": self.error,
             "original_query": self.original_query,
             "selection_source": self.selection_source,
+            "progress_events": [dict(event) for event in self.progress_events],
         }
     
     def copy(self) -> 'TaskInfo':
@@ -107,6 +109,7 @@ class TaskInfo:
             completed_at=self.completed_at,
             original_query=self.original_query,
             selection_source=self.selection_source,
+            progress_events=[dict(event) for event in self.progress_events],
         )
 
 
@@ -173,6 +176,29 @@ class AnalysisTaskQueue:
         
         self._initialized = True
         logger.info(f"[TaskQueue] 初始化完成，最大并发: {max_workers}")
+
+    @staticmethod
+    def _append_progress_event(
+        task: TaskInfo,
+        *,
+        progress: int,
+        message: Optional[str],
+        event_type: str,
+    ) -> None:
+        """Append a bounded progress timeline event to a task."""
+        text = (message or "").strip()
+        if not text:
+            return
+        task.progress_events.append(
+            {
+                "progress": int(progress),
+                "message": text,
+                "event_type": event_type,
+                "timestamp": datetime.now().isoformat(),
+            }
+        )
+        if len(task.progress_events) > 40:
+            task.progress_events = task.progress_events[-40:]
     
     @property
     def executor(self) -> ThreadPoolExecutor:
@@ -380,6 +406,12 @@ class AnalysisTaskQueue:
                     original_query=original_query,
                     selection_source=selection_source,
                 )
+                self._append_progress_event(
+                    task_info,
+                    progress=task_info.progress,
+                    message=task_info.message,
+                    event_type="task_created",
+                )
                 self._tasks[task_id] = task_info
                 self._analyzing_stocks[dedupe_key] = task_id
 
@@ -518,6 +550,13 @@ class AnalysisTaskQueue:
             if not changed:
                 return task.copy()
 
+            self._append_progress_event(
+                task,
+                progress=task.progress,
+                message=task.message,
+                event_type=event_type,
+            )
+
             task_snapshot = task.copy()
 
         self._broadcast_event(event_type, task_snapshot.to_dict())
@@ -554,6 +593,12 @@ class AnalysisTaskQueue:
             task.started_at = datetime.now()
             task.message = "正在分析中..."
             task.progress = 10
+            self._append_progress_event(
+                task,
+                progress=task.progress,
+                message=task.message,
+                event_type="task_started",
+            )
         
         self._broadcast_event("task_started", task.to_dict())
         
@@ -587,6 +632,12 @@ class AnalysisTaskQueue:
                         task.result = result
                         task.message = "分析完成"
                         task.stock_name = result.get("stock_name", task.stock_name)
+                        self._append_progress_event(
+                            task,
+                            progress=task.progress,
+                            message=task.message,
+                            event_type="task_completed",
+                        )
                         
                         # 从分析中集合移除
                         dedupe_key = _dedupe_stock_code_key(task.stock_code)
@@ -615,6 +666,12 @@ class AnalysisTaskQueue:
                     task.completed_at = datetime.now()
                     task.error = error_msg[:200]  # 限制错误信息长度
                     task.message = f"分析失败: {error_msg[:50]}"
+                    self._append_progress_event(
+                        task,
+                        progress=task.progress,
+                        message=task.message,
+                        event_type="task_failed",
+                    )
                     
                     # 从分析中集合移除
                     dedupe_key = _dedupe_stock_code_key(task.stock_code)

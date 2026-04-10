@@ -123,6 +123,14 @@ export function useTaskStream(options: UseTaskStreamOptions = {}): UseTaskStream
       error: data.error as string | undefined,
       originalQuery: data.original_query as string | undefined,
       selectionSource: data.selection_source as string | undefined,
+      progressEvents: Array.isArray(data.progress_events)
+        ? data.progress_events.map((event) => ({
+            progress: Number((event as Record<string, unknown>).progress ?? 0),
+            message: String((event as Record<string, unknown>).message ?? ''),
+            eventType: String((event as Record<string, unknown>).event_type ?? ''),
+            timestamp: String((event as Record<string, unknown>).timestamp ?? ''),
+          }))
+        : undefined,
     };
   };
 

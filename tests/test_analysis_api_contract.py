@@ -900,6 +900,8 @@ class BatchTaskQueueContractTestCase(unittest.TestCase):
         self.assertIsNotNone(updated)
         self.assertEqual(updated.progress, 62)
         self.assertEqual(updated.message, "LLM 正在生成分析结果")
+        self.assertEqual(updated.progress_events[-1]["message"], "LLM 正在生成分析结果")
+        self.assertEqual(updated.progress_events[-1]["event_type"], "task_progress")
         self.assertEqual(events, [("task_progress", updated.to_dict())])
 
 
