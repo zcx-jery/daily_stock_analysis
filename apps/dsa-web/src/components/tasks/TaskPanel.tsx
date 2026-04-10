@@ -40,7 +40,6 @@ const TaskItem: React.FC<TaskItemProps> = ({ task, onOpenDetails }) => {
   const statusVariant = isProcessing ? 'info' : 'default';
   const statusTone = isProcessing ? 'info' : 'neutral';
   const progress = Math.max(0, Math.min(100, task.progress || 0));
-  const hasProgressDetails = (task.progressEvents?.length ?? 0) > 0;
 
   return (
     <div className="home-subpanel flex items-center gap-3 px-3 py-2.5">
@@ -80,31 +79,20 @@ const TaskItem: React.FC<TaskItemProps> = ({ task, onOpenDetails }) => {
       </div>
 
       <div className="flex-shrink-0">
-        {hasProgressDetails ? (
-          <button
-            type="button"
-            onClick={() => onOpenDetails(task)}
-            className="inline-flex"
-            aria-label={`任务状态：${statusLabel}`}
-          >
-            <Badge
-              variant={statusVariant}
-              className="min-w-[4.75rem] justify-center gap-1.5 shadow-none transition-colors hover:bg-hover"
-            >
-              <StatusDot tone={statusTone} pulse={isProcessing} className="h-1.5 w-1.5" />
-              {statusLabel}
-            </Badge>
-          </button>
-        ) : (
+        <button
+          type="button"
+          onClick={() => onOpenDetails(task)}
+          className="inline-flex"
+          aria-label={`任务状态：${statusLabel}`}
+        >
           <Badge
             variant={statusVariant}
-            className="min-w-[4.75rem] justify-center gap-1.5 shadow-none"
-            aria-label={`任务状态：${statusLabel}`}
+            className="min-w-[4.75rem] justify-center gap-1.5 shadow-none transition-colors hover:bg-hover"
           >
             <StatusDot tone={statusTone} pulse={isProcessing} className="h-1.5 w-1.5" />
             {statusLabel}
           </Badge>
-        )}
+        </button>
       </div>
     </div>
   );

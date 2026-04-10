@@ -69,6 +69,25 @@ describe('TaskPanel', () => {
     expect(screen.getAllByText('正在抓取最新行情')).toHaveLength(3);
   });
 
+  it('opens the progress drawer even when no detailed progress events are available', () => {
+    render(
+      <TaskPanel
+        tasks={[
+          {
+            ...baseTask,
+            progressEvents: undefined,
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText('任务状态：分析中'));
+
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByText('贵州茅台 分析进度')).toBeInTheDocument();
+    expect(screen.getByText('暂无详细进度')).toBeInTheDocument();
+  });
+
   it('does not render when there are no active tasks', () => {
     const { container } = render(
       <TaskPanel
