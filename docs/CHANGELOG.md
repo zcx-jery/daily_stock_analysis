@@ -12,6 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 
+- [修复] 首页分析对 `secondary_buy`、`support`、`resistance` 等狙击点位增加别名归一化与历史展示兜底，修复多 Agent /重型策略输出下二次买点经常落成 `N/A`、中文点位说明丢失的问题。
+- [新功能] 首页分析结果新增 `field_drift` 观察链：在保留固定字段 `ideal_buy / secondary_buy / stop_loss / take_profit` 主链不变的前提下，额外记录原始扩展字段、字段映射与未映射字段，并在前端报告详情中提供折叠展示。
+- [改进] 首页“扩展字段”展示增加中文解释，字段映射会以 `中文名（原始字段） -> 中文名（固定字段）` 形式展示，降低排查模型字段漂移时的阅读成本。
+- [新功能] 首页“分析任务”面板新增任务进度详情抽屉，支持查看任务创建、阶段推进、完成/失败等时间线；处于 `分析中` 或 `等待中` 的任务均可点击打开当前状态详情。
+- [修复] `/api/v1/analysis/tasks` 与 SSE 任务流补齐 `progress_events` 返回，并修复任务详情入口过度依赖事件数组导致“分析中”偶发不可点击的问题。
+- [文档] README 补充首页分析“扩展字段 / 中文映射 / 任务进度详情”能力说明，便于直接在 GitHub 首页了解最近几次 Web 首页相关更新。
+
 - [修复] `AGENT_MAX_STEPS` 在 orchestrator 多 Agent 模式下改为作为各子 Agent 的步数上限而非硬覆盖；TechnicalAgent 等高默认值 Agent 会被封顶，低默认值 Agent 保持原值，减少不必要的 LLM 调用膨胀与配额消耗。
 - [修复] **MiniMax-M2.7 模型连接测试支持** — 修复 LLM 通道连接测试在 MiniMax-M2.7 模型下返回 "Empty response" 的问题；增加了 `max_tokens` 上限（8→256）以容纳 MiniMax 思考过程，并添加 `content_blocks` 格式解析逻辑统一处理 MiniMax 响应格式差异。
 - [修复] 移除 `HistoryItem` 与 `ReportSummary` 响应 Schema 中 `sentiment_score` 的 `ge=0/le=100` 约束（fixes #942）——历史库中存储的超范围负值或大于 100 的情绪评分不再触发 Pydantic ValidationError，历史列表与详情接口恢复正常返回。
