@@ -261,6 +261,50 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertEqual(detail.get("stop_loss"), "跌破 110 元止损")
         self.assertEqual(detail.get("take_profit"), "目标位：150.0元")
 
+    def test_history_detail_uses_key_level_aliases_for_today_style_records(self) -> None:
+        """History detail should reconstruct display strings from key_levels when sniper_points are numeric or N/A."""
+        result = self._build_result()
+        result.dashboard = {
+            "key_levels": {
+                "支撑位": "254.0 (MA5)",
+                "阻力位": "269.9 (MA20/前期套牢密集区)",
+                "止损位": "248.0 (近期结构低点/箱体下沿)",
+                "add_on_breakout": "272.5",
+            },
+            "battle_plan": {
+                "sniper_points": {
+                    "ideal_buy": 254.0,
+                    "secondary_buy": "N/A",
+                    "stop_loss": 248.0,
+                    "take_profit": 269.9,
+                }
+            },
+        }
+
+        saved = self.db.save_analysis_history(
+            result=result,
+            query_id="query_006a",
+            report_type="simple",
+            news_content="新闻摘要",
+            context_snapshot=None,
+            save_snapshot=False
+        )
+        self.assertEqual(saved, 1)
+
+        with self.db.get_session() as session:
+            row = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == "query_006a").first()
+            if row is None:
+                self.fail("未找到保存的历史记录")
+            record_id = row.id
+
+        service = HistoryService(self.db)
+        detail = service.get_history_detail_by_id(record_id)
+        self.assertIsNotNone(detail)
+        self.assertEqual(detail.get("ideal_buy"), "254.0 (MA5)")
+        self.assertEqual(detail.get("secondary_buy"), "272.5")
+        self.assertEqual(detail.get("stop_loss"), "248.0 (近期结构低点/箱体下沿)")
+        self.assertEqual(detail.get("take_profit"), "269.9 (MA20/前期套牢密集区)")
+
     def test_history_detail_falls_back_to_numeric_sniper_columns(self) -> None:
         """History detail should still fall back to stored numeric sniper columns when raw strings are unavailable."""
         result = self._build_result()

@@ -52,6 +52,79 @@ logger = logging.getLogger(__name__)
 # Valid orchestrator modes (ordered by cost/depth)
 VALID_MODES = ("quick", "standard", "full", "specialist")
 
+_KEY_LEVEL_ALIASES = {
+    "ideal_buy": (
+        "ideal_buy",
+        "ideal_buy_if_valuation_improves",
+        "buy_zone",
+        "entry_zone",
+        "理想买入点",
+        "理想入场位",
+        "买入区间",
+        "入场区间",
+    ),
+    "secondary_buy": (
+        "secondary_buy",
+        "secondary_entry",
+        "add_on_breakout",
+        "next_buy",
+        "次优买入点",
+        "次优入场位",
+        "突破加仓位",
+        "确认加仓位",
+    ),
+    "support": (
+        "support",
+        "support_level",
+        "immediate_support",
+        "支撑位",
+        "关键支撑",
+        "关键支撑位",
+    ),
+    "immediate_support": (
+        "immediate_support",
+        "support",
+        "support_level",
+        "支撑位",
+        "关键支撑",
+        "关键支撑位",
+    ),
+    "resistance": (
+        "resistance",
+        "current_resistance",
+        "resistance_1",
+        "resistance_2",
+        "阻力位",
+        "强阻力位",
+        "压力位",
+    ),
+    "current_resistance": (
+        "current_resistance",
+        "resistance",
+        "resistance_1",
+        "resistance_2",
+        "阻力位",
+        "强阻力位",
+        "压力位",
+    ),
+    "stop_loss": (
+        "stop_loss",
+        "strong_support_stop_loss",
+        "止损位",
+        "止损参考",
+    ),
+    "take_profit": (
+        "take_profit",
+        "next_breakout_target",
+        "target_price",
+        "目标位",
+        "目标价",
+        "强阻力位",
+        "阻力位",
+        "压力位",
+    ),
+}
+
 
 @dataclass
 class OrchestratorResult:
@@ -1019,6 +1092,9 @@ class AgentOrchestrator:
                 normalized = _coerce_level_value(value)
                 if normalized is not None and key not in levels:
                     levels[key] = normalized
+                for canonical_key, aliases in _KEY_LEVEL_ALIASES.items():
+                    if key in aliases and canonical_key not in levels:
+                        levels[canonical_key] = normalized
 
         absorb(payload.get("key_levels"))
         absorb(dashboard_block.get("key_levels"))

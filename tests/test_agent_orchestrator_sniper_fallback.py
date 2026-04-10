@@ -74,6 +74,61 @@ class TestAgentOrchestratorSniperFallback(unittest.TestCase):
         self.assertEqual(sniper["ideal_buy"], 301.61)
         self.assertEqual(sniper["secondary_buy"], "N/A")
 
+    def test_secondary_buy_uses_add_on_breakout_alias(self):
+        orch = AgentOrchestrator(
+            tool_registry=MagicMock(),
+            llm_adapter=MagicMock(),
+        )
+        ctx = AgentContext(query="test", stock_code="002534", stock_name="西子洁能")
+
+        payload = {
+            "decision_type": "watch",
+            "analysis_summary": "等待回踩或放量突破。",
+            "dashboard": {
+                "key_levels": {
+                    "buy_zone": "16.50 - 16.60",
+                    "add_on_breakout": "17.66",
+                    "stop_loss": "15.70",
+                }
+            },
+        }
+
+        normalized = orch._normalize_dashboard_payload(payload, ctx)
+
+        self.assertIsNotNone(normalized)
+        sniper = normalized["dashboard"]["battle_plan"]["sniper_points"]
+        self.assertEqual(sniper["ideal_buy"], "16.50 - 16.60")
+        self.assertEqual(sniper["secondary_buy"], 17.66)
+        self.assertEqual(sniper["stop_loss"], 15.7)
+
+    def test_chinese_key_levels_aliases_fill_canonical_fields(self):
+        orch = AgentOrchestrator(
+            tool_registry=MagicMock(),
+            llm_adapter=MagicMock(),
+        )
+        ctx = AgentContext(query="test", stock_code="603986", stock_name="兆易创新")
+
+        payload = {
+            "decision_type": "reduce",
+            "analysis_summary": "反弹承压，控制仓位。",
+            "dashboard": {
+                "key_levels": {
+                    "支撑位": "254.0 (MA5)",
+                    "阻力位": "269.9 (MA20/前期套牢密集区)",
+                    "止损位": "248.0 (近期结构低点/箱体下沿)",
+                }
+            },
+        }
+
+        normalized = orch._normalize_dashboard_payload(payload, ctx)
+
+        self.assertIsNotNone(normalized)
+        sniper = normalized["dashboard"]["battle_plan"]["sniper_points"]
+        self.assertEqual(sniper["ideal_buy"], "254.0 (MA5)")
+        self.assertEqual(sniper["secondary_buy"], "N/A")
+        self.assertEqual(sniper["stop_loss"], "248.0 (近期结构低点/箱体下沿)")
+        self.assertEqual(sniper["take_profit"], "269.9 (MA20/前期套牢密集区)")
+
 
 if __name__ == "__main__":
     unittest.main()

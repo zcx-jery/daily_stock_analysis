@@ -12,6 +12,7 @@ Responsibilities:
 from __future__ import annotations
 import json
 import logging
+import re
 from datetime import date, datetime, timedelta
 from typing import Optional, Dict, Any, List, Tuple, TYPE_CHECKING
 
@@ -34,6 +35,52 @@ if TYPE_CHECKING:
     from src.analyzer import AnalysisResult
 
 logger = logging.getLogger(__name__)
+
+_DISPLAY_KEY_LEVEL_ALIASES = {
+    "ideal_buy": (
+        "ideal_buy",
+        "ideal_buy_if_valuation_improves",
+        "buy_zone",
+        "entry_zone",
+        "理想买入点",
+        "理想入场位",
+        "买入区间",
+        "入场区间",
+        "支撑位",
+        "关键支撑",
+        "关键支撑位",
+    ),
+    "secondary_buy": (
+        "secondary_buy",
+        "secondary_entry",
+        "add_on_breakout",
+        "next_buy",
+        "次优买入点",
+        "次优入场位",
+        "突破加仓位",
+        "确认加仓位",
+    ),
+    "stop_loss": (
+        "stop_loss",
+        "strong_support_stop_loss",
+        "止损位",
+        "止损参考",
+    ),
+    "take_profit": (
+        "take_profit",
+        "next_breakout_target",
+        "target_price",
+        "目标位",
+        "目标价",
+        "阻力位",
+        "强阻力位",
+        "压力位",
+        "resistance",
+        "current_resistance",
+        "resistance_1",
+        "resistance_2",
+    ),
+}
 
 
 class MarkdownReportGenerationError(Exception):
@@ -229,6 +276,41 @@ class HistoryService:
             return None
         return text
 
+    @staticmethod
+    def _is_plain_numeric_display(value: Optional[str]) -> bool:
+        if not value:
+            return False
+        return bool(re.fullmatch(r"\d+(?:\.\d+)?(?:\s*[-~至]\s*\d+(?:\.\d+)?)?", value))
+
+    def _derive_display_points_from_key_levels(self, raw_result: Any) -> Dict[str, Optional[str]]:
+        derived_points: Dict[str, Optional[str]] = {}
+        if not isinstance(raw_result, dict):
+            return derived_points
+
+        dashboard = raw_result.get("dashboard")
+        candidates = [
+            raw_result.get("key_levels"),
+            raw_result.get("sniper_levels"),
+        ]
+        if isinstance(dashboard, dict):
+            candidates.extend([
+                dashboard.get("key_levels"),
+                dashboard.get("sniper_levels"),
+            ])
+
+        for field, aliases in _DISPLAY_KEY_LEVEL_ALIASES.items():
+            for candidate in candidates:
+                if not isinstance(candidate, dict):
+                    continue
+                for key in aliases:
+                    text = self._normalize_display_sniper_value(candidate.get(key))
+                    if text is not None:
+                        derived_points[field] = text
+                        break
+                if derived_points.get(field) is not None:
+                    break
+        return derived_points
+
     def _get_display_sniper_points(self, record, raw_result: Any) -> Dict[str, Optional[str]]:
         """Prefer raw dashboard sniper strings for history display, then fall back to numeric DB columns."""
         raw_points: Dict[str, Any] = {}
@@ -240,9 +322,14 @@ class HistoryService:
                 if any(raw_points.get(k) is not None for k in ("ideal_buy", "secondary_buy", "stop_loss", "take_profit")):
                     break
 
+        key_level_points = self._derive_display_points_from_key_levels(raw_result)
         display_points: Dict[str, Optional[str]] = {}
         for field in ("ideal_buy", "secondary_buy", "stop_loss", "take_profit"):
             raw_value = self._normalize_display_sniper_value(raw_points.get(field))
+            key_level_value = self._normalize_display_sniper_value(key_level_points.get(field))
+            if key_level_value is not None and (raw_value is None or self._is_plain_numeric_display(raw_value)):
+                display_points[field] = key_level_value
+                continue
             if raw_value is not None:
                 display_points[field] = raw_value
                 continue
