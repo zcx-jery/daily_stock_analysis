@@ -40,4 +40,38 @@ describe('ReportStrategy', () => {
     expect(screen.getByText('止损位：235.0元（跌破平台低点）')).toBeInTheDocument();
     expect(screen.getByText('目标位：269.9元（MA20压力位）')).toBeInTheDocument();
   });
+
+  it('renders field drift details as text when provided', () => {
+    render(
+      <ReportStrategy
+        language="zh"
+        strategy={{
+          idealBuy: '12.78',
+          secondaryBuy: '13.18',
+          stopLoss: '12.55',
+          takeProfit: '13.45',
+        }}
+        fieldDrift={{
+          mappedAliases: {
+            entry_zone: 'ideal_buy',
+          },
+          unmappedKeyLevels: {
+            pressure_band: '13.40-13.55',
+          },
+          dashboardExtra: {
+            趋势排列: '弱势多头',
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText('扩展字段')).toBeInTheDocument();
+    expect(screen.getByText('字段映射')).toBeInTheDocument();
+    expect(screen.getByText('entry_zone')).toBeInTheDocument();
+    expect(screen.getByText('ideal_buy')).toBeInTheDocument();
+    expect(screen.getByText('pressure_band')).toBeInTheDocument();
+    expect(screen.getByText('13.40-13.55')).toBeInTheDocument();
+    expect(screen.getByText('趋势排列')).toBeInTheDocument();
+    expect(screen.getByText('弱势多头')).toBeInTheDocument();
+  });
 });

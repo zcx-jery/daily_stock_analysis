@@ -171,6 +171,11 @@ class AnalysisService:
                 "technical_analysis": result.technical_analysis,
                 "fundamental_analysis": result.fundamental_analysis,
                 "risk_warning": result.risk_warning,
+                "field_drift": (
+                    result.dashboard.get("field_drift")
+                    if isinstance(getattr(result, "dashboard", None), dict)
+                    else None
+                ),
             }
         }
         

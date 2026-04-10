@@ -83,6 +83,20 @@ _DISPLAY_KEY_LEVEL_ALIASES = {
 }
 
 
+def _extract_field_drift(raw_result: Any) -> Optional[Dict[str, Any]]:
+    """Return persisted field_drift payload from either the top level or dashboard block."""
+    if not isinstance(raw_result, dict):
+        return None
+    candidates = [raw_result.get("field_drift")]
+    dashboard = raw_result.get("dashboard")
+    if isinstance(dashboard, dict):
+        candidates.append(dashboard.get("field_drift"))
+    for candidate in candidates:
+        if isinstance(candidate, dict) and candidate:
+            return candidate
+    return None
+
+
 class MarkdownReportGenerationError(Exception):
     """Exception raised when Markdown report generation fails due to internal errors."""
 
@@ -373,6 +387,7 @@ class HistoryService:
             "take_profit": sniper_points.get("take_profit"),
             "news_content": record.news_content,
             "raw_result": raw_result,
+            "field_drift": _extract_field_drift(raw_result),
             "context_snapshot": context_snapshot,
         }
 

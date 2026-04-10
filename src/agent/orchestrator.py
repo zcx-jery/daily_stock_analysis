@@ -125,6 +125,16 @@ _KEY_LEVEL_ALIASES = {
     ),
 }
 
+_FIELD_DRIFT_SCALAR_TYPES = (str, int, float, bool)
+_FIELD_DRIFT_DASHBOARD_RESERVED_KEYS = {
+    "core_conclusion",
+    "data_perspective",
+    "intelligence",
+    "battle_plan",
+    "field_drift",
+    "key_levels",
+}
+
 
 @dataclass
 class OrchestratorResult:
@@ -334,7 +344,12 @@ class AgentOrchestrator:
     # Public interface (mirrors AgentExecutor)
     # -----------------------------------------------------------------
 
-    def run(self, task: str, context: Optional[Dict[str, Any]] = None) -> "AgentResult":
+    def run(
+        self,
+        task: str,
+        context: Optional[Dict[str, Any]] = None,
+        progress_callback: Optional[Callable] = None,
+    ) -> "AgentResult":
         """Run the multi-agent pipeline for a dashboard analysis.
 
         Returns an ``AgentResult`` (same type as ``AgentExecutor.run``).
@@ -343,7 +358,11 @@ class AgentOrchestrator:
 
         ctx = self._build_context(task, context)
         ctx.meta["response_mode"] = "dashboard"
-        orch_result = self._execute_pipeline(ctx, parse_dashboard=True)
+        orch_result = self._execute_pipeline(
+            ctx,
+            parse_dashboard=True,
+            progress_callback=progress_callback,
+        )
 
         return AgentResult(
             success=orch_result.success,
@@ -963,6 +982,7 @@ class AgentOrchestrator:
         position_advice.setdefault("no_position", defaults["no_position"])
         position_advice.setdefault("has_position", defaults["has_position"])
 
+        field_drift = self._build_field_drift(ctx, payload, dashboard_block)
         key_levels = self._collect_key_levels(ctx, payload, dashboard_block)
         sniper = battle.get("sniper_points")
         if not isinstance(sniper, dict):
@@ -1024,6 +1044,8 @@ class AgentOrchestrator:
         core["position_advice"] = position_advice
 
         battle["sniper_points"] = sniper
+        if field_drift:
+            dashboard_block["field_drift"] = field_drift
         if "action_checklist" not in battle:
             battle["action_checklist"] = []
         position_strategy = battle.get("position_strategy")
@@ -1103,6 +1125,73 @@ class AgentOrchestrator:
             raw = opinion.raw_data if isinstance(opinion.raw_data, dict) else {}
             absorb(raw.get("key_levels"))
         return levels
+
+    def _build_field_drift(
+        self,
+        ctx: AgentContext,
+        payload: Dict[str, Any],
+        dashboard_block: Dict[str, Any],
+    ) -> Dict[str, Dict[str, Any]]:
+        """Capture non-canonical model output fields without affecting fixed display fields."""
+        alias_to_canonical = {
+            alias: canonical_key
+            for canonical_key, aliases in _KEY_LEVEL_ALIASES.items()
+            for alias in aliases
+        }
+        raw_key_levels: Dict[str, Any] = {}
+        mapped_aliases: Dict[str, str] = {}
+        unmapped_key_levels: Dict[str, Any] = {}
+        dashboard_extra: Dict[str, Any] = {}
+
+        def _coerce_field_drift_value(value: Any) -> Optional[Any]:
+            if value is None:
+                return None
+            if isinstance(value, str):
+                cleaned = value.strip()
+                if not cleaned:
+                    return None
+                return cleaned[:240] + "..." if len(cleaned) > 240 else cleaned
+            if isinstance(value, _FIELD_DRIFT_SCALAR_TYPES):
+                return value
+            return None
+
+        def _record_key_levels(source: Any) -> None:
+            if not isinstance(source, dict):
+                return
+            for key, raw_value in source.items():
+                value = _coerce_field_drift_value(raw_value)
+                if value is None or key in raw_key_levels:
+                    continue
+                raw_key_levels[key] = value
+                canonical_key = alias_to_canonical.get(key)
+                if canonical_key and key != canonical_key and key not in mapped_aliases:
+                    mapped_aliases[key] = canonical_key
+                if canonical_key is None:
+                    unmapped_key_levels[key] = value
+
+        _record_key_levels(payload.get("key_levels"))
+        _record_key_levels(dashboard_block.get("key_levels"))
+        for opinion in reversed(ctx.opinions):
+            raw = opinion.raw_data if isinstance(opinion.raw_data, dict) else {}
+            _record_key_levels(raw.get("key_levels"))
+
+        for key, raw_value in dashboard_block.items():
+            if key in _FIELD_DRIFT_DASHBOARD_RESERVED_KEYS:
+                continue
+            value = _coerce_field_drift_value(raw_value)
+            if value is not None:
+                dashboard_extra[key] = value
+
+        field_drift: Dict[str, Dict[str, Any]] = {}
+        if mapped_aliases:
+            field_drift["mapped_aliases"] = mapped_aliases
+        if raw_key_levels:
+            field_drift["raw_key_levels"] = raw_key_levels
+        if unmapped_key_levels:
+            field_drift["unmapped_key_levels"] = unmapped_key_levels
+        if dashboard_extra:
+            field_drift["dashboard_extra"] = dashboard_extra
+        return field_drift
 
     def _build_data_perspective(
         self,

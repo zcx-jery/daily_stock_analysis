@@ -1,11 +1,16 @@
 import type React from 'react';
-import type { ReportLanguage, ReportStrategy as ReportStrategyType } from '../../types/analysis';
+import type {
+  ReportFieldDrift,
+  ReportLanguage,
+  ReportStrategy as ReportStrategyType,
+} from '../../types/analysis';
 import { Card } from '../common';
 import { DashboardPanelHeader } from '../dashboard';
 import { getReportText, normalizeReportLanguage } from '../../utils/reportLanguage';
 
 interface ReportStrategyProps {
   strategy?: ReportStrategyType;
+  fieldDrift?: ReportFieldDrift;
   language?: ReportLanguage;
 }
 
@@ -57,7 +62,11 @@ const StrategyItem: React.FC<StrategyItemProps> = ({
 /**
  * 策略点位区组件 - 终端风格
  */
-export const ReportStrategy: React.FC<ReportStrategyProps> = ({ strategy, language = 'zh' }) => {
+export const ReportStrategy: React.FC<ReportStrategyProps> = ({
+  strategy,
+  fieldDrift,
+  language = 'zh',
+}) => {
   if (!strategy) {
     return null;
   }
@@ -65,6 +74,28 @@ export const ReportStrategy: React.FC<ReportStrategyProps> = ({ strategy, langua
   const reportLanguage = normalizeReportLanguage(language);
   const text = getReportText(reportLanguage);
   const emptyText = reportLanguage === 'zh' ? '待补充' : 'Pending';
+  const driftSections = [
+    {
+      key: 'mappedAliases',
+      label: text.mappedAliases,
+      entries: Object.entries(fieldDrift?.mappedAliases ?? {}),
+    },
+    {
+      key: 'rawKeyLevels',
+      label: text.rawKeyLevels,
+      entries: Object.entries(fieldDrift?.rawKeyLevels ?? {}),
+    },
+    {
+      key: 'unmappedKeyLevels',
+      label: text.unmappedKeyLevels,
+      entries: Object.entries(fieldDrift?.unmappedKeyLevels ?? {}),
+    },
+    {
+      key: 'dashboardExtra',
+      label: text.dashboardExtra,
+      entries: Object.entries(fieldDrift?.dashboardExtra ?? {}),
+    },
+  ].filter((section) => section.entries.length > 0);
 
   const strategyItems = [
     {
@@ -101,6 +132,31 @@ export const ReportStrategy: React.FC<ReportStrategyProps> = ({ strategy, langua
           <StrategyItem key={item.label} {...item} value={item.value ?? emptyText} />
         ))}
       </div>
+      {driftSections.length > 0 && (
+        <details className="mt-4 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-muted-text">
+          <summary className="cursor-pointer select-none font-medium text-foreground">
+            {text.driftFields}
+          </summary>
+          <div className="mt-3 space-y-3">
+            {driftSections.map((section) => (
+              <div key={section.key}>
+                <div className="mb-1 text-xs uppercase tracking-[0.18em] text-muted-text/80">
+                  {section.label}
+                </div>
+                <div className="space-y-1">
+                  {section.entries.map(([key, value]) => (
+                    <div key={`${section.key}-${key}`} className="break-words text-foreground/90">
+                      <span className="font-mono text-cyan-300">{key}</span>
+                      {section.key === 'mappedAliases' ? ' -> ' : ': '}
+                      <span>{String(value)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
     </Card>
   );
 };

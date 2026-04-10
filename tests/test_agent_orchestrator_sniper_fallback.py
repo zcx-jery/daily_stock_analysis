@@ -129,6 +129,38 @@ class TestAgentOrchestratorSniperFallback(unittest.TestCase):
         self.assertEqual(sniper["stop_loss"], "248.0 (近期结构低点/箱体下沿)")
         self.assertEqual(sniper["take_profit"], "269.9 (MA20/前期套牢密集区)")
 
+    def test_field_drift_records_aliases_and_extra_fields(self):
+        orch = AgentOrchestrator(
+            tool_registry=MagicMock(),
+            llm_adapter=MagicMock(),
+        )
+        ctx = AgentContext(query="test", stock_code="600710", stock_name="苏美达")
+
+        payload = {
+            "decision_type": "hold",
+            "analysis_summary": "等待箱体确认。",
+            "dashboard": {
+                "趋势排列": "弱势多头",
+                "key_levels": {
+                    "entry_zone": "12.78-12.85",
+                    "add_on_breakout": "13.18",
+                    "pressure_band": "13.40-13.55",
+                    "target_price": "13.45",
+                },
+            },
+        }
+
+        normalized = orch._normalize_dashboard_payload(payload, ctx)
+
+        self.assertIsNotNone(normalized)
+        field_drift = normalized["dashboard"].get("field_drift")
+        self.assertEqual(field_drift["mapped_aliases"]["entry_zone"], "ideal_buy")
+        self.assertEqual(field_drift["mapped_aliases"]["add_on_breakout"], "secondary_buy")
+        self.assertEqual(field_drift["mapped_aliases"]["target_price"], "take_profit")
+        self.assertEqual(field_drift["raw_key_levels"]["pressure_band"], "13.40-13.55")
+        self.assertEqual(field_drift["unmapped_key_levels"]["pressure_band"], "13.40-13.55")
+        self.assertEqual(field_drift["dashboard_extra"]["趋势排列"], "弱势多头")
+
 
 if __name__ == "__main__":
     unittest.main()

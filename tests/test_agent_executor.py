@@ -87,6 +87,30 @@ SAMPLE_DASHBOARD = {
 class TestAgentExecutor(unittest.TestCase):
     """Test the ReAct loop logic."""
 
+    def test_run_forwards_progress_callback_to_loop(self):
+        registry = _make_registry_with_echo()
+        adapter = _make_mock_adapter()
+        executor = AgentExecutor(registry, adapter)
+        progress_callback = MagicMock()
+
+        expected = AgentResult(
+            success=True,
+            content=json.dumps(SAMPLE_DASHBOARD, ensure_ascii=False),
+            dashboard=SAMPLE_DASHBOARD,
+            tool_calls_log=[],
+            total_steps=1,
+            total_tokens=42,
+            provider="openai",
+            model="test-model",
+            error=None,
+        )
+
+        with patch.object(executor, "_run_loop", return_value=expected) as mock_run_loop:
+            result = executor.run("Analyze 600519", progress_callback=progress_callback)
+
+        self.assertIs(result, expected)
+        self.assertEqual(mock_run_loop.call_args.kwargs["progress_callback"], progress_callback)
+
     def test_prompt_omits_hardcoded_trend_baseline_when_default_policy_is_empty(self):
         """Explicit skill runs should not silently keep the legacy trend baseline."""
         registry = _make_registry_with_echo()

@@ -223,6 +223,50 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertIsInstance(detail.get("raw_result"), dict)
         self.assertIsNone(detail.get("model_used"))
 
+    def test_history_detail_returns_field_drift_from_dashboard(self) -> None:
+        result = self._build_result()
+        result.dashboard = {
+            "field_drift": {
+                "mapped_aliases": {"entry_zone": "ideal_buy"},
+                "unmapped_key_levels": {"pressure_band": "13.40-13.55"},
+            },
+            "battle_plan": {
+                "sniper_points": {
+                    "ideal_buy": "理想买入点：12.78元",
+                    "secondary_buy": "N/A",
+                    "stop_loss": "12.55",
+                    "take_profit": "13.45",
+                }
+            },
+        }
+
+        saved = self.db.save_analysis_history(
+            result=result,
+            query_id="query_005_field_drift",
+            report_type="simple",
+            news_content="新闻摘要",
+            context_snapshot=None,
+            save_snapshot=False,
+        )
+        self.assertEqual(saved, 1)
+
+        with self.db.get_session() as session:
+            row = session.query(AnalysisHistory).filter(
+                AnalysisHistory.query_id == "query_005_field_drift"
+            ).first()
+            if row is None:
+                self.fail("未找到保存的历史记录")
+            record_id = row.id
+
+        service = HistoryService(self.db)
+        detail = service.get_history_detail_by_id(record_id)
+        self.assertIsNotNone(detail)
+        self.assertEqual(detail.get("field_drift", {}).get("mapped_aliases", {}).get("entry_zone"), "ideal_buy")
+        self.assertEqual(
+            detail.get("field_drift", {}).get("unmapped_key_levels", {}).get("pressure_band"),
+            "13.40-13.55",
+        )
+
     def test_history_detail_prefers_raw_sniper_strings(self) -> None:
         """History detail should display the original sniper point strings from raw_result."""
         result = self._build_result()

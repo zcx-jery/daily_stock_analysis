@@ -65,6 +65,13 @@ export interface ReportStrategy {
   takeProfit?: string;
 }
 
+export interface ReportFieldDrift {
+  mappedAliases?: Record<string, string>;
+  rawKeyLevels?: Record<string, string | number | boolean>;
+  unmappedKeyLevels?: Record<string, string | number | boolean>;
+  dashboardExtra?: Record<string, string | number | boolean>;
+}
+
 export interface RelatedBoard {
   name: string;
   code?: string;
@@ -85,6 +92,7 @@ export interface SectorRankings {
 export interface ReportDetails {
   newsContent?: string;
   rawResult?: Record<string, unknown>;
+  fieldDrift?: ReportFieldDrift;
   contextSnapshot?: Record<string, unknown>;
   financialReport?: Record<string, unknown>;
   dividendMetrics?: Record<string, unknown>;

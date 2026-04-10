@@ -26,6 +26,7 @@ try:
 except ModuleNotFoundError:
     sys.modules["litellm"] = MagicMock()
 
+from src.agent.executor import AgentResult
 from src.agent.orchestrator import _extract_stock_code, _COMMON_WORDS
 from src.agent.protocols import (
     AgentContext,
@@ -164,6 +165,38 @@ class TestExtractStockCode(unittest.TestCase):
         """Ensure critical finance terms are in _COMMON_WORDS."""
         expected_in_set = {"BUY", "SELL", "HOLD", "ETF", "IPO", "RSI", "MACD", "STOCK", "TREND"}
         self.assertTrue(expected_in_set.issubset(_COMMON_WORDS))
+
+
+class TestAgentOrchestratorRun(unittest.TestCase):
+    def test_run_forwards_progress_callback_to_execute_pipeline(self):
+        from src.agent.orchestrator import AgentOrchestrator, OrchestratorResult
+
+        orchestrator = AgentOrchestrator(
+            tool_registry=MagicMock(),
+            llm_adapter=MagicMock(),
+        )
+        progress_callback = MagicMock()
+        expected = OrchestratorResult(
+            success=True,
+            content="ok",
+            dashboard={"stock_name": "测试"},
+            tool_calls_log=[],
+            total_steps=1,
+            total_tokens=12,
+            provider="openai",
+            model="test-model",
+        )
+
+        with patch.object(orchestrator, "_execute_pipeline", return_value=expected) as mock_execute:
+            result = orchestrator.run(
+                "Analyze 600519",
+                context={"stock_code": "600519"},
+                progress_callback=progress_callback,
+            )
+
+        self.assertIsInstance(result, AgentResult)
+        self.assertTrue(result.success)
+        self.assertEqual(mock_execute.call_args.kwargs["progress_callback"], progress_callback)
 
 
 # ============================================================

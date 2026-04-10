@@ -754,6 +754,45 @@ class StockAnalysisPipeline:
             from src.agent.factory import build_agent_executor
             report_language = normalize_report_language(getattr(self.config, "report_language", "zh"))
 
+            def _forward_agent_progress(event: Any) -> None:
+                """Translate agent runtime events into coarse task progress updates."""
+                if not isinstance(event, dict):
+                    return
+
+                event_type = str(event.get("type") or "").strip().lower()
+                stage = str(event.get("stage") or "").strip().lower()
+                stage_progress = {
+                    "technical": 64,
+                    "intel": 70,
+                    "risk": 76,
+                    "decision": 90,
+                }
+                default_progress = 82 if stage.startswith("skill_") else 66
+
+                if event_type == "stage_start":
+                    progress = stage_progress.get(stage, default_progress)
+                    message = event.get("message") or f"{stock_name}：正在执行 {stage or 'agent'} 阶段"
+                    self._emit_progress(progress, str(message))
+                    return
+
+                if event_type == "stage_done":
+                    progress = min(92, stage_progress.get(stage, default_progress) + 4)
+                    self._emit_progress(progress, f"{stock_name}：已完成 {stage or 'agent'} 阶段")
+                    return
+
+                if event_type in {"thinking", "tool_start", "tool_done", "generating"}:
+                    tool_name = str(event.get("tool") or "").strip()
+                    message = (
+                        f"{stock_name}：Agent 正在处理 {tool_name}"
+                        if tool_name
+                        else f"{stock_name}：Agent 正在生成分析结果"
+                    )
+                    self._emit_progress(84, message)
+                    return
+
+                if event_type == "pipeline_timeout":
+                    self._emit_progress(92, f"{stock_name}：Agent 分析接近超时，正在整理已有结果")
+
             # Build executor from shared factory (ToolRegistry and SkillManager prototype are cached)
             executor = build_agent_executor(self.config, getattr(self.config, 'agent_skills', None) or None)
 
@@ -794,7 +833,11 @@ class StockAnalysisPipeline:
                 message = f"Analyze stock {code} ({stock_name}) and return the full decision dashboard JSON in English."
             else:
                 message = f"请分析股票 {code} ({stock_name})，并生成决策仪表盘报告。"
-            agent_result = executor.run(message, context=initial_context)
+            agent_result = executor.run(
+                message,
+                context=initial_context,
+                progress_callback=_forward_agent_progress,
+            )
 
             # 转换为 AnalysisResult
             result = self._agent_result_to_analysis_result(agent_result, code, stock_name, report_type, query_id)
