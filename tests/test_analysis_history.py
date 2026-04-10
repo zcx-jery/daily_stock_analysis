@@ -294,6 +294,90 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertEqual(detail.get("stop_loss"), "110.0")
         self.assertEqual(detail.get("take_profit"), "150.0")
 
+    def test_save_analysis_history_extracts_sniper_points_from_raw_response_json_string(self) -> None:
+        """History persistence should parse sniper points from stringified raw_response payloads."""
+        result = self._build_result()
+        result.raw_response = json.dumps({
+            "dashboard": {
+                "battle_plan": {
+                    "sniper_points": {
+                        "ideal_buy": "理想买入点：254.0元（回踩承接）",
+                        "secondary_buy": "次优买入点：248.0元（前低支撑/整数关口）",
+                        "stop_loss": "止损位：235.0元（跌破平台低点）",
+                        "take_profit": "目标位：269.9元（MA20压力位）",
+                    }
+                }
+            }
+        }, ensure_ascii=False)
+
+        saved = self.db.save_analysis_history(
+            result=result,
+            query_id="query_007_raw_response",
+            report_type="simple",
+            news_content="新闻摘要",
+            context_snapshot=None,
+            save_snapshot=False,
+        )
+        self.assertEqual(saved, 1)
+
+        with self.db.get_session() as session:
+            row = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == "query_007_raw_response").first()
+            if row is None:
+                self.fail("未找到保存的历史记录")
+            self.assertEqual(row.ideal_buy, 254.0)
+            self.assertEqual(row.secondary_buy, 248.0)
+            self.assertEqual(row.stop_loss, 235.0)
+            self.assertEqual(row.take_profit, 269.9)
+
+    def test_history_detail_prefers_raw_response_json_string_sniper_strings(self) -> None:
+        """History detail should recover the original sniper text from raw_result.raw_response JSON strings."""
+        result = self._build_result()
+        saved = self.db.save_analysis_history(
+            result=result,
+            query_id="query_008_raw_response_detail",
+            report_type="simple",
+            news_content="新闻摘要",
+            context_snapshot=None,
+            save_snapshot=False,
+        )
+        self.assertEqual(saved, 1)
+
+        raw_response = json.dumps({
+            "dashboard": {
+                "battle_plan": {
+                    "sniper_points": {
+                        "ideal_buy": "理想买入点：254.0元（回踩承接）",
+                        "secondary_buy": "次优买入点：248.0元（前低支撑/整数关口）",
+                        "stop_loss": "止损位：235.0元（跌破平台低点）",
+                        "take_profit": "目标位：269.9元（MA20压力位）",
+                    }
+                }
+            }
+        }, ensure_ascii=False)
+
+        with self.db.get_session() as session:
+            row = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == "query_008_raw_response_detail").first()
+            if row is None:
+                self.fail("未找到保存的历史记录")
+            row.raw_result = json.dumps({
+                "model_used": "gemini/gemini-2.0-flash",
+                "raw_response": raw_response,
+            }, ensure_ascii=False)
+            row.ideal_buy = 254.0
+            row.secondary_buy = None
+            row.stop_loss = 235.0
+            row.take_profit = 269.9
+            session.commit()
+            record_id = row.id
+
+        service = HistoryService(self.db)
+        detail = service.get_history_detail_by_id(record_id)
+        self.assertIsNotNone(detail)
+        self.assertEqual(detail.get("ideal_buy"), "理想买入点：254.0元（回踩承接）")
+        self.assertEqual(detail.get("secondary_buy"), "次优买入点：248.0元（前低支撑/整数关口）")
+        self.assertEqual(detail.get("stop_loss"), "止损位：235.0元（跌破平台低点）")
+        self.assertEqual(detail.get("take_profit"), "目标位：269.9元（MA20压力位）")
+
     def test_history_detail_uses_fundamental_snapshot_fallback_when_context_missing(self) -> None:
         """When context_snapshot is disabled, detail API should fallback to fundamental_snapshot."""
         if get_history_detail is None:

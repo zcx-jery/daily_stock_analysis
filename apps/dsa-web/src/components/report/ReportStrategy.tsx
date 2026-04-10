@@ -15,6 +15,26 @@ interface StrategyItemProps {
   tone: string;
 }
 
+const PLACEHOLDER_VALUES = new Set(['', '-', '—', 'N/A', 'n/a', 'null', 'undefined', '待补充']);
+
+function formatStrategyValue(value: string | undefined, language: ReportLanguage): string | undefined {
+  const text = (value ?? '').trim();
+  if (!text || PLACEHOLDER_VALUES.has(text)) {
+    return undefined;
+  }
+
+  if (language === 'zh') {
+    if (/^\d+(?:\.\d+)?$/.test(text)) {
+      return `${text}元`;
+    }
+    if (/^\d+(?:\.\d+)?\s*[-~至]\s*\d+(?:\.\d+)?$/.test(text)) {
+      return `${text}元`;
+    }
+  }
+
+  return text;
+}
+
 const StrategyItem: React.FC<StrategyItemProps> = ({
   label,
   value,
@@ -44,26 +64,27 @@ export const ReportStrategy: React.FC<ReportStrategyProps> = ({ strategy, langua
 
   const reportLanguage = normalizeReportLanguage(language);
   const text = getReportText(reportLanguage);
+  const emptyText = reportLanguage === 'zh' ? '待补充' : 'Pending';
 
   const strategyItems = [
     {
       label: text.idealBuy,
-      value: strategy.idealBuy,
+      value: formatStrategyValue(strategy.idealBuy, reportLanguage),
       tone: '--home-strategy-buy',
     },
     {
       label: text.secondaryBuy,
-      value: strategy.secondaryBuy,
+      value: formatStrategyValue(strategy.secondaryBuy, reportLanguage),
       tone: '--home-strategy-secondary',
     },
     {
       label: text.stopLoss,
-      value: strategy.stopLoss,
+      value: formatStrategyValue(strategy.stopLoss, reportLanguage),
       tone: '--home-strategy-stop',
     },
     {
       label: text.takeProfit,
-      value: strategy.takeProfit,
+      value: formatStrategyValue(strategy.takeProfit, reportLanguage),
       tone: '--home-strategy-take',
     },
   ];
@@ -77,7 +98,7 @@ export const ReportStrategy: React.FC<ReportStrategyProps> = ({ strategy, langua
       />
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {strategyItems.map((item) => (
-          <StrategyItem key={item.label} {...item} />
+          <StrategyItem key={item.label} {...item} value={item.value ?? emptyText} />
         ))}
       </div>
     </Card>

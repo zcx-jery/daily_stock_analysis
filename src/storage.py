@@ -1809,8 +1809,7 @@ class DatabaseManager:
         # Path 3: try raw_result for agent mode results
         if not any(raw_points.get(k) for k in ("ideal_buy", "secondary_buy", "stop_loss", "take_profit")):
             raw_response = getattr(result, "raw_response", None)
-            if isinstance(raw_response, dict):
-                raw_points = self._find_sniper_in_dashboard(raw_response) or raw_points
+            raw_points = self._find_sniper_in_dashboard(raw_response) or raw_points
 
         return {
             "ideal_buy": self._parse_sniper_value(raw_points.get("ideal_buy")),
@@ -1826,6 +1825,13 @@ class DatabaseManager:
         Handles various nesting: dashboard.battle_plan.sniper_points,
         dashboard.dashboard.battle_plan.sniper_points, etc.
         """
+        if isinstance(d, str):
+            try:
+                parsed = json.loads(d)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return None
+            return DatabaseManager._find_sniper_in_dashboard(parsed)
+
         if not isinstance(d, dict):
             return None
 
@@ -1853,6 +1859,18 @@ class DatabaseManager:
                 sp = bp.get("sniper_points")
                 if isinstance(sp, dict) and sp:
                     return sp
+
+        # Agent / transport wrappers may keep the original JSON response as a string.
+        for nested_key in ("raw_response", "raw_result", "response", "result"):
+            nested = d.get(nested_key)
+            found = DatabaseManager._find_sniper_in_dashboard(nested)
+            if found:
+                return found
+
+        for nested in d.values():
+            found = DatabaseManager._find_sniper_in_dashboard(nested)
+            if found:
+                return found
 
         return None
 
