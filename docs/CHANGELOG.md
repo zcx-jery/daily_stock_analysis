@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新增功能] 新增 Momentum Screener 强势股筛选能力，提供 `/api/v1/stocks/screener/momentum` 接口与 `/screener` 页面，支持 `standard` 和 `aggressive` 双画像筛选、排序、导出、复制与单票明细查看
+- [改进] Momentum Screener 接入申万一级行业映射、板块缓存 TTL 与健康检查诊断，并将默认参数纳入系统配置中心统一管理
+- [测试] 为 Momentum Screener 补充后端服务测试、API 测试、前端页面测试、真实 Tushare 发布检查脚本与 Playwright smoke 用例
+
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 
