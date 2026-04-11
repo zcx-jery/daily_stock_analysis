@@ -117,3 +117,4 @@
 - [Momentum Screener Release Notes](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-release-notes.md)
 - [Momentum Screener Commit Scope](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-commit-scope.md)
 - [Momentum Screener PR Summary](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-pr-summary.md)
+- [Momentum Screener Final Release Summary](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-final-release-summary.md)
