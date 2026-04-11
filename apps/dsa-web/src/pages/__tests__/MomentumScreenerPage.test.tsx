@@ -171,6 +171,18 @@ describe('MomentumScreenerPage', () => {
     expect(screen.getAllByText('Aggressive').length).toBeGreaterThan(0);
   });
 
+  it('uses a scrollable page container so action buttons are reachable on smaller viewports', async () => {
+    render(<MomentumScreenerPage />);
+
+    await waitFor(() => {
+      expect(mockScreen).toHaveBeenCalled();
+    });
+
+    const page = screen.getByTestId('momentum-screener-page');
+    expect(page.className).toContain('overflow-y-auto');
+    expect(page.className).not.toContain('overflow-hidden');
+  });
+
   it('loads persisted form state and uses it on initial screening', async () => {
     window.localStorage.setItem(
       'dsa.momentum-screener.page-state',

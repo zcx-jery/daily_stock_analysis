@@ -648,7 +648,10 @@ const MomentumScreenerPage: React.FC = () => {
   }, [copyFeedback]);
 
   return (
-    <div className="flex h-[calc(100vh-5rem)] flex-col overflow-hidden sm:h-[calc(100vh-5.5rem)] lg:h-[calc(100vh-2rem)]">
+    <div
+      data-testid="momentum-screener-page"
+      className="flex min-h-0 flex-col overflow-y-auto pb-6 pr-1"
+    >
       <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-lg font-semibold text-foreground">强势筛选</h1>
@@ -666,8 +669,8 @@ const MomentumScreenerPage: React.FC = () => {
 
       {error ? <ApiErrorAlert error={error} className="mb-4" onDismiss={() => setError(null)} /> : null}
 
-      <div className="grid gap-4 xl:grid-cols-[340px_minmax(0,1fr)]">
-        <Card className="rounded-3xl border-border/60 bg-card/55">
+      <div className="grid items-start gap-4 xl:grid-cols-[340px_minmax(0,1fr)]">
+        <Card className="rounded-3xl border-border/60 bg-card/55 xl:sticky xl:top-0">
           <div className="mb-4">
             <p className="text-sm font-semibold text-foreground">筛选参数</p>
             <p className="mt-1 text-xs text-secondary-text">本页会自动记住上次使用的参数和排序方式。</p>
