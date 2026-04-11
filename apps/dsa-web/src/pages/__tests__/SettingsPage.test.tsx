@@ -62,6 +62,114 @@ vi.mock('../../utils/constants', async () => {
     ...actual,
     WEB_BUILD_INFO: webBuildInfoMock,
   };
+  it('renders momentum screener default fields in system category', async () => {
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'system',
+      itemsByCategory: {
+        ...buildSystemConfigState().itemsByCategory,
+        system: [
+          {
+            key: 'MOMENTUM_SCREENER_DEFAULT_PROFILE',
+            value: 'standard',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'MOMENTUM_SCREENER_DEFAULT_PROFILE',
+              category: 'system',
+              dataType: 'string',
+              uiControl: 'select',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: ['standard', 'aggressive'],
+              validation: {},
+              displayOrder: 59,
+            },
+          },
+          {
+            key: 'MOMENTUM_SCREENER_DEFAULT_TOP_N',
+            value: '10',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'MOMENTUM_SCREENER_DEFAULT_TOP_N',
+              category: 'system',
+              dataType: 'integer',
+              uiControl: 'number',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 60,
+            },
+          },
+          {
+            key: 'MOMENTUM_SCREENER_DEFAULT_MIN_CHANGE_PCT',
+            value: '7',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'MOMENTUM_SCREENER_DEFAULT_MIN_CHANGE_PCT',
+              category: 'system',
+              dataType: 'number',
+              uiControl: 'number',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 61,
+            },
+          },
+          {
+            key: 'MOMENTUM_SCREENER_DEFAULT_MIN_AMOUNT_YI',
+            value: '3',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'MOMENTUM_SCREENER_DEFAULT_MIN_AMOUNT_YI',
+              category: 'system',
+              dataType: 'number',
+              uiControl: 'number',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 62,
+            },
+          },
+          {
+            key: 'MOMENTUM_SCREENER_DEFAULT_MIN_TURNOVER',
+            value: '3',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'MOMENTUM_SCREENER_DEFAULT_MIN_TURNOVER',
+              category: 'system',
+              dataType: 'number',
+              uiControl: 'number',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 63,
+            },
+          },
+        ],
+      },
+    }));
+
+    render(<SettingsPage />);
+
+    expect(await screen.findByText('MOMENTUM_SCREENER_DEFAULT_PROFILE')).toBeInTheDocument();
+    expect(screen.getByText('MOMENTUM_SCREENER_DEFAULT_TOP_N')).toBeInTheDocument();
+    expect(screen.getByText('MOMENTUM_SCREENER_DEFAULT_MIN_CHANGE_PCT')).toBeInTheDocument();
+    expect(screen.getByText('MOMENTUM_SCREENER_DEFAULT_MIN_AMOUNT_YI')).toBeInTheDocument();
+    expect(screen.getByText('MOMENTUM_SCREENER_DEFAULT_MIN_TURNOVER')).toBeInTheDocument();
+  });
 });
 
 vi.mock('../../components/settings', () => ({

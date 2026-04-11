@@ -7,13 +7,22 @@ import requests
 import json
 import uuid
 import logging
-from fake_useragent import UserAgent
+
+try:
+    from fake_useragent import UserAgent
+except ImportError:  # pragma: no cover - optional dependency fallback
+    UserAgent = None
 
 logger = logging.getLogger(__name__)
 
 original_request = requests.Session.request
 
-ua = UserAgent()
+_FALLBACK_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/131.0.0.0 Safari/537.36"
+)
+ua = UserAgent() if UserAgent is not None else None
 
 
 class AuthCache:
@@ -164,7 +173,7 @@ def eastmoney_patch():
         if not is_target:
             return original_request(self, method, url, **kwargs)
         # 获取一个随机的 User-Agent
-        user_agent = ua.random
+        user_agent = ua.random if ua is not None else _FALLBACK_USER_AGENT
         # 处理 Headers：确保不破坏业务代码传入的 headers
         headers = kwargs.get("headers", {})
         headers["User-Agent"] = user_agent

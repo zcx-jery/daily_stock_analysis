@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
-import { motion } from 'motion/react';
 import {
   BarChart3,
   BriefcaseBusiness,
   BookOpen,
+  Flame,
   Home,
   LogOut,
   MessageSquareQuote,
@@ -35,6 +35,7 @@ const LABELS = {
   home: '\u9996\u9875',
   chat: '\u95ee\u80a1',
   portfolio: '\u6301\u4ed3',
+  screener: '\u5f3a\u52bf\u7b5b\u9009',
   backtest: '\u56de\u6d4b',
   marketReview: '\u590d\u76d8',
   settings: '\u8bbe\u7f6e',
@@ -51,6 +52,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'home', label: LABELS.home, to: '/', icon: Home, exact: true },
   { key: 'chat', label: LABELS.chat, to: '/chat', icon: MessageSquareQuote, badge: 'completion' },
   { key: 'portfolio', label: LABELS.portfolio, to: '/portfolio', icon: BriefcaseBusiness },
+  { key: 'screener', label: LABELS.screener, to: '/screener', icon: Flame },
   { key: 'backtest', label: LABELS.backtest, to: '/backtest', icon: BarChart3 },
   { key: 'market-review', label: LABELS.marketReview, to: '/market-review', icon: BookOpen },
   { key: 'settings', label: LABELS.settings, to: '/settings', icon: Settings2 },
@@ -94,12 +96,8 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
             {({ isActive }) => (
               <>
                 {isActive ? (
-                  <motion.div
-                    layoutId="activeIndicator"
+                  <div
                     className="absolute top-0 bottom-0 left-0 w-[var(--nav-indicator-width)] bg-[var(--nav-indicator-bg)] shadow-[0_0_10px_var(--nav-indicator-shadow)]"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    transition={{ duration: 0.2 }}
                   />
                 ) : null}
                 <Icon

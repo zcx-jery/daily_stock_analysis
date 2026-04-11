@@ -1,7 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import Markdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import { cn } from '../utils/cn';
 import { agentApi } from '../api/agent';
 import { ApiErrorAlert, Badge, Button, ConfirmDialog, EmptyState, InlineAlert, ScrollArea, Tooltip } from '../components/common';
@@ -24,6 +22,8 @@ import {
 } from '../utils/chatFollowUp';
 import { isNearBottom } from '../utils/chatScroll';
 import { getReportText } from '../utils/reportLanguage';
+
+const MarkdownContent = React.lazy(() => import('../components/markdown/MarkdownContent'));
 
 // Quick question examples shown on empty state
 const QUICK_QUESTIONS = [
@@ -826,11 +826,18 @@ const ChatPage: React.FC = () => {
                             导出
                           </button>
                         </div>
-                        <div className="chat-prose pr-20 sm:pr-24">
-                          <Markdown remarkPlugins={[remarkGfm]}>
-                            {msg.content}
-                          </Markdown>
-                        </div>
+                        <React.Suspense
+                          fallback={
+                            <div className="chat-prose pr-20 text-sm text-secondary-text sm:pr-24">
+                              正在加载 Markdown 内容...
+                            </div>
+                          }
+                        >
+                          <MarkdownContent
+                            content={msg.content}
+                            className="chat-prose pr-20 sm:pr-24"
+                          />
+                        </React.Suspense>
                       </div>
                     ) : (
                       msg.content

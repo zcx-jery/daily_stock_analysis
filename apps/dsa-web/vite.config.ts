@@ -35,5 +35,47 @@ export default defineConfig({
     // 打包输出到项目根目录的 static 文件夹
     outDir: path.resolve(__dirname, '../../static'),
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) {
+            return undefined
+          }
+
+          if (
+            id.includes('/react/') ||
+            id.includes('/react-dom/') ||
+            id.includes('/react-router-dom/')
+          ) {
+            return 'framework'
+          }
+
+          if (
+            id.includes('/lucide-react/') ||
+            id.includes('/@remixicon/react/')
+          ) {
+            return 'icons'
+          }
+
+          if (id.includes('/motion/')) {
+            return 'motion'
+          }
+
+          if (
+            id.includes('/react-markdown/') ||
+            id.includes('/remark-gfm/') ||
+            id.includes('/remove-markdown/')
+          ) {
+            return 'markdown'
+          }
+
+          if (id.includes('/next-themes/')) {
+            return 'theme'
+          }
+
+          return undefined
+        },
+      },
+    },
   },
 })
