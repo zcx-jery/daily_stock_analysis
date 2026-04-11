@@ -14,12 +14,15 @@
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 
+from api.deps import get_momentum_screener_service
 from api.v1.schemas.stocks import (
     ExtractFromImageResponse,
     ExtractItem,
     KLineData,
+    MomentumScreenerRequest,
+    MomentumScreenerResponse,
     StockHistoryResponse,
     StockQuote,
 )
@@ -35,6 +38,7 @@ from src.services.import_parser import (
     parse_import_from_text,
 )
 from src.services.stock_service import StockService
+from src.services.momentum_screener_service import MomentumScreenerService
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +46,55 @@ router = APIRouter()
 
 # 须在 /{stock_code} 路由之前定义
 ALLOWED_MIME_STR = ", ".join(ALLOWED_MIME)
+
+
+@router.post(
+    "/screener/momentum",
+    response_model=MomentumScreenerResponse,
+    responses={
+        200: {"description": "筛选结果"},
+        400: {"description": "参数错误", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="次日强势股筛选",
+    description="基于收盘后 Tushare 数据，对今日强势股进行多维评分并输出明日候选，支持 standard 和 aggressive 两种 profile。",
+)
+def screen_momentum_stocks(
+    payload: MomentumScreenerRequest,
+    service: MomentumScreenerService = Depends(get_momentum_screener_service),
+) -> MomentumScreenerResponse:
+    """执行次日强势股筛选，支持 standard 和 aggressive 两种评分画像。"""
+    try:
+        result = service.screen(
+            top_n=payload.top_n,
+            min_change_pct=payload.min_change_pct,
+            min_amount=payload.min_amount,
+            min_turnover=payload.min_turnover,
+            exclude_st=payload.exclude_st,
+            main_board_only=payload.main_board_only,
+            trade_date=payload.trade_date,
+            profile=payload.profile,
+        )
+        logger.info(
+            "Momentum screener completed: profile=%s trade_date=%s candidates=%s returned=%s sector_cache=%s",
+            payload.profile,
+            result.get("trade_date"),
+            result.get("candidate_count"),
+            len(result.get("results", [])),
+            MomentumScreenerService.get_sector_cache_stats(),
+        )
+        return MomentumScreenerResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "bad_request", "message": str(e)},
+        )
+    except Exception as e:
+        logger.error(f"次日强势股筛选失败: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"筛选失败: {str(e)}"},
+        )
 
 
 @router.post(

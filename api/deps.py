@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from src.storage import DatabaseManager
 from src.config import get_config, Config
+from src.services.momentum_screener_service import MomentumScreenerService
 from src.services.system_config_service import SystemConfigService
 
 
@@ -68,4 +69,13 @@ def get_system_config_service(request: Request) -> SystemConfigService:
     if service is None:
         service = SystemConfigService()
         request.app.state.system_config_service = service
+    return service
+
+
+def get_momentum_screener_service(request: Request) -> MomentumScreenerService:
+    """Get app-lifecycle shared MomentumScreenerService instance."""
+    service = getattr(request.app.state, "momentum_screener_service", None)
+    if service is None:
+        service = MomentumScreenerService()
+        request.app.state.momentum_screener_service = service
     return service

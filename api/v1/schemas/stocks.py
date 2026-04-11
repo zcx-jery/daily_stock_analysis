@@ -9,7 +9,7 @@
 2. 定义历史 K 线数据模型
 """
 
-from typing import Optional, List
+from typing import Optional, List, Dict, Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -109,3 +109,56 @@ class StockHistoryResponse(BaseModel):
                 "data": []
             }
         }
+
+
+class MomentumScreenerRequest(BaseModel):
+    """次日强势股筛选请求。"""
+
+    top_n: int = Field(10, ge=1, le=100, description="返回前几只股票")
+    min_change_pct: float = Field(7.0, ge=0, le=20, description="今日涨幅阈值")
+    min_amount: float = Field(3e8, ge=0, description="最低成交额（元）")
+    min_turnover: float = Field(3.0, ge=0, le=100, description="最低换手率")
+    exclude_st: bool = Field(True, description="是否排除 ST")
+    main_board_only: bool = Field(True, description="是否仅保留主板")
+    trade_date: Optional[str] = Field(None, description="交易日，格式 YYYY-MM-DD 或 YYYYMMDD")
+    profile: Literal["standard", "aggressive"] = Field("standard", description="评分画像")
+
+
+class MomentumScoreBreakdown(BaseModel):
+    """单个维度评分拆解。"""
+
+    score: float = Field(..., description="维度得分")
+    max_score: float = Field(..., description="维度满分")
+    items: Dict[str, Any] = Field(default_factory=dict, description="子项得分")
+
+
+class MomentumScreenerResult(BaseModel):
+    """单只股票筛选结果。"""
+
+    rank: int = Field(..., description="当前排名")
+    ts_code: str = Field(..., description="股票代码")
+    name: str = Field(..., description="股票名称")
+    pct_chg: float = Field(..., description="今日涨幅")
+    continuation_score: float = Field(..., description="次日延续概率分")
+    extension_score: float = Field(..., description="上涨弹性分")
+    risk_score: float = Field(..., description="风险分")
+    buyability_score: Optional[float] = Field(None, description="可买性分，仅 aggressive 使用")
+    opportunity_tag: Optional[str] = Field(None, description="交易机会标签，仅 aggressive 使用")
+    entry_range_low: Optional[float] = Field(None, description="建议低位买入区间，仅 aggressive 使用")
+    entry_range_high: Optional[float] = Field(None, description="建议高位买入区间，仅 aggressive 使用")
+    final_score: float = Field(..., description="最终总分")
+    rank_score: float = Field(..., description="排序分")
+    themes: List[str] = Field(default_factory=list, description="所属板块")
+    leader_level: str = Field(..., description="板块地位")
+    top_reasons: List[str] = Field(default_factory=list, description="主要加分原因")
+    risk_tags: List[str] = Field(default_factory=list, description="风险标签")
+    score_breakdown: Dict[str, MomentumScoreBreakdown] = Field(default_factory=dict, description="维度拆解")
+
+
+class MomentumScreenerResponse(BaseModel):
+    """次日强势股筛选响应。"""
+
+    profile: Literal["standard", "aggressive"] = Field(..., description="评分画像")
+    trade_date: str = Field(..., description="交易日")
+    candidate_count: int = Field(..., description="候选池数量")
+    results: List[MomentumScreenerResult] = Field(default_factory=list, description="筛选结果")

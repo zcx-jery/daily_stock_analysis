@@ -31,6 +31,7 @@ from api.v1 import api_v1_router
 from api.middlewares.auth import add_auth_middleware
 from api.middlewares.error_handler import add_error_handlers
 from api.v1.schemas.common import HealthResponse
+from src.services.momentum_screener_service import MomentumScreenerService
 from src.services.system_config_service import SystemConfigService
 
 
@@ -41,6 +42,8 @@ async def app_lifespan(app: FastAPI):
     try:
         yield
     finally:
+        if hasattr(app.state, "momentum_screener_service"):
+            delattr(app.state, "momentum_screener_service")
         if hasattr(app.state, "system_config_service"):
             delattr(app.state, "system_config_service")
 
@@ -169,7 +172,10 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
         """健康检查接口"""
         return HealthResponse(
             status="ok",
-            timestamp=datetime.now().isoformat()
+            timestamp=datetime.now().isoformat(),
+            diagnostics={
+                "momentum_sector_cache": MomentumScreenerService.get_sector_cache_stats(),
+            },
         )
     
     # ============================================================

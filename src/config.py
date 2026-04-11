@@ -687,6 +687,14 @@ class Config:
     realtime_source_priority: str = "tencent,akshare_sina,efinance,akshare_em"
     # 实时行情缓存时间（秒）
     realtime_cache_ttl: int = 600
+    # Momentum Screener 申万行业缓存 TTL（秒）
+    momentum_sector_cache_ttl_seconds: int = 21600
+    # Momentum Screener 默认表单配置
+    momentum_screener_default_profile: str = "standard"
+    momentum_screener_default_top_n: int = 10
+    momentum_screener_default_min_change_pct: float = 7.0
+    momentum_screener_default_min_amount_yi: float = 3.0
+    momentum_screener_default_min_turnover: float = 3.0
     # 熔断器冷却时间（秒）
     circuit_breaker_cooldown: int = 300
 
@@ -1368,6 +1376,42 @@ class Config:
             # - tushare: Tushare Pro，需要2000积分，数据全面
             realtime_source_priority=cls._resolve_realtime_source_priority(),
             realtime_cache_ttl=parse_env_int(os.getenv('REALTIME_CACHE_TTL'), 600, field_name='REALTIME_CACHE_TTL', minimum=0),
+            momentum_sector_cache_ttl_seconds=parse_env_int(
+                os.getenv('MOMENTUM_SECTOR_CACHE_TTL_SECONDS'),
+                21600,
+                field_name='MOMENTUM_SECTOR_CACHE_TTL_SECONDS',
+                minimum=0,
+            ),
+            momentum_screener_default_profile=(
+                os.getenv('MOMENTUM_SCREENER_DEFAULT_PROFILE', 'standard').strip().lower() or 'standard'
+            ),
+            momentum_screener_default_top_n=parse_env_int(
+                os.getenv('MOMENTUM_SCREENER_DEFAULT_TOP_N'),
+                10,
+                field_name='MOMENTUM_SCREENER_DEFAULT_TOP_N',
+                minimum=1,
+                maximum=100,
+            ),
+            momentum_screener_default_min_change_pct=parse_env_float(
+                os.getenv('MOMENTUM_SCREENER_DEFAULT_MIN_CHANGE_PCT'),
+                7.0,
+                field_name='MOMENTUM_SCREENER_DEFAULT_MIN_CHANGE_PCT',
+                minimum=0.0,
+                maximum=20.0,
+            ),
+            momentum_screener_default_min_amount_yi=parse_env_float(
+                os.getenv('MOMENTUM_SCREENER_DEFAULT_MIN_AMOUNT_YI'),
+                3.0,
+                field_name='MOMENTUM_SCREENER_DEFAULT_MIN_AMOUNT_YI',
+                minimum=0.0,
+            ),
+            momentum_screener_default_min_turnover=parse_env_float(
+                os.getenv('MOMENTUM_SCREENER_DEFAULT_MIN_TURNOVER'),
+                3.0,
+                field_name='MOMENTUM_SCREENER_DEFAULT_MIN_TURNOVER',
+                minimum=0.0,
+                maximum=100.0,
+            ),
             circuit_breaker_cooldown=parse_env_int(os.getenv('CIRCUIT_BREAKER_COOLDOWN'), 300, field_name='CIRCUIT_BREAKER_COOLDOWN', minimum=0),
             enable_fundamental_pipeline=os.getenv('ENABLE_FUNDAMENTAL_PIPELINE', 'true').lower() == 'true',
             fundamental_stage_timeout_seconds=parse_env_float(
