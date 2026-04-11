@@ -318,6 +318,16 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
         stats = MomentumScreenerService.get_sector_cache_stats()
         self.assertEqual(stats["ttl_seconds"], 900)
 
+    def test_screen_falls_back_when_sector_context_load_fails(self) -> None:
+        service = MomentumScreenerService(fetcher=_FakeFetcher())
+
+        with patch.object(service, "_load_sector_context", side_effect=RuntimeError("sector timeout")):
+            result = service.screen(top_n=2, profile="standard")
+
+        self.assertEqual(result["candidate_count"], 2)
+        self.assertEqual(result["results"][0]["ts_code"], "600001.SH")
+        self.assertEqual(result["results"][0]["themes"][0], "旧行业A")
+
 
 if __name__ == "__main__":
     unittest.main()

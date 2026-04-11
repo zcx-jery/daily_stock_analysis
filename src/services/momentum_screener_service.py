@@ -168,10 +168,14 @@ class MomentumScreenerService:
         if "circ_mv" in daily_basic.columns:
             daily_basic["circ_mv"] = pd.to_numeric(daily_basic["circ_mv"], errors="coerce") * 10000
 
-        sector_context = self._load_sector_context(
-            trade_date=trade_date,
-            ts_codes=basic["ts_code"].tolist() if "ts_code" in basic.columns else [],
-        )
+        try:
+            sector_context = self._load_sector_context(
+                trade_date=trade_date,
+                ts_codes=basic["ts_code"].tolist() if "ts_code" in basic.columns else [],
+            )
+        except Exception:
+            logger.exception("Momentum sector context load failed for trade_date=%s; fallback to stock_basic.industry", trade_date)
+            sector_context = {"mapping": {}, "sector_pct_map": {}}
 
         return {
             "basic": basic,
