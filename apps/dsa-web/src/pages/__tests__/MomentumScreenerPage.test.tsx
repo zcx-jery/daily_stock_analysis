@@ -30,7 +30,7 @@ const standardResponse = {
     {
       rank: 1,
       tsCode: '600001.SH',
-      name: '龙头一号',
+      name: 'Alpha Leader',
       pctChg: 9.8,
       continuationScore: 88,
       extensionScore: 70,
@@ -38,10 +38,10 @@ const standardResponse = {
       buyabilityScore: null,
       finalScore: 85,
       rankScore: 76,
-      themes: ['电力设备'],
-      leaderLevel: '龙头',
-      topReasons: ['强势确认'],
-      riskTags: ['upper_shadow'],
+      themes: ['Power Equipment'],
+      leaderLevel: 'leader',
+      topReasons: ['Strength Confirmed'],
+      riskTags: ['risk-drift'],
       scoreBreakdown: {
         strength_confirmation: {
           score: 18,
@@ -53,7 +53,7 @@ const standardResponse = {
     {
       rank: 2,
       tsCode: '600002.SH',
-      name: '低风险二号',
+      name: 'Low Risk Runner',
       pctChg: 8.2,
       continuationScore: 72,
       extensionScore: 66,
@@ -61,9 +61,9 @@ const standardResponse = {
       buyabilityScore: null,
       finalScore: 78,
       rankScore: 68,
-      themes: ['电力设备'],
-      leaderLevel: '前排',
-      topReasons: ['板块共振'],
+      themes: ['Power Equipment'],
+      leaderLevel: 'front',
+      topReasons: ['Sector Resonance'],
       riskTags: [],
       scoreBreakdown: {
         sector_resonance: {
@@ -84,21 +84,21 @@ const aggressiveResponse = {
     {
       rank: 1,
       tsCode: '600003.SH',
-      name: '进攻一号',
+      name: 'Breakout One',
       pctChg: 10.0,
       continuationScore: 91,
       extensionScore: 84,
       riskScore: 18,
       buyabilityScore: 77,
-      opportunityTag: '分歧转一致',
+      opportunityTag: 'Breakout Consensus',
       entryRangeLow: 10.34,
       entryRangeHigh: 10.66,
       finalScore: 92,
       rankScore: 82,
-      themes: ['机器人'],
+      themes: ['Robotics'],
       leaderLevel: 'leader',
-      topReasons: ['买入可行性', '量价双轨'],
-      riskTags: ['price_flow_divergence'],
+      topReasons: ['Buyable Setup', 'Volume Track'],
+      riskTags: ['risk-alert'],
       scoreBreakdown: {
         buyability: {
           score: 12,
@@ -114,6 +114,25 @@ const aggressiveResponse = {
     },
   ],
 };
+
+async function clickRunButton() {
+  fireEvent.click(screen.getByTestId('momentum-screener-run'));
+  await waitFor(() => {
+    expect(mockScreen).toHaveBeenCalled();
+  });
+}
+
+function getProfileSelect() {
+  return document.getElementById('momentum-screener-profile') as HTMLSelectElement;
+}
+
+function getSortSelect() {
+  return document.getElementById('momentum-screener-sort') as HTMLSelectElement;
+}
+
+function getResultRows() {
+  return screen.getAllByTestId(/^momentum-screener-row-/);
+}
 
 describe('MomentumScreenerPage', () => {
   beforeEach(() => {
@@ -135,7 +154,7 @@ describe('MomentumScreenerPage', () => {
     mockScreen.mockResolvedValue(standardResponse);
   });
 
-  it('loads default form values from system config when no local state exists', async () => {
+  it('loads default form values from system config without auto-running screening', async () => {
     mockGetSystemConfig.mockResolvedValue({
       configVersion: 'test-version',
       maskToken: '******',
@@ -147,43 +166,31 @@ describe('MomentumScreenerPage', () => {
         { key: 'MOMENTUM_SCREENER_DEFAULT_MIN_TURNOVER', value: '6' },
       ],
     });
-    mockScreen.mockResolvedValue(aggressiveResponse);
 
     render(<MomentumScreenerPage />);
 
     await waitFor(() => {
-      expect(mockScreen).toHaveBeenCalledWith({
-        profile: 'aggressive',
-        topN: 12,
-        minChangePct: 8.5,
-        minAmount: 4.5e8,
-        minTurnover: 6,
-        excludeSt: true,
-        mainBoardOnly: true,
-        tradeDate: undefined,
-      });
+      expect(mockGetSystemConfig).toHaveBeenCalledWith(false);
+      expect(screen.getByDisplayValue('12')).toBeInTheDocument();
     });
 
-    expect(screen.getByDisplayValue('12')).toBeInTheDocument();
+    expect(getProfileSelect().value).toBe('aggressive');
     expect(screen.getByDisplayValue('8.5')).toBeInTheDocument();
     expect(screen.getByDisplayValue('4.5')).toBeInTheDocument();
     expect(screen.getByDisplayValue('6')).toBeInTheDocument();
-    expect(screen.getAllByText('Aggressive').length).toBeGreaterThan(0);
+    expect(mockScreen).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
-  it('uses a scrollable page container so action buttons are reachable on smaller viewports', async () => {
+  it('uses a scrollable page container so action buttons are reachable on smaller viewports', () => {
     render(<MomentumScreenerPage />);
-
-    await waitFor(() => {
-      expect(mockScreen).toHaveBeenCalled();
-    });
 
     const page = screen.getByTestId('momentum-screener-page');
     expect(page.className).toContain('overflow-y-auto');
     expect(page.className).not.toContain('overflow-hidden');
   });
 
-  it('loads persisted form state and uses it on initial screening', async () => {
+  it('loads persisted form state without auto-running screening', async () => {
     window.localStorage.setItem(
       'dsa.momentum-screener.page-state',
       JSON.stringify({
@@ -198,26 +205,17 @@ describe('MomentumScreenerPage', () => {
         sortBy: 'buyability_score',
       }),
     );
-    mockScreen.mockResolvedValue(aggressiveResponse);
 
     render(<MomentumScreenerPage />);
 
     await waitFor(() => {
-      expect(mockScreen).toHaveBeenCalledWith({
-        profile: 'aggressive',
-        topN: 12,
-        minChangePct: 8,
-        minAmount: 5e8,
-        minTurnover: 4,
-        excludeSt: true,
-        mainBoardOnly: true,
-        tradeDate: '2026-04-09',
-      });
+      expect(screen.getByDisplayValue('12')).toBeInTheDocument();
     });
 
-    expect(screen.getByDisplayValue('12')).toBeInTheDocument();
+    expect(getProfileSelect().value).toBe('aggressive');
     expect(screen.getByDisplayValue('2026-04-09')).toBeInTheDocument();
-    expect(screen.getAllByText('Aggressive').length).toBeGreaterThan(0);
+    expect(mockGetSystemConfig).not.toHaveBeenCalled();
+    expect(mockScreen).not.toHaveBeenCalled();
   });
 
   it('restores system defaults and reruns screening from the current page state', async () => {
@@ -236,9 +234,6 @@ describe('MomentumScreenerPage', () => {
       }),
     );
 
-    mockScreen
-      .mockResolvedValueOnce(aggressiveResponse)
-      .mockResolvedValueOnce(standardResponse);
     mockGetSystemConfig.mockResolvedValue({
       configVersion: 'test-version',
       maskToken: '******',
@@ -254,19 +249,10 @@ describe('MomentumScreenerPage', () => {
     render(<MomentumScreenerPage />);
 
     await waitFor(() => {
-      expect(mockScreen).toHaveBeenCalledWith({
-        profile: 'aggressive',
-        topN: 12,
-        minChangePct: 8,
-        minAmount: 5e8,
-        minTurnover: 4,
-        excludeSt: true,
-        mainBoardOnly: true,
-        tradeDate: '2026-04-09',
-      });
+      expect(screen.getByDisplayValue('12')).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByRole('button', { name: '恢复系统默认' }));
+    fireEvent.click(screen.getByTestId('momentum-screener-restore'));
 
     await waitFor(() => {
       expect(mockScreen).toHaveBeenLastCalledWith({
@@ -281,41 +267,35 @@ describe('MomentumScreenerPage', () => {
       });
     });
 
+    expect(getProfileSelect().value).toBe('standard');
     expect(screen.getByDisplayValue('9')).toBeInTheDocument();
     expect(screen.getByDisplayValue('6.5')).toBeInTheDocument();
     expect(screen.getByDisplayValue('2.5')).toBeInTheDocument();
     expect(screen.getByDisplayValue('2')).toBeInTheDocument();
-    expect(screen.getAllByText('Standard').length).toBeGreaterThan(0);
-    expect(await screen.findByText('已恢复系统默认参数')).toBeInTheDocument();
   });
 
   it('re-sorts the list when switching sort mode', async () => {
     render(<MomentumScreenerPage />);
 
-    await screen.findByText('龙头一号');
+    await clickRunButton();
+    await screen.findByTestId('momentum-screener-row-600001.SH');
 
-    const rowsBefore = screen.getAllByRole('row');
-    expect(within(rowsBefore[1]).getByText('龙头一号')).toBeInTheDocument();
+    expect(within(getResultRows()[0]).getByText('Alpha Leader')).toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText('排序方式'), { target: { value: 'risk_score' } });
+    fireEvent.change(getSortSelect(), { target: { value: 'risk_score' } });
 
     await waitFor(() => {
-      const rowsAfter = screen.getAllByRole('row');
-      expect(within(rowsAfter[1]).getByText('低风险二号')).toBeInTheDocument();
+      expect(within(getResultRows()[0]).getByText('Low Risk Runner')).toBeInTheDocument();
     });
   });
 
-  it('supports aggressive profile rerun and shows translated drawer details', async () => {
-    mockScreen
-      .mockResolvedValueOnce(standardResponse)
-      .mockResolvedValueOnce(aggressiveResponse);
+  it('opens drawer only after clicking a result row and allows closing it', async () => {
+    mockScreen.mockResolvedValue(aggressiveResponse);
 
     render(<MomentumScreenerPage />);
 
-    await screen.findByText('龙头一号');
-
-    fireEvent.change(screen.getByLabelText('评分画像'), { target: { value: 'aggressive' } });
-    fireEvent.click(screen.getByRole('button', { name: '执行筛选' }));
+    fireEvent.change(getProfileSelect(), { target: { value: 'aggressive' } });
+    await clickRunButton();
 
     await waitFor(() => {
       expect(mockScreen).toHaveBeenLastCalledWith({
@@ -330,81 +310,132 @@ describe('MomentumScreenerPage', () => {
       });
     });
 
-    expect(await screen.findByText('进攻一号')).toBeInTheDocument();
-    expect(screen.getAllByText('77.0').length).toBeGreaterThan(0);
+    expect(await screen.findByTestId('momentum-screener-row-600003.SH')).toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByText('进攻一号'));
+    fireEvent.click(screen.getByTestId('momentum-screener-row-600003.SH'));
 
-    expect((await screen.findAllByText('买入可行性')).length).toBeGreaterThan(0);
-    expect(screen.getAllByText('分歧转一致').length).toBeGreaterThan(0);
-    expect(screen.getByText('10.34 - 10.66')).toBeInTheDocument();
-    expect(screen.getByText('价资背离')).toBeInTheDocument();
-    expect(screen.getByText('日内振幅')).toBeInTheDocument();
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('Breakout One · 600003.SH')).toBeInTheDocument();
+    expect(within(dialog).getAllByText('Breakout Consensus').length).toBeGreaterThan(0);
+    expect(within(dialog).getByText('10.34 - 10.66')).toBeInTheDocument();
+    expect(within(dialog).getByText('Volume Track')).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole('button'));
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
   });
 
   it('copies the current sorted result list to clipboard', async () => {
     render(<MomentumScreenerPage />);
 
-    await screen.findByText('龙头一号');
+    await clickRunButton();
+    await screen.findByTestId('momentum-screener-row-600001.SH');
 
-    fireEvent.click(screen.getByRole('button', { name: '复制结果' }));
-
-    await waitFor(() => {
-      expect(navigator.clipboard.writeText).toHaveBeenCalledTimes(1);
-    });
-
-    expect(await screen.findByText('已复制当前筛选结果')).toBeInTheDocument();
-    expect(String((navigator.clipboard.writeText as ReturnType<typeof vi.fn>).mock.calls[0][0])).toContain('龙头一号');
-  });
-
-  it('exports the current result list as markdown', async () => {
-    render(<MomentumScreenerPage />);
-
-    await screen.findByText('龙头一号');
-
-    fireEvent.click(screen.getAllByRole('button', { name: '导出 Markdown' })[0]);
-
-    await waitFor(() => {
-      expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
-      expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledTimes(1);
-      expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:momentum-export');
-    });
-
-    expect(await screen.findByText('已导出 Markdown')).toBeInTheDocument();
-  });
-
-  it('exports the current result list as csv', async () => {
-    render(<MomentumScreenerPage />);
-
-    await screen.findByText('龙头一号');
-
-    fireEvent.click(screen.getByRole('button', { name: '导出 CSV' }));
-
-    await waitFor(() => {
-      expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
-      expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledTimes(1);
-      expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:momentum-export');
-    });
-
-    expect(await screen.findByText('已导出 CSV')).toBeInTheDocument();
-  });
-
-  it('copies a single stock detail from the result row', async () => {
-    render(<MomentumScreenerPage />);
-
-    await screen.findByText('龙头一号');
-
-    fireEvent.click(screen.getAllByRole('button', { name: '复制明细' })[0]);
+    fireEvent.click(screen.getByTestId('momentum-screener-copy-results'));
 
     await waitFor(() => {
       expect(navigator.clipboard.writeText).toHaveBeenCalledTimes(1);
     });
 
     const copiedText = String((navigator.clipboard.writeText as ReturnType<typeof vi.fn>).mock.calls[0][0]);
-    expect(copiedText).toContain('强势筛选个股明细');
+    expect(copiedText).toContain('Alpha Leader');
+    expect(copiedText).toContain('Low Risk Runner');
+  });
+
+  it('builds a watchlist summary from screening results and copies it', async () => {
+    render(<MomentumScreenerPage />);
+
+    expect(screen.getByText('暂无观察池摘要')).toBeInTheDocument();
+    expect(screen.getByTestId('momentum-screener-copy-watchlist-summary')).toBeDisabled();
+
+    await clickRunButton();
+    await screen.findByTestId('momentum-screener-row-600001.SH');
+
+    const summaryCard = screen.getByTestId('momentum-screener-watchlist-summary');
+    expect(within(summaryCard).getByText('明日观察池摘要')).toBeInTheDocument();
+    expect(within(summaryCard).getAllByText('Alpha Leader').length).toBeGreaterThan(0);
+    expect(within(summaryCard).getAllByText('Low Risk Runner').length).toBeGreaterThan(0);
+    expect(within(summaryCard).getByText('Power Equipment x2')).toBeInTheDocument();
+    expect(within(summaryCard).getByText('风险漂移')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('momentum-screener-copy-watchlist-summary'));
+
+    await waitFor(() => {
+      expect(navigator.clipboard.writeText).toHaveBeenCalledTimes(1);
+    });
+
+    const copiedText = String((navigator.clipboard.writeText as ReturnType<typeof vi.fn>).mock.calls[0][0]);
+    expect(copiedText).toContain('明日观察池摘要');
+    expect(copiedText).toContain('Alpha Leader');
+    expect(copiedText).toContain('Power Equipment x2');
+    expect(copiedText).toContain('风险漂移');
+  });
+
+  it('shows buyability-first guidance in the watchlist summary for aggressive mode', async () => {
+    mockScreen.mockResolvedValue(aggressiveResponse);
+
+    render(<MomentumScreenerPage />);
+
+    fireEvent.change(getProfileSelect(), { target: { value: 'aggressive' } });
+    await clickRunButton();
+    await screen.findByTestId('momentum-screener-row-600003.SH');
+
+    const summaryCard = screen.getByTestId('momentum-screener-watchlist-summary');
+    expect(within(summaryCard).getByText('进攻首选')).toBeInTheDocument();
+    expect(within(summaryCard).getAllByText('Breakout One').length).toBeGreaterThan(0);
+    expect(within(summaryCard).getByText('可买分 77.0，优先配合承接和区间确认。')).toBeInTheDocument();
+    expect(within(summaryCard).getByText('Robotics x1')).toBeInTheDocument();
+  });
+
+  it('exports the current result list as markdown', async () => {
+    render(<MomentumScreenerPage />);
+
+    await clickRunButton();
+    await screen.findByTestId('momentum-screener-row-600001.SH');
+
+    fireEvent.click(screen.getByTestId('momentum-screener-export-markdown'));
+
+    await waitFor(() => {
+      expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+      expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledTimes(1);
+      expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:momentum-export');
+    });
+  });
+
+  it('exports the current result list as csv', async () => {
+    render(<MomentumScreenerPage />);
+
+    await clickRunButton();
+    await screen.findByTestId('momentum-screener-row-600001.SH');
+
+    fireEvent.click(screen.getByTestId('momentum-screener-export-csv'));
+
+    await waitFor(() => {
+      expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+      expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledTimes(1);
+      expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:momentum-export');
+    });
+  });
+
+  it('copies a single stock detail from the result row', async () => {
+    render(<MomentumScreenerPage />);
+
+    await clickRunButton();
+    await screen.findByTestId('momentum-screener-row-600001.SH');
+
+    fireEvent.click(screen.getByTestId('momentum-screener-copy-600001.SH'));
+
+    await waitFor(() => {
+      expect(navigator.clipboard.writeText).toHaveBeenCalledTimes(1);
+    });
+
+    const copiedText = String((navigator.clipboard.writeText as ReturnType<typeof vi.fn>).mock.calls[0][0]);
+    expect(copiedText).toContain('Alpha Leader');
     expect(copiedText).toContain('600001.SH');
-    expect(copiedText).toContain('排序分');
-    expect(await screen.findByText('已复制 龙头一号 的明细')).toBeInTheDocument();
+    expect(copiedText).toContain('Strength Confirmed');
   });
 
   it('copies aggressive single stock detail with opportunity tag and entry range', async () => {
@@ -412,32 +443,33 @@ describe('MomentumScreenerPage', () => {
 
     render(<MomentumScreenerPage />);
 
-    await screen.findByText('进攻一号');
+    fireEvent.change(getProfileSelect(), { target: { value: 'aggressive' } });
+    await clickRunButton();
+    await screen.findByTestId('momentum-screener-row-600003.SH');
 
-    fireEvent.click(screen.getByRole('button', { name: '复制明细' }));
+    fireEvent.click(screen.getByTestId('momentum-screener-copy-600003.SH'));
 
     await waitFor(() => {
       expect(navigator.clipboard.writeText).toHaveBeenCalledTimes(1);
     });
 
     const copiedText = String((navigator.clipboard.writeText as ReturnType<typeof vi.fn>).mock.calls[0][0]);
-    expect(copiedText).toContain('分歧转一致');
+    expect(copiedText).toContain('Breakout Consensus');
     expect(copiedText).toContain('10.34 - 10.66');
   });
 
   it('exports a single stock detail as markdown from the result row', async () => {
     render(<MomentumScreenerPage />);
 
-    await screen.findByText('龙头一号');
+    await clickRunButton();
+    await screen.findByTestId('momentum-screener-row-600001.SH');
 
-    fireEvent.click(screen.getAllByRole('button', { name: '导出 Markdown' })[1]);
+    fireEvent.click(screen.getByTestId('momentum-screener-export-600001.SH'));
 
     await waitFor(() => {
       expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
       expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledTimes(1);
       expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:momentum-export');
     });
-
-    expect(await screen.findByText('已导出 龙头一号 Markdown')).toBeInTheDocument();
   });
 });

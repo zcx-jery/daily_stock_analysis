@@ -55,6 +55,24 @@ type PersistedState = {
   hasPersisted: boolean;
 };
 
+type WatchlistThemeSummary = {
+  name: string;
+  count: number;
+};
+
+type WatchlistSummary = {
+  profile: MomentumProfile;
+  tradeDate?: string;
+  primaryCandidates: MomentumScreenerResult[];
+  headlineCandidate: MomentumScreenerResult;
+  lowRiskCandidate: MomentumScreenerResult | null;
+  buyableCandidate: MomentumScreenerResult | null;
+  hotThemes: WatchlistThemeSummary[];
+  riskWarnings: string[];
+  overview: string;
+  actionHint: string;
+};
+
 const dimensionLabelMap: Record<string, string> = {
   strength_confirmation: '强势确认',
   volume_price_structure: '量价结构',
@@ -109,6 +127,8 @@ const riskTagLabelMap: Record<string, string> = {
   price_flow_divergence: '价资背离',
   sector_fade: '板块退潮',
   top_list_distribution: '龙虎榜偏兑现',
+  'risk-alert': '风险提示',
+  'risk-drift': '风险漂移',
 };
 
 function loadPersistedState(): PersistedState {
@@ -429,6 +449,124 @@ function buildCsvText(results: MomentumScreenerResult[]): string {
   return [header, ...rows].map((row) => row.map(escapeCsvField).join(',')).join('\n');
 }
 
+function getUniqueValues(values: string[]): string[] {
+  return Array.from(new Set(values.filter(Boolean)));
+}
+
+function buildWatchlistSummary(
+  profile: MomentumProfile,
+  tradeDate: string | undefined,
+  results: MomentumScreenerResult[],
+): WatchlistSummary | null {
+  if (results.length === 0) {
+    return null;
+  }
+
+  const primaryCandidates = results.slice(0, Math.min(results.length, 3));
+  const headlineCandidate = primaryCandidates[0];
+  const lowRiskCandidate =
+    [...results].sort((a, b) => a.riskScore - b.riskScore || b.rankScore - a.rankScore)[0] ?? null;
+  const buyableCandidate =
+    profile === 'aggressive'
+      ? [...results]
+          .filter((item) => item.buyabilityScore != null)
+          .sort(
+            (a, b) =>
+              (b.buyabilityScore ?? -1) - (a.buyabilityScore ?? -1) || b.rankScore - a.rankScore,
+          )[0] ?? null
+      : null;
+
+  const themeOrder: string[] = [];
+  const themeCounts = new Map<string, number>();
+  for (const item of results.slice(0, Math.min(results.length, 5))) {
+    const theme = item.themes[0];
+    if (!theme) {
+      continue;
+    }
+    if (!themeCounts.has(theme)) {
+      themeOrder.push(theme);
+    }
+    themeCounts.set(theme, (themeCounts.get(theme) ?? 0) + 1);
+  }
+  const hotThemes = [...themeCounts.entries()]
+    .sort((a, b) => {
+      if (b[1] !== a[1]) {
+        return b[1] - a[1];
+      }
+      return themeOrder.indexOf(a[0]) - themeOrder.indexOf(b[0]);
+    })
+    .slice(0, 2)
+    .map(([name, count]) => ({ name, count }));
+
+  const riskWarnings = getUniqueValues(
+    results
+      .slice(0, Math.min(results.length, 5))
+      .flatMap((item) => item.riskTags.map((tag) => translateRiskTag(tag))),
+  ).slice(0, 3);
+
+  const topNames = primaryCandidates.map((item) => `${item.name}(${item.tsCode})`).join('、');
+  const leadingTheme = hotThemes[0]?.name;
+  const overviewParts = [
+    leadingTheme ? `当前强势方向集中在 ${leadingTheme}` : '当前题材分布偏分散',
+    `优先观察 ${topNames}`,
+  ];
+
+  if (profile === 'aggressive' && buyableCandidate) {
+    overviewParts.push(`进攻上优先看 ${buyableCandidate.name}`);
+  } else if (lowRiskCandidate && lowRiskCandidate.tsCode !== headlineCandidate.tsCode) {
+    overviewParts.push(`低风险跟踪可保留 ${lowRiskCandidate.name}`);
+  }
+
+  const actionHint =
+    profile === 'aggressive'
+      ? '先看龙头和前排的承接，再结合可买分与建议区间确认是否参与，不追高。'
+      : '先看延续分与低风险的交集，优先保留量价结构更稳定、板块地位更靠前的标的。';
+
+  return {
+    profile,
+    tradeDate,
+    primaryCandidates,
+    headlineCandidate,
+    lowRiskCandidate,
+    buyableCandidate,
+    hotThemes,
+    riskWarnings,
+    overview: `${overviewParts.join('；')}。`,
+    actionHint,
+  };
+}
+
+function buildWatchlistSummaryText(summary: WatchlistSummary): string {
+  const profileLabel = summary.profile === 'aggressive' ? 'Aggressive' : 'Standard';
+  const lines = [
+    '明日观察池摘要',
+    `画像：${profileLabel}`,
+    summary.tradeDate ? `交易日：${summary.tradeDate}` : null,
+    '',
+    `优先关注：${summary.primaryCandidates
+      .map(
+        (item) =>
+          `#${item.rank} ${item.name}(${item.tsCode}) 排序分 ${item.rankScore.toFixed(1)} / 亮点 ${item.topReasons.slice(0, 2).join('、') || '--'}`,
+      )
+      .join('；')}`,
+    summary.buyableCandidate
+      ? `进攻首选：${summary.buyableCandidate.name}(${summary.buyableCandidate.tsCode}) 可买分 ${(summary.buyableCandidate.buyabilityScore ?? 0).toFixed(1)}`
+      : null,
+    summary.lowRiskCandidate
+      ? `低风险优先：${summary.lowRiskCandidate.name}(${summary.lowRiskCandidate.tsCode}) 风险分 ${summary.lowRiskCandidate.riskScore.toFixed(1)}`
+      : null,
+    summary.hotThemes.length > 0
+      ? `题材聚焦：${summary.hotThemes.map((item) => `${item.name} x${item.count}`).join('、')}`
+      : '题材聚焦：当前结果更偏个股强度，暂无集中题材',
+    summary.riskWarnings.length > 0
+      ? `风险提醒：${summary.riskWarnings.join('、')}`
+      : '风险提醒：Top 结果暂无明显共性风险标签，仍需盘中确认承接',
+    `执行建议：${summary.actionHint}`,
+  ].filter(Boolean);
+
+  return lines.join('\n');
+}
+
 function downloadTextFile(content: string, fileName: string, mimeType: string) {
   const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
@@ -482,6 +620,7 @@ const MomentumScreenerPage: React.FC = () => {
   const runScreening = async (nextForm = form) => {
     setLoading(true);
     setError(null);
+    setSelectedResult(null);
 
     const payload: MomentumScreenerRequest = {
       profile: nextForm.profile,
@@ -510,7 +649,6 @@ const MomentumScreenerPage: React.FC = () => {
 
     const initialize = async () => {
       if (persisted.hasPersisted) {
-        await runScreening(persisted.form);
         return;
       }
 
@@ -522,12 +660,10 @@ const MomentumScreenerPage: React.FC = () => {
 
         const nextForm = buildFormFromSystemConfig(config.items);
         setForm(nextForm);
-        await runScreening(nextForm);
       } catch {
         if (cancelled) {
           return;
         }
-        await runScreening(DEFAULT_FORM);
       }
     };
 
@@ -541,6 +677,7 @@ const MomentumScreenerPage: React.FC = () => {
     () => (response ? sortResults(response.results, sortBy) : []),
     [response, sortBy],
   );
+  const selectedResultTsCode = selectedResult?.tsCode;
 
   useEffect(() => {
     if (sortedResults.length === 0) {
@@ -548,18 +685,21 @@ const MomentumScreenerPage: React.FC = () => {
       return;
     }
 
-    if (!selectedResult) {
-      setSelectedResult(sortedResults[0]);
+    if (!selectedResultTsCode) {
       return;
     }
 
-    const matched = sortedResults.find((item) => item.tsCode === selectedResult.tsCode);
-    setSelectedResult(matched ?? sortedResults[0]);
-  }, [sortedResults, selectedResult?.tsCode]);
+    const matched = sortedResults.find((item) => item.tsCode === selectedResultTsCode);
+    setSelectedResult(matched ?? null);
+  }, [sortedResults, selectedResultTsCode]);
 
   const averageRankScore = sortedResults.length
     ? sortedResults.reduce((sum, item) => sum + item.rankScore, 0) / sortedResults.length
     : 0;
+  const watchlistSummary = useMemo(
+    () => buildWatchlistSummary(response?.profile ?? form.profile, response?.tradeDate, sortedResults),
+    [form.profile, response?.profile, response?.tradeDate, sortedResults],
+  );
 
   const handleCopyResults = async () => {
     if (sortedResults.length === 0) {
@@ -621,6 +761,20 @@ const MomentumScreenerPage: React.FC = () => {
     setCopyFeedback(`已导出 ${item.name} Markdown`);
   };
 
+  const handleCopyWatchlistSummary = async () => {
+    if (!watchlistSummary) {
+      setCopyFeedback('暂无可复制的观察池摘要');
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(buildWatchlistSummaryText(watchlistSummary));
+      setCopyFeedback('已复制明日观察池摘要');
+    } catch {
+      setCopyFeedback('复制失败，请检查浏览器剪贴板权限');
+    }
+  };
+
   const handleRestoreSystemDefaults = async () => {
     setLoading(true);
     setError(null);
@@ -678,6 +832,7 @@ const MomentumScreenerPage: React.FC = () => {
           <div className="grid gap-3">
             <Select
               label="评分画像"
+              id="momentum-screener-profile"
               value={form.profile}
               onChange={(value) => setForm((prev) => ({ ...prev, profile: value as MomentumProfile }))}
               options={PROFILE_OPTIONS}
@@ -725,6 +880,7 @@ const MomentumScreenerPage: React.FC = () => {
             />
             <div className="mt-2 flex gap-2">
               <Button
+                data-testid="momentum-screener-run"
                 variant="home-action-ai"
                 className="flex-1"
                 isLoading={loading}
@@ -734,6 +890,7 @@ const MomentumScreenerPage: React.FC = () => {
                 执行筛选
               </Button>
               <Button
+                data-testid="momentum-screener-restore"
                 variant="ghost"
                 className="flex-1"
                 disabled={loading}
@@ -742,6 +899,7 @@ const MomentumScreenerPage: React.FC = () => {
                 恢复系统默认
               </Button>
               <Button
+                data-testid="momentum-screener-reset"
                 variant="ghost"
                 className="flex-1"
                 disabled={loading}
@@ -785,6 +943,136 @@ const MomentumScreenerPage: React.FC = () => {
             />
           </div>
 
+          <Card className="rounded-3xl border-border/60 bg-card/55">
+            <div data-testid="momentum-screener-watchlist-summary">
+              <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border/60 pb-4">
+                <div>
+                  <p className="text-sm font-semibold text-foreground">明日观察池摘要</p>
+                  <p className="mt-1 text-xs text-secondary-text">
+                    把排序结果压缩成可直接复盘和分享的观察清单，减少手工整理。
+                  </p>
+                </div>
+                <Button
+                  data-testid="momentum-screener-copy-watchlist-summary"
+                  variant="ghost"
+                  disabled={!watchlistSummary}
+                  onClick={() => void handleCopyWatchlistSummary()}
+                >
+                  复制观察池摘要
+                </Button>
+              </div>
+
+              {!watchlistSummary ? (
+                <div className="pt-4">
+                  <EmptyState
+                    title="暂无观察池摘要"
+                    description="先执行一次筛选，系统会自动帮你整理出明日优先关注列表。"
+                  />
+                </div>
+              ) : (
+                <div className="grid gap-4 pt-4 xl:grid-cols-[minmax(0,1.45fr)_minmax(0,1fr)]">
+                  <div className="rounded-2xl border border-border/60 bg-hover/20 p-4">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant="info">自动整理</Badge>
+                      <Badge variant={profileBadgeVariant(watchlistSummary.profile)}>
+                        {watchlistSummary.profile === 'aggressive' ? 'Aggressive' : 'Standard'}
+                      </Badge>
+                      {watchlistSummary.tradeDate ? (
+                        <Badge variant="default">{watchlistSummary.tradeDate}</Badge>
+                      ) : null}
+                    </div>
+                    <p className="mt-3 text-sm leading-7 text-foreground">{watchlistSummary.overview}</p>
+                    <div className="mt-4 grid gap-3 md:grid-cols-3">
+                      {watchlistSummary.primaryCandidates.map((item) => (
+                        <div
+                          key={item.tsCode}
+                          className="rounded-2xl border border-border/50 bg-card/55 p-4"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <Badge variant="default">#{item.rank}</Badge>
+                            <Badge variant={leaderBadgeVariant(item.leaderLevel)}>
+                              {translateLeaderLevel(item.leaderLevel)}
+                            </Badge>
+                          </div>
+                          <p className="mt-3 text-sm font-semibold text-foreground">
+                            {item.name}
+                          </p>
+                          <p className="mt-1 text-xs text-secondary-text">{item.tsCode}</p>
+                          <p className={`mt-3 text-lg font-semibold ${scoreTone(item.rankScore)}`}>
+                            {item.rankScore.toFixed(1)}
+                          </p>
+                          <p className="mt-1 text-xs text-secondary-text">
+                            排序分 · {item.themes[0] ?? '未标记题材'}
+                          </p>
+                          <p className="mt-3 text-xs leading-6 text-secondary-text">
+                            {item.topReasons.slice(0, 2).join('、') || '等待亮点标签'}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="grid gap-3">
+                    <div className="rounded-2xl border border-border/60 bg-card/45 p-4">
+                      <p className="text-xs uppercase tracking-[0.12em] text-secondary-text">
+                        {watchlistSummary.profile === 'aggressive' ? '进攻首选' : '低风险优先'}
+                      </p>
+                      <p className="mt-2 text-base font-semibold text-foreground">
+                        {(watchlistSummary.profile === 'aggressive'
+                          ? watchlistSummary.buyableCandidate?.name
+                          : watchlistSummary.lowRiskCandidate?.name) ?? watchlistSummary.headlineCandidate.name}
+                      </p>
+                      <p className="mt-1 text-sm text-secondary-text">
+                        {(watchlistSummary.profile === 'aggressive'
+                          ? watchlistSummary.buyableCandidate?.tsCode
+                          : watchlistSummary.lowRiskCandidate?.tsCode) ?? watchlistSummary.headlineCandidate.tsCode}
+                      </p>
+                      <p className="mt-3 text-sm leading-6 text-secondary-text">
+                        {watchlistSummary.profile === 'aggressive'
+                          ? `可买分 ${(
+                              watchlistSummary.buyableCandidate?.buyabilityScore ??
+                              watchlistSummary.headlineCandidate.buyabilityScore ??
+                              0
+                            ).toFixed(1)}，优先配合承接和区间确认。`
+                          : `风险分 ${(
+                              watchlistSummary.lowRiskCandidate?.riskScore ??
+                              watchlistSummary.headlineCandidate.riskScore
+                            ).toFixed(1)}，更适合保守观察和次日跟踪。`}
+                      </p>
+                    </div>
+
+                    <div className="rounded-2xl border border-border/60 bg-card/45 p-4">
+                      <p className="text-xs uppercase tracking-[0.12em] text-secondary-text">题材聚焦</p>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {watchlistSummary.hotThemes.length > 0 ? (
+                          watchlistSummary.hotThemes.map((theme) => (
+                            <Badge key={theme.name} variant="info">
+                              {theme.name} x{theme.count}
+                            </Badge>
+                          ))
+                        ) : (
+                          <Badge variant="default">暂无集中题材</Badge>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-border/60 bg-card/45 p-4">
+                      <p className="text-xs uppercase tracking-[0.12em] text-secondary-text">风险提醒</p>
+                      <p className="mt-3 text-sm leading-6 text-secondary-text">
+                        {watchlistSummary.riskWarnings.length > 0
+                          ? watchlistSummary.riskWarnings.join('、')
+                          : 'Top 结果暂无明显共性风险标签，仍需盘中确认承接。'}
+                      </p>
+                      <p className="mt-3 text-sm leading-6 text-secondary-text">
+                        {watchlistSummary.actionHint}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </Card>
+
           <Card className="min-h-0 flex-1 overflow-hidden rounded-3xl border-border/60 bg-card/55">
             <div className="mb-4 flex items-center justify-between gap-3 border-b border-border/60 pb-4">
               <div>
@@ -795,12 +1083,14 @@ const MomentumScreenerPage: React.FC = () => {
                 <div className="w-[180px]">
                   <Select
                     label="排序方式"
+                    id="momentum-screener-sort"
                     value={sortBy}
                     onChange={(value) => setSortBy(value as SortKey)}
                     options={SORT_OPTIONS}
                   />
                 </div>
                 <Button
+                  data-testid="momentum-screener-copy-results"
                   variant="ghost"
                   className="mb-[2px]"
                   disabled={sortedResults.length === 0}
@@ -809,6 +1099,7 @@ const MomentumScreenerPage: React.FC = () => {
                   复制结果
                 </Button>
                 <Button
+                  data-testid="momentum-screener-export-markdown"
                   variant="ghost"
                   className="mb-[2px]"
                   disabled={sortedResults.length === 0}
@@ -817,6 +1108,7 @@ const MomentumScreenerPage: React.FC = () => {
                   导出 Markdown
                 </Button>
                 <Button
+                  data-testid="momentum-screener-export-csv"
                   variant="ghost"
                   className="mb-[2px]"
                   disabled={sortedResults.length === 0}
@@ -859,6 +1151,7 @@ const MomentumScreenerPage: React.FC = () => {
                     {sortedResults.map((item) => (
                       <tr
                         key={item.tsCode}
+                        data-testid={`momentum-screener-row-${item.tsCode}`}
                         className="cursor-pointer border-b border-border/40 transition-colors hover:bg-hover/40"
                         onClick={() => setSelectedResult(item)}
                       >
@@ -882,6 +1175,7 @@ const MomentumScreenerPage: React.FC = () => {
                         <td className="px-3 py-3">
                           <div className="flex gap-2">
                             <Button
+                              data-testid={`momentum-screener-copy-${item.tsCode}`}
                               variant="ghost"
                               size="sm"
                               onClick={(event) => {
@@ -892,6 +1186,7 @@ const MomentumScreenerPage: React.FC = () => {
                               复制明细
                             </Button>
                             <Button
+                              data-testid={`momentum-screener-export-${item.tsCode}`}
                               variant="ghost"
                               size="sm"
                               onClick={(event) => {

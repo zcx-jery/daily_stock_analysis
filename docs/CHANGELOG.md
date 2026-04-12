@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 强势筛选页改为仅在点击“执行筛选”后运行，并修复结果详情抽屉自动打开且无法关闭的问题
+- [新功能] 强势筛选页新增“明日观察池摘要”区块，基于当前筛选结果自动整理 Top3、题材聚焦、风险提醒与可复制的执行建议
+- [文档] 补充“明日观察池摘要”MVP 需求文档与 AI 优化记录，便于说明本次最小痛点与作业交付物
+- [文档] 补充“明日观察池摘要”飞书表格提交说明，提供可直接粘贴的作业简介、截图建议和源码打包清单
+
 - [新增功能] 新增 Momentum Screener 强势股筛选能力，提供 `/api/v1/stocks/screener/momentum` 接口与 `/screener` 页面，支持 `standard` 和 `aggressive` 双画像筛选、排序、导出、复制与单票明细查看
 - [改进] Momentum Screener 接入申万一级行业映射、板块缓存 TTL 与健康检查诊断，并将默认参数纳入系统配置中心统一管理
 - [测试] 为 Momentum Screener 补充后端服务测试、API 测试、前端页面测试、真实 Tushare 发布检查脚本与 Playwright smoke 用例
