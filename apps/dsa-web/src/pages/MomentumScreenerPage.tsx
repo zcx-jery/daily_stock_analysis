@@ -119,6 +119,19 @@ const itemLabelMap: Record<string, string> = {
   healthy_turnover: '健康换手',
 };
 
+function normalizeMetricLookupKey(key: string): string {
+  return key.trim().replace(/[^a-zA-Z0-9]+/g, '').toLowerCase();
+}
+
+function buildMetricLabelLookup(labelMap: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(labelMap).map(([key, label]) => [normalizeMetricLookupKey(key), label]),
+  );
+}
+
+const dimensionLabelLookup = buildMetricLabelLookup(dimensionLabelMap);
+const itemLabelLookup = buildMetricLabelLookup(itemLabelMap);
+
 const riskTagLabelMap: Record<string, string> = {
   upper_shadow: '长上影/冲高回落',
   blowoff_volume: '爆量滞涨',
@@ -188,8 +201,12 @@ function translateRiskTag(tag: string): string {
   return riskTagLabelMap[tag] ?? tag;
 }
 
+function translateDimensionKey(key: string): string {
+  return dimensionLabelLookup[normalizeMetricLookupKey(key)] ?? key;
+}
+
 function translateItemKey(key: string): string {
-  return itemLabelMap[key] ?? key;
+  return itemLabelLookup[normalizeMetricLookupKey(key)] ?? key;
 }
 
 function profileBadgeVariant(profile: MomentumProfile): 'default' | 'warning' {
@@ -1268,7 +1285,7 @@ const MomentumScreenerPage: React.FC = () => {
                   <div key={key} className="rounded-2xl border border-border/50 bg-card/55 p-4">
                     <div className="flex items-center justify-between gap-3">
                       <div>
-                        <p className="text-sm font-medium text-foreground">{dimensionLabelMap[key] ?? key}</p>
+                        <p className="text-sm font-medium text-foreground">{translateDimensionKey(key)}</p>
                         <p className="mt-1 text-xs text-secondary-text">
                           {value.score.toFixed(1)} / {value.maxScore.toFixed(1)}
                         </p>
@@ -1280,7 +1297,7 @@ const MomentumScreenerPage: React.FC = () => {
                     <div className="mt-3 grid gap-2 md:grid-cols-2">
                       {Object.entries(value.items).map(([itemKey, itemValue]) => (
                         <div key={itemKey} className="rounded-xl border border-border/40 bg-hover/20 px-3 py-2">
-                          <p className="text-[11px] uppercase tracking-[0.12em] text-secondary-text">
+                          <p className="text-xs text-secondary-text">
                             {translateItemKey(itemKey)}
                           </p>
                           <p className="mt-1 text-sm font-medium text-foreground">{String(itemValue)}</p>

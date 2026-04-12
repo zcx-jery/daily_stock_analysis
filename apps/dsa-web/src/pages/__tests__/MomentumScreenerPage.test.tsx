@@ -115,6 +115,90 @@ const aggressiveResponse = {
   ],
 };
 
+const mixedKeyResponse = {
+  profile: 'aggressive' as const,
+  tradeDate: '2026-04-10',
+  candidateCount: 1,
+  results: [
+    {
+      rank: 1,
+      tsCode: '002733.SZ',
+      name: '雄韬股份',
+      pctChg: 10.0,
+      continuationScore: 72,
+      extensionScore: 68.3,
+      riskScore: 0,
+      buyabilityScore: 66,
+      opportunityTag: '一致再加速',
+      entryRangeLow: 16.8,
+      entryRangeHigh: 17.2,
+      finalScore: 69.8,
+      rankScore: 69.8,
+      themes: ['电力设备'],
+      leaderLevel: 'leader',
+      topReasons: ['强势确认', '资金承接'],
+      riskTags: [],
+      scoreBreakdown: {
+        strengthConfirmation: {
+          score: 21,
+          maxScore: 30,
+          items: {
+            LIMITSTRENGTH: 10,
+            GAPOPENSTRENGTH: 3,
+            CLOSESTATUS: 6,
+            ACCELERATIONCONFIRMATION: 2,
+          },
+        },
+        capitalSupport: {
+          score: 16,
+          maxScore: 20,
+          items: {
+            MAININFLOWABS: 6,
+            MAININFLOWRATIO: 6,
+            PRICEFLOWALIGNMENT: 4,
+            TOPLIST: 0,
+          },
+        },
+        buyability: {
+          score: 9,
+          maxScore: 15,
+          items: {
+            AMPLITUDESPACE: 0,
+            AMOUNTGOLDENZONE: 5,
+            TURNOVERGOLDENZONE: 4,
+          },
+        },
+        volumePriceTrack: {
+          score: 10,
+          maxScore: 15,
+          items: {
+            CONSENSUSLIMIT: 3,
+            HEALTHYTURNOVER: 7,
+          },
+        },
+        sectorResonance: {
+          score: 8,
+          maxScore: 12,
+          items: {
+            SECTORRANK: 2,
+            SECTORBREADTH: 4,
+            SECTORLEADER: 2,
+          },
+        },
+        trendElasticity: {
+          score: 6,
+          maxScore: 8,
+          items: {
+            breakout: 4,
+            CIRCMV: 0,
+            HISTORICALACTIVITY: 2,
+          },
+        },
+      },
+    },
+  ],
+};
+
 async function clickRunButton() {
   fireEvent.click(screen.getByTestId('momentum-screener-run'));
   await waitFor(() => {
@@ -388,6 +472,36 @@ describe('MomentumScreenerPage', () => {
     expect(within(summaryCard).getAllByText('Breakout One').length).toBeGreaterThan(0);
     expect(within(summaryCard).getByText('可买分 77.0，优先配合承接和区间确认。')).toBeInTheDocument();
     expect(within(summaryCard).getByText('Robotics x1')).toBeInTheDocument();
+  });
+
+  it('translates mixed-case score breakdown keys into readable Chinese labels in the detail drawer', async () => {
+    mockScreen.mockResolvedValue(mixedKeyResponse);
+
+    render(<MomentumScreenerPage />);
+
+    fireEvent.change(getProfileSelect(), { target: { value: 'aggressive' } });
+    await clickRunButton();
+    await screen.findByTestId('momentum-screener-row-002733.SZ');
+
+    fireEvent.click(screen.getByTestId('momentum-screener-row-002733.SZ'));
+
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getAllByText('强势确认').length).toBeGreaterThan(0);
+    expect(within(dialog).getAllByText('资金承接').length).toBeGreaterThan(0);
+    expect(within(dialog).getByText('量价双轨')).toBeInTheDocument();
+    expect(within(dialog).getByText('板块共振')).toBeInTheDocument();
+    expect(within(dialog).getByText('趋势位置与弹性')).toBeInTheDocument();
+    expect(within(dialog).getByText('近涨停强度')).toBeInTheDocument();
+    expect(within(dialog).getByText('跳空高开')).toBeInTheDocument();
+    expect(within(dialog).getByText('收盘地位')).toBeInTheDocument();
+    expect(within(dialog).getByText('主力净流入')).toBeInTheDocument();
+    expect(within(dialog).getByText('成交额黄金区')).toBeInTheDocument();
+    expect(within(dialog).getByText('健康换手')).toBeInTheDocument();
+    expect(within(dialog).getByText('板块强度')).toBeInTheDocument();
+    expect(within(dialog).getByText('历史股性')).toBeInTheDocument();
+    expect(within(dialog).queryByText('strengthConfirmation')).not.toBeInTheDocument();
+    expect(within(dialog).queryByText('SECTORRANK')).not.toBeInTheDocument();
+    expect(within(dialog).queryByText('MAININFLOWABS')).not.toBeInTheDocument();
   });
 
   it('exports the current result list as markdown', async () => {
