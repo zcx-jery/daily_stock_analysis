@@ -119,3 +119,13 @@
 - [Momentum Screener PR Summary](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-pr-summary.md)
 - [Momentum Screener Final Release Summary](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-final-release-summary.md)
 - [Momentum Screener PR Body](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-pr-body.md)
+- [Momentum Screener Functional Test Checklist](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-functional-test-checklist.md)
+- [Momentum Screener Pressure Test Template](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-pressure-test-template.md)
+- [Momentum Screener Functional Test Report 2026-04-11](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-functional-test-report-2026-04-11.md)
+- [Momentum Screener Pressure Test Report 2026-04-11](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-pressure-test-report-2026-04-11.md)
+
+## Secondary Decision Docs
+
+- [Momentum Screener Secondary Decision SPEC](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-secondary-decision-spec.md)
+- [Momentum Screener Secondary Decision PRD](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-secondary-decision-prd.md)
+- [Momentum Screener Secondary Decision Technical Design](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-secondary-decision-technical-design.md)
