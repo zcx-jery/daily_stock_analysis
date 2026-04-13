@@ -5,8 +5,11 @@
 
 from __future__ import annotations
 
-import logging
 from datetime import datetime, timedelta, timezone
+import hashlib
+import json
+import logging
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -39,11 +42,24 @@ class MomentumScreenerService:
     _shared_sector_context_cache: Dict[str, Dict[str, Any]] = {}
     _shared_sector_cache_stats: Dict[str, int] = {"hit": 0, "miss": 0, "expired": 0}
     _sector_cache_ttl_seconds: int = 6 * 60 * 60
+    _shared_history_cache: Dict[str, Dict[str, Any]] = {}
+    _history_cache_ttl_seconds: int = 12 * 60 * 60
+    _history_cache_dirname: str = "momentum_histories"
 
-    def __init__(self, fetcher: Optional[TushareFetcher] = None) -> None:
+    def __init__(
+        self,
+        fetcher: Optional[TushareFetcher] = None,
+        history_cache_dir: Optional[Path] = None,
+    ) -> None:
         self.fetcher = fetcher or TushareFetcher(rate_limit_per_minute=200)
         self._sector_context_cache = self.__class__._shared_sector_context_cache
+        self._history_cache = self.__class__._shared_history_cache
         self.__class__._refresh_sector_cache_ttl_from_config()
+        self._history_cache_dir = (
+            Path(history_cache_dir)
+            if history_cache_dir is not None
+            else Path.cwd() / "data" / "cache" / self.__class__._history_cache_dirname
+        )
         if not self.fetcher.is_available():
             raise RuntimeError("Tushare 数据源不可用，请检查 TUSHARE_TOKEN 配置")
 
@@ -51,6 +67,7 @@ class MomentumScreenerService:
     def reset_sector_cache(cls) -> None:
         cls._shared_sector_context_cache.clear()
         cls._shared_sector_cache_stats = {"hit": 0, "miss": 0, "expired": 0}
+        cls._shared_history_cache.clear()
 
     @classmethod
     def get_sector_cache_stats(cls) -> Dict[str, int]:
@@ -84,6 +101,8 @@ class MomentumScreenerService:
         main_board_only: bool = True,
         trade_date: Optional[str] = None,
         profile: str = "standard",
+        use_sector_context: bool = True,
+        max_scored_candidates: Optional[int] = None,
     ) -> Dict[str, Any]:
         if profile not in {"standard", "aggressive"}:
             raise ValueError("仅支持 profile=standard 或 profile=aggressive")
@@ -104,10 +123,36 @@ class MomentumScreenerService:
                 "profile": profile,
                 "trade_date": self._format_trade_date(resolved_trade_date),
                 "candidate_count": 0,
+                "ranked_results": [],
                 "results": [],
             }
 
-        results = self._score_candidates(candidates=candidates, trade_date=resolved_trade_date, profile=profile)
+        scoring_candidates = self._preselect_candidates_for_scoring(
+            candidates,
+            limit=max_scored_candidates,
+        )
+
+        sector_context = {"mapping": {}, "sector_pct_map": {}}
+        if use_sector_context:
+            try:
+                sector_context = self._load_sector_context(
+                    trade_date=resolved_trade_date,
+                    ts_codes=scoring_candidates["ts_code"].dropna().astype(str).tolist(),
+                )
+            except Exception:
+                logger.exception(
+                    "Momentum sector context load failed for filtered candidates trade_date=%s; fallback to stock_basic.industry",
+                    resolved_trade_date,
+                )
+                sector_context = {"mapping": {}, "sector_pct_map": {}}
+        else:
+            logger.debug(
+                "Momentum screener skipped sector context for trade_date=%s to use local industry fallback",
+                resolved_trade_date,
+            )
+
+        scoring_candidates = self._apply_sector_context(scoring_candidates, sector_context)
+        results = self._score_candidates(candidates=scoring_candidates, trade_date=resolved_trade_date, profile=profile)
         results = sorted(results, key=lambda item: item["rank_score"], reverse=True)
         for index, item in enumerate(results, start=1):
             item["rank"] = index
@@ -116,8 +161,33 @@ class MomentumScreenerService:
             "profile": profile,
             "trade_date": self._format_trade_date(resolved_trade_date),
             "candidate_count": len(candidates),
+            "ranked_results": results,
             "results": results[:top_n],
         }
+
+    @staticmethod
+    def _preselect_candidates_for_scoring(candidates: pd.DataFrame, limit: Optional[int]) -> pd.DataFrame:
+        if limit is None or limit <= 0 or len(candidates) <= limit:
+            return candidates.reset_index(drop=True)
+
+        working = candidates.copy()
+        amount_rank = working["amount"].rank(pct=True, method="average")
+        turnover_rank = working["turnover_rate"].rank(pct=True, method="average")
+        main_inflow_rank = working["main_net_inflow"].fillna(0).rank(pct=True, method="average")
+        top_list_bonus = working["top_list_flag"].fillna(False).astype(int) * 0.2
+        working["_prefilter_score"] = (
+            working["pct_chg"].fillna(0) * 0.45
+            + amount_rank * 20
+            + turnover_rank * 12
+            + main_inflow_rank * 18
+            + top_list_bonus
+        )
+        return (
+            working.sort_values(["_prefilter_score", "pct_chg", "amount"], ascending=[False, False, False])
+            .head(limit)
+            .drop(columns=["_prefilter_score"])
+            .reset_index(drop=True)
+        )
 
     def _resolve_trade_date(self, trade_date: Optional[str]) -> str:
         if trade_date:
@@ -168,15 +238,6 @@ class MomentumScreenerService:
         if "circ_mv" in daily_basic.columns:
             daily_basic["circ_mv"] = pd.to_numeric(daily_basic["circ_mv"], errors="coerce") * 10000
 
-        try:
-            sector_context = self._load_sector_context(
-                trade_date=trade_date,
-                ts_codes=basic["ts_code"].tolist() if "ts_code" in basic.columns else [],
-            )
-        except Exception:
-            logger.exception("Momentum sector context load failed for trade_date=%s; fallback to stock_basic.industry", trade_date)
-            sector_context = {"mapping": {}, "sector_pct_map": {}}
-
         return {
             "basic": basic,
             "daily": daily,
@@ -184,7 +245,6 @@ class MomentumScreenerService:
             "moneyflow": moneyflow,
             "stk_limit": stk_limit,
             "top_list": top_list,
-            "sector_context": sector_context,
         }
 
     @staticmethod
@@ -195,24 +255,63 @@ class MomentumScreenerService:
         return None
 
     def _load_sector_context(self, *, trade_date: str, ts_codes: List[str]) -> Dict[str, Any]:
+        ts_code_set = {code for code in ts_codes if code}
+        if not ts_code_set:
+            return {"mapping": {}, "sector_pct_map": {}}
+
         cached = self._sector_context_cache.get(trade_date)
         if cached is not None:
             expires_at = _safe_float(cached.get("expires_at"))
             if expires_at > self.__class__._cache_now_ts():
-                self.__class__._shared_sector_cache_stats["hit"] += 1
-                logger.debug("Momentum sector context cache hit: trade_date=%s expires_at=%s", trade_date, expires_at)
-                return cached.get("payload", {})
+                payload = cached.get("payload", {})
+                cached_mapping = payload.get("mapping", {}) if isinstance(payload, dict) else {}
+                cached_unmapped = set(payload.get("unmapped_codes", [])) if isinstance(payload, dict) else set()
+                cached_resolved = set(cached_mapping) | cached_unmapped
+                if ts_code_set.issubset(cached_resolved):
+                    self.__class__._shared_sector_cache_stats["hit"] += 1
+                    logger.debug(
+                        "Momentum sector context cache hit: trade_date=%s expires_at=%s requested=%d",
+                        trade_date,
+                        expires_at,
+                        len(ts_code_set),
+                    )
+                    return payload
 
-            self.__class__._shared_sector_cache_stats["expired"] += 1
-            logger.info("Momentum sector context cache expired: trade_date=%s expires_at=%s", trade_date, expires_at)
-            self._sector_context_cache.pop(trade_date, None)
+                logger.debug(
+                    "Momentum sector context cache partial hit: trade_date=%s requested=%d cached=%d",
+                    trade_date,
+                    len(ts_code_set),
+                    len(cached_resolved),
+                )
+                mapping: Dict[str, str] = dict(cached_mapping)
+                sector_pct_map: Dict[str, float] = dict(payload.get("sector_pct_map", {}))
+                unresolved_codes = set(cached_unmapped)
+            else:
+                self.__class__._shared_sector_cache_stats["expired"] += 1
+                logger.info("Momentum sector context cache expired: trade_date=%s expires_at=%s", trade_date, expires_at)
+                self._sector_context_cache.pop(trade_date, None)
+                mapping = {}
+                sector_pct_map = {}
+                unresolved_codes = set()
+        else:
+            mapping = {}
+            sector_pct_map = {}
+            unresolved_codes = set()
 
         self.__class__._shared_sector_cache_stats["miss"] += 1
-        logger.debug("Momentum sector context cache miss: trade_date=%s", trade_date)
-
-        ts_code_set = {code for code in ts_codes if code}
-        mapping: Dict[str, str] = {}
-        sector_pct_map: Dict[str, float] = {}
+        logger.debug("Momentum sector context cache miss: trade_date=%s requested=%d", trade_date, len(ts_code_set))
+        pending_codes = set(ts_code_set) - set(mapping) - unresolved_codes
+        if not pending_codes:
+            result = {
+                "mapping": mapping,
+                "sector_pct_map": sector_pct_map,
+                "unmapped_codes": sorted(unresolved_codes),
+            }
+            self._sector_context_cache[trade_date] = {
+                "payload": result,
+                "expires_at": self.__class__._cache_now_ts() + self.__class__._sector_cache_ttl_seconds,
+            }
+            return result
 
         classify = self._call_tushare(
             "index_classify",
@@ -231,7 +330,11 @@ class MomentumScreenerService:
         code_col = self._pick_first_column(classify, ["index_code", "industry_code", "ts_code", "code"])
         name_col = self._pick_first_column(classify, ["industry_name", "index_name", "name"])
         if classify.empty or not code_col or not name_col:
-            result = {"mapping": mapping, "sector_pct_map": sector_pct_map}
+            result = {
+                "mapping": mapping,
+                "sector_pct_map": sector_pct_map,
+                "unmapped_codes": sorted(unresolved_codes | pending_codes),
+            }
             self._sector_context_cache[trade_date] = {
                 "payload": result,
                 "expires_at": self.__class__._cache_now_ts() + self.__class__._sector_cache_ttl_seconds,
@@ -245,15 +348,6 @@ class MomentumScreenerService:
             sector_name = _safe_str(sector_row.get(name_col))
             if not sector_code or not sector_name:
                 continue
-
-            index_daily = self._call_tushare(
-                "index_daily",
-                ts_code=sector_code,
-                trade_date=trade_date,
-                fields="ts_code,trade_date,pct_chg",
-            )
-            if not index_daily.empty and "pct_chg" in index_daily.columns:
-                sector_pct_map[sector_name] = _safe_float(index_daily.iloc[0].get("pct_chg"))
 
             member = self._call_tushare(
                 "index_member",
@@ -284,14 +378,37 @@ class MomentumScreenerService:
                     (active_member["out_date"] == "") | (active_member["out_date"] > trade_date)
                 ]
 
-            for member_code in active_member[member_code_col].astype(str).tolist():
-                if member_code in ts_code_set and member_code not in mapping:
-                    mapping[member_code] = sector_name
+            matched_codes = [
+                member_code
+                for member_code in active_member[member_code_col].astype(str).tolist()
+                if member_code in pending_codes and member_code not in mapping
+            ]
+            if not matched_codes:
+                continue
 
-            if len(mapping) >= len(ts_code_set) and ts_code_set:
+            for member_code in matched_codes:
+                mapping[member_code] = sector_name
+                pending_codes.discard(member_code)
+
+            if sector_name not in sector_pct_map:
+                index_daily = self._call_tushare(
+                    "index_daily",
+                    ts_code=sector_code,
+                    trade_date=trade_date,
+                    fields="ts_code,trade_date,pct_chg",
+                )
+                if not index_daily.empty and "pct_chg" in index_daily.columns:
+                    sector_pct_map[sector_name] = _safe_float(index_daily.iloc[0].get("pct_chg"))
+
+            if not pending_codes:
                 break
 
-        result = {"mapping": mapping, "sector_pct_map": sector_pct_map}
+        unresolved_codes.update(pending_codes)
+        result = {
+            "mapping": mapping,
+            "sector_pct_map": sector_pct_map,
+            "unmapped_codes": sorted(unresolved_codes),
+        }
         self._sector_context_cache[trade_date] = {
             "payload": result,
             "expires_at": self.__class__._cache_now_ts() + self.__class__._sector_cache_ttl_seconds,
@@ -342,9 +459,7 @@ class MomentumScreenerService:
         merged["name"] = merged["name"].fillna("")
         merged["symbol"] = merged["symbol"].fillna(merged["ts_code"].str.split(".").str[0])
         merged["industry"] = merged["industry"].fillna("未分类")
-        sector_context = snapshot.get("sector_context", {})
-        sector_mapping = sector_context.get("mapping", {}) if isinstance(sector_context, dict) else {}
-        merged["sector_name"] = merged["ts_code"].map(sector_mapping).fillna(merged["industry"])
+        merged["sector_name"] = merged["industry"]
         merged["is_st"] = merged["name"].map(is_st_stock)
         merged["is_main_board"] = merged["symbol"].map(self._is_main_board_symbol)
 
@@ -360,6 +475,19 @@ class MomentumScreenerService:
             filtered = filtered[filtered["is_main_board"]]
 
         return filtered.reset_index(drop=True)
+
+    @staticmethod
+    def _apply_sector_context(candidates: pd.DataFrame, sector_context: Optional[Dict[str, Any]]) -> pd.DataFrame:
+        if candidates.empty:
+            return candidates
+
+        mapping = sector_context.get("mapping", {}) if isinstance(sector_context, dict) else {}
+        if not mapping:
+            return candidates
+
+        result = candidates.copy()
+        result["sector_name"] = result["ts_code"].map(mapping).fillna(result["sector_name"])
+        return result
 
     @staticmethod
     def _is_main_board_symbol(symbol: str) -> bool:
@@ -504,12 +632,91 @@ class MomentumScreenerService:
         end_dt = datetime.strptime(trade_date, "%Y%m%d")
         start_date = (end_dt - timedelta(days=days * 2)).strftime("%Y-%m-%d")
         end_date = end_dt.strftime("%Y-%m-%d")
+        cache_key = self._build_history_cache_key(stock_code, start_date, end_date, days)
+        cached = self._load_cached_history(cache_key)
+        if cached is not None:
+            return cached
+
         history = self.fetcher.get_daily_data(stock_code, start_date=start_date, end_date=end_date, days=days)
         if history is None or history.empty:
             return pd.DataFrame()
         result = history.copy()
         result["date"] = pd.to_datetime(result["date"])
-        return result.sort_values("date").reset_index(drop=True)
+        result = result.sort_values("date").reset_index(drop=True)
+        self._store_cached_history(cache_key, result)
+        return result.copy()
+
+    def _build_history_cache_key(self, stock_code: str, start_date: str, end_date: str, days: int) -> str:
+        normalized = _safe_str(stock_code).strip().upper()
+        return f"{normalized}|{start_date}|{end_date}|{days}"
+
+    def _load_cached_history(self, cache_key: str) -> Optional[pd.DataFrame]:
+        cached = self._history_cache.get(cache_key)
+        if cached is not None:
+            expires_at = _safe_float(cached.get("expires_at"))
+            if expires_at > self.__class__._cache_now_ts():
+                payload = cached.get("payload")
+                if isinstance(payload, pd.DataFrame):
+                    return payload.copy()
+            else:
+                self._history_cache.pop(cache_key, None)
+
+        return self._load_disk_cached_history(cache_key)
+
+    def _store_cached_history(self, cache_key: str, history: pd.DataFrame) -> None:
+        payload = history.copy()
+        expires_at = self.__class__._cache_now_ts() + self.__class__._history_cache_ttl_seconds
+        self._history_cache[cache_key] = {"payload": payload, "expires_at": expires_at}
+        self._store_disk_cached_history(cache_key, payload, expires_at)
+
+    def _history_cache_path(self, cache_key: str) -> Path:
+        digest = hashlib.sha1(cache_key.encode("utf-8")).hexdigest()
+        return self._history_cache_dir / f"{digest}.json"
+
+    def _load_disk_cached_history(self, cache_key: str) -> Optional[pd.DataFrame]:
+        cache_path = self._history_cache_path(cache_key)
+        if not cache_path.exists():
+            return None
+
+        try:
+            payload = json.loads(cache_path.read_text(encoding="utf-8"))
+            expires_at = _safe_float(payload.get("expires_at"))
+            if expires_at <= self.__class__._cache_now_ts():
+                return None
+
+            records = payload.get("records")
+            if not isinstance(records, list) or not records:
+                return None
+
+            history = pd.DataFrame(records)
+            if "date" in history.columns:
+                history["date"] = pd.to_datetime(history["date"])
+            history = history.sort_values("date").reset_index(drop=True)
+            self._history_cache[cache_key] = {"payload": history.copy(), "expires_at": expires_at}
+            return history
+        except Exception:
+            logger.debug("Momentum history disk cache read failed: key=%s path=%s", cache_key, cache_path, exc_info=True)
+            return None
+
+    def _store_disk_cached_history(self, cache_key: str, history: pd.DataFrame, expires_at: float) -> None:
+        try:
+            self._history_cache_dir.mkdir(parents=True, exist_ok=True)
+            serializable = history.copy()
+            if "date" in serializable.columns:
+                serializable["date"] = pd.to_datetime(serializable["date"]).dt.strftime("%Y-%m-%d")
+            cache_path = self._history_cache_path(cache_key)
+            cache_path.write_text(
+                json.dumps(
+                    {
+                        "expires_at": expires_at,
+                        "records": serializable.to_dict(orient="records"),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+        except Exception:
+            logger.debug("Momentum history disk cache write failed: key=%s", cache_key, exc_info=True)
 
     def _build_features(self, row: pd.Series, history: pd.DataFrame, ctx: Dict[str, Any]) -> Dict[str, Any]:
         current = history.iloc[-1]

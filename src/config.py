@@ -56,6 +56,25 @@ NEWS_STRATEGY_WINDOWS: Dict[str, int] = {
     "medium": 7,
     "long": 30,
 }
+DEFAULT_REALTIME_SOURCE_PRIORITY = "tencent,akshare_sina,efinance,akshare_em"
+_REALTIME_SOURCE_PRIORITY_ALIASES = {
+    "tushare": "tushare",
+    "tusharepro": "tushare",
+    "tushareproapi": "tushare",
+    "tencent": "tencent",
+    "qq": "tencent",
+    "腾讯": "tencent",
+    "akshareqq": "tencent",
+    "aksharetencent": "tencent",
+    "sina": "akshare_sina",
+    "新浪": "akshare_sina",
+    "aksharesina": "akshare_sina",
+    "efinance": "efinance",
+    "eastmoney": "akshare_em",
+    "东财": "akshare_em",
+    "东方财富": "akshare_em",
+    "akshareem": "akshare_em",
+}
 
 
 def parse_env_bool(value: Optional[str], default: bool = False) -> bool:
@@ -169,6 +188,38 @@ def resolve_news_window_days(news_max_age_days: int, news_strategy_profile: Opti
     profile = normalize_news_strategy_profile(news_strategy_profile)
     profile_days = NEWS_STRATEGY_WINDOWS.get(profile, NEWS_STRATEGY_WINDOWS["short"])
     return max(1, min(max(1, int(news_max_age_days)), profile_days))
+
+
+def parse_realtime_source_priority(value: Optional[str]) -> Tuple[List[str], List[str]]:
+    """Parse realtime source priority into canonical internal provider keys."""
+    normalized_sources: List[str] = []
+    invalid_sources: List[str] = []
+    seen_sources = set()
+
+    for raw_token in re.split(r"[,\n]+", value or ""):
+        token = raw_token.strip()
+        if not token:
+            continue
+
+        compact_token = re.sub(r"[\s_\-./()]+", "", token).lower()
+        normalized_token = _REALTIME_SOURCE_PRIORITY_ALIASES.get(compact_token)
+        if normalized_token is None:
+            invalid_sources.append(token)
+            continue
+
+        if normalized_token in seen_sources:
+            continue
+
+        seen_sources.add(normalized_token)
+        normalized_sources.append(normalized_token)
+
+    return normalized_sources, invalid_sources
+
+
+def normalize_realtime_source_priority(value: Optional[str]) -> str:
+    """Return a comma-separated realtime source priority using internal keys."""
+    normalized_sources, _ = parse_realtime_source_priority(value)
+    return ",".join(normalized_sources)
 
 
 def canonicalize_llm_channel_protocol(value: Optional[str]) -> str:
@@ -1915,18 +1966,23 @@ class Config:
         so that the paid data source is utilized for realtime quotes as well.
         """
         explicit = os.getenv('REALTIME_SOURCE_PRIORITY')
-        default_priority = 'tencent,akshare_sina,efinance,akshare_em'
+        default_priority = DEFAULT_REALTIME_SOURCE_PRIORITY
 
         if explicit:
-            # User explicitly set priority, respect it
-            return explicit
+            normalized_explicit = normalize_realtime_source_priority(explicit)
+            if normalized_explicit:
+                return normalized_explicit
+
+            logger.warning(
+                "REALTIME_SOURCE_PRIORITY=%r did not contain any supported realtime providers; "
+                "falling back to defaults",
+                explicit,
+            )
 
         tushare_token = os.getenv('TUSHARE_TOKEN', '').strip()
         if tushare_token:
             # Token configured but no explicit priority override
             # Prepend tushare so the paid source is tried first
-            import logging
-            logger = logging.getLogger(__name__)
             resolved = f'tushare,{default_priority}'
             logger.info(
                 f"TUSHARE_TOKEN detected, auto-injecting tushare into realtime priority: {resolved}"

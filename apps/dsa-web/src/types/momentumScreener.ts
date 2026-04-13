@@ -44,3 +44,218 @@ export interface MomentumScreenerResponse {
   candidateCount: number;
   results: MomentumScreenerResult[];
 }
+
+export type MomentumActionLevel =
+  | 'strong_go'
+  | 'normal_go'
+  | 'cautious_go'
+  | 'observe_only'
+  | 'stand_aside';
+
+export type MomentumDecisionSlot = 'main' | 'secondary' | 'watch';
+
+export type MomentumBuyPointStatus = 'clear' | 'waiting' | 'unclear';
+
+export type MomentumSuggestedAction = 'ready' | 'wait_for_trigger' | 'observe_only';
+
+export interface MomentumDecisionAction {
+  level: MomentumActionLevel;
+  label: string;
+  reason: string;
+  sourceProfile: MomentumProfile;
+}
+
+export interface MomentumDecisionThemeRepresentative {
+  rank: number;
+  tsCode: string;
+  name: string;
+  role: string;
+  buyPointLabel: string;
+  rankScore: number;
+}
+
+export interface MomentumDecisionTheme {
+  name: string;
+  score: number;
+  strengthLabel: string;
+  candidateCount: number;
+  clearBuyPointCount: number;
+  leaderCount: number;
+  summary: string;
+  representatives: MomentumDecisionThemeRepresentative[];
+}
+
+export interface MomentumDecisionPortfolioSlot {
+  slot: MomentumDecisionSlot;
+  slotLabel: string;
+  rank: number;
+  tsCode: string;
+  name: string;
+  theme: string;
+  role: string;
+  score: number;
+  rankScore: number;
+  riskScore: number;
+  buyPointStatus: MomentumBuyPointStatus;
+  buyPointLabel: string;
+  suggestedAction: MomentumSuggestedAction;
+  suggestedActionLabel: string;
+  primaryReason: string;
+  roleReason: string;
+  executionPlan: string;
+  entryHint?: string | null;
+  entryRangeLow?: number | null;
+  entryRangeHigh?: number | null;
+  opportunityTag?: string | null;
+}
+
+export interface MomentumDecisionExcludedCandidate {
+  rank: number;
+  tsCode: string;
+  name: string;
+  theme: string;
+  role: string;
+  reason: string;
+  rankScore: number;
+}
+
+export interface MomentumDecisionEvidence {
+  themeValidation: string[];
+  todayReasoning: string[];
+}
+
+export interface MomentumActionChecklistStep {
+  phase: 'pre_open' | 'first_30m' | 'first_60m';
+  phaseLabel: string;
+  objective: string;
+  focusItems: string[];
+  tasks: string[];
+  expectedOutcome: string;
+}
+
+export interface MomentumActionChecklist {
+  enabled: boolean;
+  reason: string;
+  steps: MomentumActionChecklistStep[];
+}
+
+export type MomentumStrategyHealthStatus =
+  | 'healthy'
+  | 'partial_healthy'
+  | 'recovery_mode'
+  | 'disabled';
+
+export type MomentumStrategyHealthWindowStatus = 'healthy' | 'recovering' | 'weak';
+
+export interface MomentumStrategyHealthWindow {
+  window: 'short_20d' | 'long_60d';
+  windowLabel: string;
+  status: MomentumStrategyHealthWindowStatus;
+  statusLabel: string;
+  score: number;
+  threshold: number;
+  sampleCount: number;
+  successCount: number;
+  successRate: number;
+  avgProfitWindowPct: number;
+  avgMaxDrawdownPct: number;
+  avgSelectedCount: number;
+  summary: string;
+}
+
+export interface MomentumStrategyHealth {
+  status: MomentumStrategyHealthStatus;
+  label: string;
+  reason: string;
+  recommendationCap: 'full' | 'limited' | 'disabled';
+  canFullRecommend: boolean;
+  shortWindow: MomentumStrategyHealthWindow;
+  longWindow: MomentumStrategyHealthWindow;
+  blockers: string[];
+  recoveryConditions: string[];
+  dataSource?: 'historical' | 'proxy';
+  isWarming?: boolean;
+}
+
+export interface MomentumSecondaryDecision {
+  profile: MomentumProfile;
+  tradeDate: string;
+  action: MomentumDecisionAction;
+  strategyHealth: MomentumStrategyHealth;
+  themes: MomentumDecisionTheme[];
+  portfolio: MomentumDecisionPortfolioSlot[];
+  excludedCandidates: MomentumDecisionExcludedCandidate[];
+  evidence: MomentumDecisionEvidence;
+  actionChecklist: MomentumActionChecklist;
+}
+
+export interface MomentumScreenerDecisionResponse {
+  screening: MomentumScreenerResponse;
+  decision: MomentumSecondaryDecision;
+}
+
+export type MomentumIntradayStatus =
+  | 'not_started'
+  | 'watching'
+  | 'buy_ready'
+  | 'low_confidence'
+  | 'do_not_buy'
+  | 'stand_aside'
+  | 'not_applicable';
+
+export type MomentumIntradayItemStatus =
+  | 'triggered'
+  | 'watching'
+  | 'do_not_chase'
+  | 'observe_only'
+  | 'data_unavailable';
+
+export type MomentumIntradayConfidenceLevel = 'high' | 'medium' | 'low';
+
+export type MomentumIntradayFinalRecommendation = 'buy' | 'watch' | 'do_not_buy';
+
+export interface MomentumIntradayPortfolioItem {
+  slot: MomentumDecisionSlot;
+  slotLabel: string;
+  tsCode: string;
+  name: string;
+  theme: string;
+  role: string;
+  status: MomentumIntradayItemStatus;
+  statusLabel: string;
+  reason: string;
+  quoteAvailable: boolean;
+  signalTriggered: boolean;
+  doNotChase: boolean;
+  currentPrice?: number | null;
+  changePercent?: number | null;
+  openPrice?: number | null;
+  entryRangeLow?: number | null;
+  entryRangeHigh?: number | null;
+  priceVsOpenPct?: number | null;
+  priceVsEntryHighPct?: number | null;
+  missingConditions: string[];
+  updateTime?: string | null;
+}
+
+export interface MomentumIntradaySignal {
+  marketPhase: string;
+  marketPhaseLabel: string;
+  confidenceLevel: MomentumIntradayConfidenceLevel;
+  confidenceLabel: string;
+  canEmitBuySignal: boolean;
+  status: MomentumIntradayStatus;
+  statusLabel: string;
+  reason: string;
+  watchItems: string[];
+  finalRecommendation: MomentumIntradayFinalRecommendation;
+  finalRecommendationLabel: string;
+  closingNote: string;
+  updatedAt: string;
+  focusOrder: string[];
+  portfolioItems: MomentumIntradayPortfolioItem[];
+}
+
+export interface MomentumScreenerIntradayResponse extends MomentumScreenerDecisionResponse {
+  intradaySignal: MomentumIntradaySignal;
+}

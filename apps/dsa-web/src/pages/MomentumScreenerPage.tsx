@@ -1,12 +1,20 @@
 import type React from 'react';
 import { useEffect, useMemo, useState } from 'react';
-import { BarChart3, Flame, Radar, ShieldAlert, TrendingUp } from 'lucide-react';
+import { BarChart3, Flame, ListChecks, Radar, RefreshCw, ShieldAlert, Target, TrendingUp } from 'lucide-react';
 import { momentumScreenerApi } from '../api/momentumScreener';
 import { systemConfigApi } from '../api/systemConfig';
 import { getParsedApiError, type ParsedApiError } from '../api/error';
 import { ApiErrorAlert, Badge, Button, Card, Drawer, EmptyState, Input, Select } from '../components/common';
 import type {
+  MomentumActionLevel,
+  MomentumBuyPointStatus,
+  MomentumDecisionExcludedCandidate,
+  MomentumDecisionPortfolioSlot,
+  MomentumDecisionTheme,
+  MomentumIntradayPortfolioItem,
+  MomentumIntradaySignal,
   MomentumProfile,
+  MomentumSecondaryDecision,
   MomentumScreenerRequest,
   MomentumScreenerResponse,
   MomentumScreenerResult,
@@ -48,6 +56,19 @@ const DEFAULT_FORM: FormState = {
 };
 
 const DEFAULT_SORT: SortKey = 'rank_score';
+
+function buildScreeningPayload(nextForm: FormState): MomentumScreenerRequest {
+  return {
+    profile: nextForm.profile,
+    topN: Number.parseInt(nextForm.topN, 10) || 10,
+    minChangePct: Number.parseFloat(nextForm.minChangePct) || 7,
+    minAmount: (Number.parseFloat(nextForm.minAmountYi) || 3) * 1e8,
+    minTurnover: Number.parseFloat(nextForm.minTurnover) || 3,
+    excludeSt: true,
+    mainBoardOnly: true,
+    tradeDate: nextForm.tradeDate || undefined,
+  };
+}
 
 type PersistedState = {
   form: FormState;
@@ -225,6 +246,94 @@ function scoreTone(score: number): string {
   if (score >= 70) return 'text-cyan';
   if (score >= 55) return 'text-warning';
   return 'text-danger';
+}
+
+function actionLevelBadgeVariant(level: MomentumActionLevel): 'success' | 'info' | 'warning' | 'danger' | 'default' {
+  if (level === 'strong_go') return 'success';
+  if (level === 'normal_go') return 'info';
+  if (level === 'cautious_go') return 'warning';
+  if (level === 'stand_aside') return 'danger';
+  return 'default';
+}
+
+function strategyHealthBadgeVariant(
+  status: MomentumSecondaryDecision['strategyHealth']['status'],
+): 'success' | 'info' | 'warning' | 'danger' {
+  if (status === 'healthy') return 'success';
+  if (status === 'recovery_mode') return 'info';
+  if (status === 'partial_healthy') return 'warning';
+  return 'danger';
+}
+
+function strategyHealthWindowBadgeVariant(
+  status: MomentumSecondaryDecision['strategyHealth']['shortWindow']['status'],
+): 'success' | 'warning' | 'danger' {
+  if (status === 'healthy') return 'success';
+  if (status === 'recovering') return 'warning';
+  return 'danger';
+}
+
+function decisionSlotBadgeVariant(slot: MomentumDecisionPortfolioSlot['slot']): 'success' | 'info' | 'warning' {
+  if (slot === 'main') return 'success';
+  if (slot === 'secondary') return 'info';
+  return 'warning';
+}
+
+function buyPointBadgeVariant(status: MomentumBuyPointStatus): 'success' | 'warning' | 'default' {
+  if (status === 'clear') return 'success';
+  if (status === 'waiting') return 'warning';
+  return 'default';
+}
+
+function decisionActionBadgeVariant(
+  action: MomentumDecisionPortfolioSlot['suggestedAction'],
+): 'success' | 'warning' | 'default' {
+  if (action === 'ready') return 'success';
+  if (action === 'wait_for_trigger') return 'warning';
+  return 'default';
+}
+
+function intradayStatusBadgeVariant(
+  status: MomentumIntradaySignal['status'],
+): 'success' | 'warning' | 'danger' | 'default' | 'info' {
+  if (status === 'buy_ready') return 'success';
+  if (status === 'watching' || status === 'not_started') return 'info';
+  if (status === 'low_confidence') return 'warning';
+  if (status === 'do_not_buy' || status === 'stand_aside') return 'danger';
+  return 'default';
+}
+
+function intradayConfidenceBadgeVariant(
+  level: MomentumIntradaySignal['confidenceLevel'],
+): 'success' | 'warning' | 'default' {
+  if (level === 'high') return 'success';
+  if (level === 'medium') return 'warning';
+  return 'default';
+}
+
+function intradayItemStatusBadgeVariant(
+  status: MomentumIntradayPortfolioItem['status'],
+): 'success' | 'warning' | 'danger' | 'default' {
+  if (status === 'triggered') return 'success';
+  if (status === 'watching') return 'warning';
+  if (status === 'do_not_chase') return 'danger';
+  return 'default';
+}
+
+function intradayFinalRecommendationBadgeVariant(
+  recommendation: MomentumIntradaySignal['finalRecommendation'],
+): 'success' | 'warning' | 'danger' {
+  if (recommendation === 'buy') return 'success';
+  if (recommendation === 'watch') return 'warning';
+  return 'danger';
+}
+
+function formatSignedPercent(value?: number | null): string {
+  if (value == null || Number.isNaN(value)) {
+    return '--';
+  }
+  const prefix = value > 0 ? '+' : '';
+  return `${prefix}${value.toFixed(2)}%`;
 }
 
 function sortResults(results: MomentumScreenerResult[], sortBy: SortKey): MomentumScreenerResult[] {
@@ -616,14 +725,657 @@ const SummaryCard: React.FC<{
   </Card>
 );
 
+const DecisionThemeCard: React.FC<{ theme: MomentumDecisionTheme }> = ({ theme }) => (
+  <div className="rounded-2xl border border-border/50 bg-card/50 p-4">
+    <div className="flex flex-wrap items-start justify-between gap-2">
+      <div>
+        <p className="text-sm font-semibold text-foreground">{theme.name}</p>
+        <p className="mt-1 text-xs text-secondary-text">{theme.summary}</p>
+      </div>
+      <div className="flex items-center gap-2">
+        <Badge variant="info">{theme.strengthLabel}</Badge>
+        <Badge variant="default">{theme.score.toFixed(1)}</Badge>
+      </div>
+    </div>
+    <div className="mt-4 flex flex-wrap gap-2 text-xs text-secondary-text">
+      <Badge variant="default">候选 {theme.candidateCount}</Badge>
+      <Badge variant="success">清晰 {theme.clearBuyPointCount}</Badge>
+      <Badge variant="warning">龙头 {theme.leaderCount}</Badge>
+    </div>
+    <div className="mt-4 space-y-2">
+      {theme.representatives.map((item) => (
+        <div
+          key={item.tsCode}
+          className="flex items-center justify-between gap-3 rounded-xl border border-border/40 bg-hover/20 px-3 py-2"
+        >
+          <div>
+            <p className="text-sm font-medium text-foreground">
+              #{item.rank} {item.name}
+            </p>
+            <p className="mt-1 text-xs text-secondary-text">
+              {item.tsCode} · {item.role}
+            </p>
+          </div>
+          <div className="text-right">
+            <Badge variant={buyPointBadgeVariant(item.buyPointLabel === '买点清晰' ? 'clear' : item.buyPointLabel === '等待触发' ? 'waiting' : 'unclear')}>
+              {item.buyPointLabel}
+            </Badge>
+            <p className="mt-1 text-xs text-secondary-text">排序分 {item.rankScore.toFixed(1)}</p>
+          </div>
+        </div>
+      ))}
+    </div>
+  </div>
+);
+
+const PortfolioDecisionCard: React.FC<{ item: MomentumDecisionPortfolioSlot }> = ({ item }) => (
+  <div className="rounded-2xl border border-border/50 bg-card/50 p-4">
+    <div className="flex flex-wrap items-start justify-between gap-2">
+      <div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant={decisionSlotBadgeVariant(item.slot)}>{item.slotLabel}</Badge>
+          <Badge variant="default">#{item.rank}</Badge>
+          <Badge variant={buyPointBadgeVariant(item.buyPointStatus)}>{item.buyPointLabel}</Badge>
+        </div>
+        <p className="mt-3 text-base font-semibold text-foreground">{item.name}</p>
+        <p className="mt-1 text-sm text-secondary-text">
+          {item.tsCode} · {item.theme} · {item.role}
+        </p>
+      </div>
+      <div className="text-right">
+        <p className={`text-lg font-semibold ${scoreTone(item.score)}`}>{item.score.toFixed(1)}</p>
+        <p className="mt-1 text-xs text-secondary-text">组合优先级</p>
+      </div>
+    </div>
+
+    <div className="mt-4 flex flex-wrap gap-2">
+      <Badge variant={decisionActionBadgeVariant(item.suggestedAction)}>{item.suggestedActionLabel}</Badge>
+      <Badge variant="info">排序分 {item.rankScore.toFixed(1)}</Badge>
+      <Badge variant="warning">风险分 {item.riskScore.toFixed(1)}</Badge>
+      {item.opportunityTag ? <Badge variant="warning">{item.opportunityTag}</Badge> : null}
+    </div>
+
+    <div className="mt-4 space-y-3 text-sm leading-6 text-secondary-text">
+      <p>
+        <span className="font-medium text-foreground">主因：</span>
+        {item.primaryReason}
+      </p>
+      <p>
+        <span className="font-medium text-foreground">仓位理由：</span>
+        {item.roleReason}
+      </p>
+      <p>
+        <span className="font-medium text-foreground">执行提示：</span>
+        {item.executionPlan}
+      </p>
+      {item.entryHint ? (
+        <p>
+          <span className="font-medium text-foreground">优先买入区：</span>
+          {item.entryHint}
+        </p>
+      ) : null}
+    </div>
+  </div>
+);
+
+const ExcludedCandidateList: React.FC<{ items: MomentumDecisionExcludedCandidate[] }> = ({ items }) => {
+  if (items.length === 0) {
+    return (
+      <div className="rounded-2xl border border-border/50 bg-card/50 p-4 text-sm text-secondary-text">
+        当前筛选结果已经全部纳入重点观察范围，暂无额外落选说明。
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {items.map((item) => (
+        <div key={item.tsCode} className="rounded-2xl border border-border/50 bg-card/50 p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-sm font-medium text-foreground">
+                #{item.rank} {item.name}
+              </p>
+              <p className="mt-1 text-xs text-secondary-text">
+                {item.tsCode} · {item.theme} · {item.role}
+              </p>
+            </div>
+            <Badge variant="default">{item.rankScore.toFixed(1)}</Badge>
+          </div>
+          <p className="mt-3 text-sm leading-6 text-secondary-text">
+            <span className="font-medium text-foreground">主淘汰原因：</span>
+            {item.reason}
+          </p>
+        </div>
+      ))}
+    </div>
+  );
+};
+
+const ActionChecklistPanel: React.FC<{
+  checklist: MomentumSecondaryDecision['actionChecklist'];
+}> = ({ checklist }) => (
+  <div className="rounded-2xl border border-border/50 bg-card/50 p-4">
+    <div className="flex items-start gap-3">
+      <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-border/60 bg-hover/30 text-cyan">
+        <ListChecks className="h-5 w-5" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-semibold text-foreground">明日行动清单</p>
+        <p className="mt-2 text-sm leading-6 text-secondary-text">{checklist.reason}</p>
+      </div>
+    </div>
+
+    {!checklist.enabled ? (
+      <div className="mt-4 rounded-2xl border border-border/40 bg-hover/10 p-4 text-sm leading-6 text-secondary-text">
+        当前仅保留组合与观察信息，不生成分时行动步骤。
+      </div>
+    ) : (
+      <div className="mt-4 grid gap-4 xl:grid-cols-3">
+        {checklist.steps.map((step) => (
+          <div key={step.phase} className="rounded-2xl border border-border/40 bg-hover/10 p-4">
+            <Badge variant="info">{step.phaseLabel}</Badge>
+            <p className="mt-3 text-sm font-medium text-foreground">{step.objective}</p>
+
+            <div className="mt-4 space-y-3 text-sm leading-6 text-secondary-text">
+              <div>
+                <p className="font-medium text-foreground">优先关注</p>
+                <div className="mt-2 space-y-2">
+                  {step.focusItems.map((item) => (
+                    <p key={item}>{item}</p>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <p className="font-medium text-foreground">建议动作</p>
+                <div className="mt-2 space-y-2">
+                  {step.tasks.map((task) => (
+                    <p key={task}>{task}</p>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <p className="font-medium text-foreground">阶段收口</p>
+                <p className="mt-2">{step.expectedOutcome}</p>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    )}
+  </div>
+);
+
+const StrategyHealthPanel: React.FC<{
+  health: MomentumSecondaryDecision['strategyHealth'];
+  onRefresh: () => void;
+  refreshing: boolean;
+  refreshDisabled: boolean;
+}> = ({ health, onRefresh, refreshing, refreshDisabled }) => {
+  const capLabel =
+    health.recommendationCap === 'full'
+      ? '完整推荐'
+      : health.recommendationCap === 'limited'
+        ? '有限推荐'
+        : '停用';
+  const dataSourceLabel =
+    health.dataSource === 'proxy'
+      ? health.isWarming
+        ? '历史验证计算中'
+        : '代理结果'
+      : '历史验证';
+
+  return (
+    <div className="rounded-2xl border border-border/50 bg-card/50 p-4">
+      <div className="flex items-start gap-3">
+        <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-border/60 bg-hover/30 text-cyan">
+          <Radar className="h-5 w-5" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-sm font-semibold text-foreground">策略健康</p>
+            <Badge variant={strategyHealthBadgeVariant(health.status)}>{health.label}</Badge>
+            <Badge variant="default">{capLabel}</Badge>
+            <Badge variant={health.dataSource === 'proxy' ? 'warning' : 'success'}>{dataSourceLabel}</Badge>
+          </div>
+          <p className="mt-2 text-sm leading-6 text-secondary-text">{health.reason}</p>
+          {health.isWarming ? (
+            <p className="mt-2 text-xs leading-6 text-secondary-text">
+              首轮请求已切换为后台预热模式，页面先给你代理健康度，等真实 20/60 日历史结果算完后，点击下方“刷新真实 20/60 结果”即可看到正式结论。
+            </p>
+          ) : null}
+        </div>
+      </div>
+
+      {health.dataSource === 'proxy' ? (
+        <div className="mt-4 rounded-2xl border border-cyan/20 bg-cyan/5 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-foreground">真实 20/60 结果刷新</p>
+              <p className="mt-1 text-xs leading-6 text-secondary-text">
+                {health.isWarming
+                  ? '后台正在计算真实历史验证；点击后会直接等待正式结果返回，不再只看代理健康度。'
+                  : '当前仍是代理健康度；点击后会优先尝试返回真实 20/60 历史验证结果。'}
+              </p>
+            </div>
+            <Button
+              data-testid="momentum-secondary-refresh-inline"
+              variant="outline"
+              size="sm"
+              className="shrink-0"
+              disabled={refreshDisabled}
+              isLoading={refreshing}
+              loadingText="等待真实结果..."
+              onClick={onRefresh}
+            >
+              <RefreshCw className="h-4 w-4" />
+              刷新真实 20/60 结果
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="mt-4 grid gap-4 md:grid-cols-2">
+        {[health.shortWindow, health.longWindow].map((window) => (
+          <div key={window.window} className="rounded-2xl border border-border/40 bg-hover/10 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-sm font-medium text-foreground">{window.windowLabel}</p>
+              <Badge variant={strategyHealthWindowBadgeVariant(window.status)}>{window.statusLabel}</Badge>
+            </div>
+            <p className={`mt-3 text-lg font-semibold ${scoreTone(window.score)}`}>{window.score.toFixed(1)}</p>
+            <p className="mt-1 text-xs text-secondary-text">健康阈值 {window.threshold.toFixed(1)}</p>
+            <div className="mt-3 grid gap-2 text-xs text-secondary-text sm:grid-cols-2">
+              <p>样本 {window.sampleCount} / 成功 {window.successCount}</p>
+              <p>成功率 {window.successRate.toFixed(1)}%</p>
+              <p>利润窗口 {window.avgProfitWindowPct.toFixed(2)}%</p>
+              <p>平均回撤 {window.avgMaxDrawdownPct.toFixed(2)}%</p>
+            </div>
+            <p className="mt-3 text-sm leading-6 text-secondary-text">{window.summary}</p>
+          </div>
+        ))}
+      </div>
+
+      {health.blockers.length > 0 ? (
+        <div className="mt-4 rounded-2xl border border-danger/30 bg-danger/5 p-4">
+          <p className="text-sm font-medium text-foreground">当前阻断项</p>
+          <div className="mt-2 space-y-2 text-sm leading-6 text-secondary-text">
+            {health.blockers.map((item) => (
+              <p key={item}>{item}</p>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {health.recoveryConditions.length > 0 ? (
+        <div className="mt-4 rounded-2xl border border-border/40 bg-hover/10 p-4">
+          <p className="text-sm font-medium text-foreground">恢复条件</p>
+          <div className="mt-2 space-y-2 text-sm leading-6 text-secondary-text">
+            {health.recoveryConditions.map((item) => (
+              <p key={item}>{item}</p>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+};
+
+type SecondaryDecisionPanelProps = {
+  decision: MomentumSecondaryDecision | null;
+  onRefresh: () => void;
+  refreshing: boolean;
+  refreshDisabled: boolean;
+};
+
+const SecondaryDecisionPanel: React.FC<SecondaryDecisionPanelProps> = ({
+  decision,
+  onRefresh,
+  refreshing,
+  refreshDisabled,
+}) => (
+  <div data-testid="momentum-secondary-decision">
+    <Card className="rounded-3xl border-border/60 bg-card/55">
+    <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border/60 pb-4">
+      <div>
+        <p className="text-sm font-semibold text-foreground">二次决策</p>
+        <p className="mt-1 text-xs text-secondary-text">
+          从候选池继续收口成主线、默认组合、落选原因和执行提示，帮助判断今天到底该不该做。
+        </p>
+      </div>
+      {decision ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge
+            data-testid="momentum-secondary-action-level"
+            variant={actionLevelBadgeVariant(decision.action.level)}
+            size="md"
+          >
+            {decision.action.label}
+          </Badge>
+          <Badge variant="default">{decision.tradeDate}</Badge>
+          <Badge variant="info">
+            {decision.action.sourceProfile === 'aggressive' ? 'Aggressive 引擎' : 'Standard 引擎'}
+          </Badge>
+          <Button
+            data-testid="momentum-secondary-refresh"
+            variant={decision.strategyHealth.dataSource === 'proxy' ? 'outline' : 'ghost'}
+            size="sm"
+            className="shrink-0"
+            disabled={refreshDisabled}
+            isLoading={refreshing}
+            loadingText="刷新中..."
+            onClick={onRefresh}
+          >
+            <RefreshCw className="h-4 w-4" />
+            刷新二次决策
+          </Button>
+        </div>
+      ) : null}
+    </div>
+
+    {!decision ? (
+      <div className="pt-4">
+        <EmptyState
+          title="暂无二次决策结果"
+          description="先执行一次强势筛选，系统会自动生成今日出手级别、默认组合和落选原因。"
+        />
+      </div>
+    ) : (
+      <div className="grid gap-4 pt-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-border/50 bg-hover/20 p-4">
+            <div className="flex items-start gap-3">
+              <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-border/60 bg-card/70 text-cyan">
+                <Target className="h-5 w-5" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-foreground">今日出手级别</p>
+                <p className="mt-2 text-base leading-7 text-foreground">{decision.action.reason}</p>
+              </div>
+            </div>
+          </div>
+
+          <StrategyHealthPanel
+            health={decision.strategyHealth}
+            onRefresh={onRefresh}
+            refreshing={refreshing}
+            refreshDisabled={refreshDisabled}
+          />
+
+          <ActionChecklistPanel checklist={decision.actionChecklist} />
+
+          <div>
+            <div className="mb-3 flex items-center gap-2">
+              <ListChecks className="h-4 w-4 text-cyan" />
+              <p className="text-sm font-semibold text-foreground">默认 1-3 票组合</p>
+            </div>
+            <div className="grid gap-4 lg:grid-cols-3">
+              {decision.portfolio.map((item) => (
+                <PortfolioDecisionCard key={`${item.slot}-${item.tsCode}`} item={item} />
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <div className="mb-3 flex items-center gap-2">
+              <TrendingUp className="h-4 w-4 text-cyan" />
+              <p className="text-sm font-semibold text-foreground">主线识别</p>
+            </div>
+            <div className="grid gap-4 lg:grid-cols-2">
+              {decision.themes.map((theme) => (
+                <DecisionThemeCard key={theme.name} theme={theme} />
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          <div>
+            <div className="mb-3 flex items-center gap-2">
+              <ShieldAlert className="h-4 w-4 text-cyan" />
+              <p className="text-sm font-semibold text-foreground">落选说明</p>
+            </div>
+            <ExcludedCandidateList items={decision.excludedCandidates} />
+          </div>
+
+          <div className="rounded-2xl border border-border/50 bg-card/50 p-4">
+            <p className="text-sm font-semibold text-foreground">证据区</p>
+            <div className="mt-4 space-y-4 text-sm leading-6 text-secondary-text">
+              <div>
+                <p className="font-medium text-foreground">主线验证</p>
+                <div className="mt-2 space-y-2">
+                  {decision.evidence.themeValidation.map((item) => (
+                    <p key={item}>{item}</p>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <p className="font-medium text-foreground">今日结论</p>
+                <div className="mt-2 space-y-2">
+                  {decision.evidence.todayReasoning.map((item) => (
+                    <p key={item}>{item}</p>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+    </Card>
+  </div>
+);
+
+const IntradaySignalItemCard: React.FC<{ item: MomentumIntradayPortfolioItem }> = ({ item }) => (
+  <div className="rounded-2xl border border-border/50 bg-card/50 p-4">
+    <div className="flex flex-wrap items-start justify-between gap-3">
+      <div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant={decisionSlotBadgeVariant(item.slot)}>{item.slotLabel}</Badge>
+          <Badge variant={intradayItemStatusBadgeVariant(item.status)}>{item.statusLabel}</Badge>
+          {item.doNotChase && item.status !== 'do_not_chase' ? <Badge variant="danger">不建议追入</Badge> : null}
+        </div>
+        <p className="mt-3 text-sm font-semibold text-foreground">{item.name}</p>
+        <p className="mt-1 text-xs text-secondary-text">
+          {item.tsCode} · {item.theme} · {item.role}
+        </p>
+      </div>
+      <div className="text-right">
+        <p className="text-lg font-semibold text-foreground">
+          {item.currentPrice != null ? item.currentPrice.toFixed(2) : '--'}
+        </p>
+        <p className="mt-1 text-xs text-secondary-text">{formatSignedPercent(item.changePercent)}</p>
+      </div>
+    </div>
+
+    <p className="mt-4 text-sm leading-6 text-secondary-text">{item.reason}</p>
+
+    <div className="mt-4 grid gap-3 md:grid-cols-3">
+      <div className="rounded-xl border border-border/40 bg-hover/20 px-3 py-2">
+        <p className="text-xs text-secondary-text">建议区间</p>
+        <p className="mt-1 text-sm font-medium text-foreground">
+          {item.entryRangeLow != null && item.entryRangeHigh != null
+            ? `${item.entryRangeLow.toFixed(2)} - ${item.entryRangeHigh.toFixed(2)}`
+            : '--'}
+        </p>
+      </div>
+      <div className="rounded-xl border border-border/40 bg-hover/20 px-3 py-2">
+        <p className="text-xs text-secondary-text">相对开盘价</p>
+        <p className="mt-1 text-sm font-medium text-foreground">{formatSignedPercent(item.priceVsOpenPct)}</p>
+      </div>
+      <div className="rounded-xl border border-border/40 bg-hover/20 px-3 py-2">
+        <p className="text-xs text-secondary-text">相对区间上沿</p>
+        <p className="mt-1 text-sm font-medium text-foreground">{formatSignedPercent(item.priceVsEntryHighPct)}</p>
+      </div>
+    </div>
+
+    {item.missingConditions.length > 0 ? (
+      <div className="mt-4 rounded-2xl border border-border/40 bg-hover/10 p-3">
+        <p className="text-xs font-medium uppercase tracking-[0.12em] text-secondary-text">还差哪些条件</p>
+        <div className="mt-2 space-y-2 text-sm leading-6 text-secondary-text">
+          {item.missingConditions.map((condition) => (
+            <p key={condition}>{condition}</p>
+          ))}
+        </div>
+      </div>
+    ) : null}
+  </div>
+);
+
+type IntradaySignalPanelProps = {
+  decision: MomentumSecondaryDecision | null;
+  intradaySignal: MomentumIntradaySignal | null;
+  loading: boolean;
+  error: ParsedApiError | null;
+  onRefresh: () => void;
+  onDismissError: () => void;
+};
+
+const IntradaySignalPanel: React.FC<IntradaySignalPanelProps> = ({
+  decision,
+  intradaySignal,
+  loading,
+  error,
+  onRefresh,
+  onDismissError,
+}) => (
+  <div data-testid="momentum-intraday-signal">
+    <Card className="rounded-3xl border-border/60 bg-card/55">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border/60 pb-4">
+        <div>
+          <p className="text-sm font-semibold text-foreground">盘中信号</p>
+          <p className="mt-1 text-xs text-secondary-text">
+            固定沿用昨晚的主仓 / 次仓 / 观察仓顺序，只补充盘中是否触发、是否偏离过大，以及 60 分钟内的买 / 不买收口。
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {intradaySignal ? (
+            <>
+              <Badge variant={intradayStatusBadgeVariant(intradaySignal.status)}>
+                {intradaySignal.statusLabel}
+              </Badge>
+              <Badge variant={intradayConfidenceBadgeVariant(intradaySignal.confidenceLevel)}>
+                {intradaySignal.confidenceLabel}
+              </Badge>
+              <Badge variant={intradayFinalRecommendationBadgeVariant(intradaySignal.finalRecommendation)}>
+                {intradaySignal.finalRecommendationLabel}
+              </Badge>
+            </>
+          ) : null}
+          <Button
+            data-testid="momentum-intraday-refresh"
+            variant="ghost"
+            disabled={!decision}
+            isLoading={loading}
+            loadingText="刷新中..."
+            onClick={onRefresh}
+          >
+            刷新盘中信号
+          </Button>
+        </div>
+      </div>
+
+      {error ? <ApiErrorAlert error={error} className="mt-4" onDismiss={onDismissError} /> : null}
+
+      {!decision ? (
+        <div className="pt-4">
+          <EmptyState
+            title="暂无盘中信号"
+            description="先执行一次强势筛选并生成二次决策，再按需手动刷新盘中信号。"
+          />
+        </div>
+      ) : !intradaySignal ? (
+        <div className="pt-4">
+          <EmptyState
+            title="盘中信号尚未刷新"
+            description="当前先保留昨晚的静态二次决策；你点击“刷新盘中信号”后，系统再补充盘中状态与买/不买收口。"
+          />
+        </div>
+      ) : (
+        <div className="grid gap-4 pt-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
+          <div className="space-y-4">
+            <div className="rounded-2xl border border-border/50 bg-hover/20 p-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant="default">{intradaySignal.marketPhaseLabel}</Badge>
+                <Badge variant={intradayStatusBadgeVariant(intradaySignal.status)}>
+                  {intradaySignal.statusLabel}
+                </Badge>
+              </div>
+              <p className="mt-3 text-sm leading-7 text-foreground">{intradaySignal.reason}</p>
+              <p className="mt-3 text-xs text-secondary-text">
+                更新时间：{new Date(intradaySignal.updatedAt).toLocaleString('zh-CN', { hour12: false })}
+              </p>
+            </div>
+
+            <div className="grid gap-4">
+              {intradaySignal.portfolioItems.map((item) => (
+                <IntradaySignalItemCard key={`${item.slot}-${item.tsCode}`} item={item} />
+              ))}
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            <div className="rounded-2xl border border-border/50 bg-card/50 p-4">
+              <p className="text-sm font-semibold text-foreground">今日收口</p>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <Badge variant={intradayFinalRecommendationBadgeVariant(intradaySignal.finalRecommendation)}>
+                  {intradaySignal.finalRecommendationLabel}
+                </Badge>
+                <Badge variant={intradayConfidenceBadgeVariant(intradaySignal.confidenceLevel)}>
+                  {intradaySignal.confidenceLabel}
+                </Badge>
+              </div>
+              <p className="mt-3 text-sm leading-6 text-secondary-text">{intradaySignal.closingNote}</p>
+              <p className="mt-3 text-xs leading-6 text-secondary-text">
+                {intradaySignal.canEmitBuySignal
+                  ? '当前允许给出更明确的买点信号，但仍沿用昨晚排好的顺序，不在盘中改排序。'
+                  : '当前不输出明确买入指令；如果只是观察或低置信度，页面会明确劝退或继续观察。'}
+              </p>
+            </div>
+
+            <div className="rounded-2xl border border-border/50 bg-card/50 p-4">
+              <p className="text-sm font-semibold text-foreground">优先关注顺序</p>
+              <div className="mt-3 space-y-2 text-sm leading-6 text-secondary-text">
+                {intradaySignal.focusOrder.length > 0 ? (
+                  intradaySignal.focusOrder.map((item) => <p key={item}>{item}</p>)
+                ) : (
+                  <p>当前没有额外顺序提示，继续按主仓 / 次仓 / 观察仓固定顺序跟踪即可。</p>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-border/50 bg-card/50 p-4">
+              <p className="text-sm font-semibold text-foreground">继续关注</p>
+              <div className="mt-3 space-y-2 text-sm leading-6 text-secondary-text">
+                {intradaySignal.watchItems.length > 0 ? (
+                  intradaySignal.watchItems.map((item) => <p key={item}>{item}</p>)
+                ) : (
+                  <p>当前没有额外观察项，继续按主仓 / 次仓 / 观察仓顺序跟踪即可。</p>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </Card>
+  </div>
+);
+
 const MomentumScreenerPage: React.FC = () => {
   const persisted = useMemo(() => loadPersistedState(), []);
   const [form, setForm] = useState<FormState>(persisted.form);
   const [sortBy, setSortBy] = useState<SortKey>(persisted.sortBy);
   const [response, setResponse] = useState<MomentumScreenerResponse | null>(null);
+  const [decision, setDecision] = useState<MomentumSecondaryDecision | null>(null);
+  const [intradaySignal, setIntradaySignal] = useState<MomentumIntradaySignal | null>(null);
+  const [lastSubmittedPayload, setLastSubmittedPayload] = useState<MomentumScreenerRequest | null>(null);
   const [selectedResult, setSelectedResult] = useState<MomentumScreenerResult | null>(null);
   const [loading, setLoading] = useState(false);
+  const [decisionRefreshing, setDecisionRefreshing] = useState(false);
+  const [intradayLoading, setIntradayLoading] = useState(false);
   const [error, setError] = useState<ParsedApiError | null>(null);
+  const [intradayError, setIntradayError] = useState<ParsedApiError | null>(null);
   const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
 
   useEffect(() => {
@@ -637,27 +1389,68 @@ const MomentumScreenerPage: React.FC = () => {
   const runScreening = async (nextForm = form) => {
     setLoading(true);
     setError(null);
+    setDecision(null);
+    setIntradaySignal(null);
+    setIntradayError(null);
     setSelectedResult(null);
 
-    const payload: MomentumScreenerRequest = {
-      profile: nextForm.profile,
-      topN: Number.parseInt(nextForm.topN, 10) || 10,
-      minChangePct: Number.parseFloat(nextForm.minChangePct) || 7,
-      minAmount: (Number.parseFloat(nextForm.minAmountYi) || 3) * 1e8,
-      minTurnover: Number.parseFloat(nextForm.minTurnover) || 3,
-      excludeSt: true,
-      mainBoardOnly: true,
-      tradeDate: nextForm.tradeDate || undefined,
-    };
+    const payload = buildScreeningPayload(nextForm);
+    setLastSubmittedPayload(payload);
 
     try {
-      const data = await momentumScreenerApi.screen(payload);
-      setResponse(data);
+      const data = await momentumScreenerApi.screenWithDecision(payload);
+      setResponse(data.screening);
+      setDecision(data.decision);
     } catch (err) {
       setError(getParsedApiError(err));
       setResponse(null);
+      setDecision(null);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleRefreshDecision = async () => {
+    if (!lastSubmittedPayload || !decision) {
+      return;
+    }
+
+    setDecisionRefreshing(true);
+    setError(null);
+
+    try {
+      const data = await momentumScreenerApi.screenWithDecision(lastSubmittedPayload, {
+        waitForStrategyHealth: true,
+      });
+      setResponse(data.screening);
+      setDecision(data.decision);
+      setIntradaySignal(null);
+      setIntradayError(null);
+    } catch (err) {
+      setError(getParsedApiError(err));
+    } finally {
+      setDecisionRefreshing(false);
+    }
+  };
+
+  const handleRefreshIntradaySignal = async () => {
+    if (!lastSubmittedPayload || !decision) {
+      return;
+    }
+
+    setIntradayLoading(true);
+    setIntradayError(null);
+
+    try {
+      const data = await momentumScreenerApi.fetchIntradaySignal(lastSubmittedPayload);
+      setResponse(data.screening);
+      setDecision(data.decision);
+      setIntradaySignal(data.intradaySignal);
+    } catch (err) {
+      setIntradaySignal(null);
+      setIntradayError(getParsedApiError(err));
+    } finally {
+      setIntradayLoading(false);
     }
   };
 
@@ -717,6 +1510,7 @@ const MomentumScreenerPage: React.FC = () => {
     () => buildWatchlistSummary(response?.profile ?? form.profile, response?.tradeDate, sortedResults),
     [form.profile, response?.profile, response?.tradeDate, sortedResults],
   );
+  const isBusy = loading || decisionRefreshing || intradayLoading;
 
   const handleCopyResults = async () => {
     if (sortedResults.length === 0) {
@@ -900,6 +1694,7 @@ const MomentumScreenerPage: React.FC = () => {
                 data-testid="momentum-screener-run"
                 variant="home-action-ai"
                 className="flex-1"
+                disabled={isBusy}
                 isLoading={loading}
                 loadingText="筛选中..."
                 onClick={() => void runScreening()}
@@ -910,7 +1705,7 @@ const MomentumScreenerPage: React.FC = () => {
                 data-testid="momentum-screener-restore"
                 variant="ghost"
                 className="flex-1"
-                disabled={loading}
+                disabled={isBusy}
                 onClick={() => void handleRestoreSystemDefaults()}
               >
                 恢复系统默认
@@ -919,7 +1714,7 @@ const MomentumScreenerPage: React.FC = () => {
                 data-testid="momentum-screener-reset"
                 variant="ghost"
                 className="flex-1"
-                disabled={loading}
+                disabled={isBusy}
                 onClick={() => {
                   setForm(DEFAULT_FORM);
                   setSortBy(DEFAULT_SORT);
@@ -959,6 +1754,21 @@ const MomentumScreenerPage: React.FC = () => {
               subtext={sortedResults[0] ? `${sortedResults[0].name} 排名第 1` : '等待筛选结果'}
             />
           </div>
+
+          <SecondaryDecisionPanel
+            decision={decision}
+            onRefresh={() => void handleRefreshDecision()}
+            refreshing={decisionRefreshing}
+            refreshDisabled={!decision || !lastSubmittedPayload || loading || intradayLoading}
+          />
+          <IntradaySignalPanel
+            decision={decision}
+            intradaySignal={intradaySignal}
+            loading={intradayLoading}
+            error={intradayError}
+            onRefresh={() => void handleRefreshIntradaySignal()}
+            onDismissError={() => setIntradayError(null)}
+          />
 
           <Card className="rounded-3xl border-border/60 bg-card/55">
             <div data-testid="momentum-screener-watchlist-summary">

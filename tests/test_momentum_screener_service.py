@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 import sys
+import tempfile
 import types
 import unittest
 from unittest.mock import patch
@@ -23,6 +25,7 @@ from src.services.momentum_screener_service import MomentumScreenerService
 class _FakeFetcher:
     def __init__(self) -> None:
         self.api_calls: dict[str, int] = {}
+        self.history_calls: dict[str, int] = {}
         self.snapshot = {
             "stock_basic": pd.DataFrame(
                 [
@@ -221,6 +224,7 @@ class _FakeFetcher:
 
     def get_daily_data(self, stock_code: str, start_date=None, end_date=None, days: int = 80):
         normalized = str(stock_code).split(".")[0]
+        self.history_calls[normalized] = self.history_calls.get(normalized, 0) + 1
         return self.history.get(stock_code, self.history.get(normalized, pd.DataFrame()))
 
 
@@ -229,13 +233,21 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
         Config.reset_instance()
         os.environ.pop("MOMENTUM_SECTOR_CACHE_TTL_SECONDS", None)
         MomentumScreenerService.reset_sector_cache()
+        self.history_cache_dir = tempfile.TemporaryDirectory()
 
     def tearDown(self) -> None:
         os.environ.pop("MOMENTUM_SECTOR_CACHE_TTL_SECONDS", None)
+        self.history_cache_dir.cleanup()
         Config.reset_instance()
 
+    def _build_service(self, fetcher: _FakeFetcher | None = None) -> MomentumScreenerService:
+        return MomentumScreenerService(
+            fetcher=fetcher or _FakeFetcher(),
+            history_cache_dir=Path(self.history_cache_dir.name),
+        )
+
     def test_screen_returns_ranked_results(self) -> None:
-        service = MomentumScreenerService(fetcher=_FakeFetcher())
+        service = self._build_service()
 
         result = service.screen(top_n=2, profile="standard")
 
@@ -249,8 +261,18 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
         self.assertIn("score_breakdown", result["results"][0])
         self.assertGreater(result["results"][0]["rank_score"], result["results"][1]["rank_score"])
 
+    def test_screen_keeps_full_ranked_results_for_downstream_decision(self) -> None:
+        service = self._build_service()
+
+        result = service.screen(top_n=1, profile="standard")
+
+        self.assertEqual(len(result["results"]), 1)
+        self.assertEqual(len(result["ranked_results"]), 2)
+        self.assertEqual(result["ranked_results"][0]["ts_code"], "600001.SH")
+        self.assertEqual(result["ranked_results"][1]["ts_code"], "600002.SH")
+
     def test_screen_supports_aggressive_profile(self) -> None:
-        service = MomentumScreenerService(fetcher=_FakeFetcher())
+        service = self._build_service()
 
         result = service.screen(top_n=2, profile="aggressive")
 
@@ -267,7 +289,7 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
     def test_sector_context_cache_is_shared_across_service_instances(self) -> None:
         fetcher = _FakeFetcher()
 
-        first_service = MomentumScreenerService(fetcher=fetcher)
+        first_service = self._build_service(fetcher)
         first_service.screen(top_n=2, profile="standard")
 
         self.assertEqual(fetcher.api_calls.get("index_classify"), 1)
@@ -275,7 +297,7 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
         self.assertEqual(fetcher.api_calls.get("index_daily"), 1)
         self.assertEqual(MomentumScreenerService.get_sector_cache_stats()["miss"], 1)
 
-        second_service = MomentumScreenerService(fetcher=fetcher)
+        second_service = self._build_service(fetcher)
         second_service.screen(top_n=2, profile="aggressive")
 
         self.assertEqual(fetcher.api_calls.get("index_classify"), 1)
@@ -289,7 +311,7 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
         fetcher = _FakeFetcher()
 
         with patch.object(MomentumScreenerService, "_cache_now_ts", return_value=1000.0):
-            service = MomentumScreenerService(fetcher=fetcher)
+            service = self._build_service(fetcher)
             service.screen(top_n=2, profile="standard")
 
         self.assertEqual(fetcher.api_calls.get("index_classify"), 1)
@@ -298,7 +320,7 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
 
         ttl = MomentumScreenerService.get_sector_cache_stats()["ttl_seconds"]
         with patch.object(MomentumScreenerService, "_cache_now_ts", return_value=1000.0 + ttl + 1):
-            reloaded_service = MomentumScreenerService(fetcher=fetcher)
+            reloaded_service = self._build_service(fetcher)
             reloaded_service.screen(top_n=2, profile="aggressive")
 
         self.assertEqual(fetcher.api_calls.get("index_classify"), 2)
@@ -308,18 +330,42 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
         self.assertEqual(stats["miss"], 2)
         self.assertEqual(stats["expired"], 1)
 
+    def test_sector_context_cache_hits_when_unmapped_codes_are_known(self) -> None:
+        fetcher = _FakeFetcher()
+        service = self._build_service(fetcher)
+        expires_at = MomentumScreenerService._cache_now_ts() + 600
+        service._sector_context_cache["20260410"] = {
+            "payload": {
+                "mapping": {"600001.SH": "鐢靛姏璁惧"},
+                "sector_pct_map": {"鐢靛姏璁惧": 5.6},
+                "unmapped_codes": ["999999.SH"],
+            },
+            "expires_at": expires_at,
+        }
+
+        result = service._load_sector_context(
+            trade_date="20260410",
+            ts_codes=["600001.SH", "999999.SH"],
+        )
+
+        self.assertEqual(fetcher.api_calls.get("index_classify"), None)
+        self.assertIn("999999.SH", result["unmapped_codes"])
+        stats = MomentumScreenerService.get_sector_cache_stats()
+        self.assertEqual(stats["hit"], 1)
+        self.assertEqual(stats["miss"], 0)
+
     def test_sector_cache_ttl_reads_runtime_config(self) -> None:
         os.environ["MOMENTUM_SECTOR_CACHE_TTL_SECONDS"] = "900"
         Config.reset_instance()
 
-        service = MomentumScreenerService(fetcher=_FakeFetcher())
+        service = self._build_service()
         service.screen(top_n=2, profile="standard")
 
         stats = MomentumScreenerService.get_sector_cache_stats()
         self.assertEqual(stats["ttl_seconds"], 900)
 
     def test_screen_falls_back_when_sector_context_load_fails(self) -> None:
-        service = MomentumScreenerService(fetcher=_FakeFetcher())
+        service = self._build_service()
 
         with patch.object(service, "_load_sector_context", side_effect=RuntimeError("sector timeout")):
             result = service.screen(top_n=2, profile="standard")
@@ -327,6 +373,24 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
         self.assertEqual(result["candidate_count"], 2)
         self.assertEqual(result["results"][0]["ts_code"], "600001.SH")
         self.assertEqual(result["results"][0]["themes"][0], "旧行业A")
+
+
+    def test_history_cache_reuses_disk_snapshot_across_service_instances(self) -> None:
+        fetcher = _FakeFetcher()
+
+        first_service = self._build_service(fetcher)
+        first_service.screen(top_n=2, profile="standard")
+
+        self.assertEqual(fetcher.history_calls.get("600001"), 1)
+        self.assertEqual(fetcher.history_calls.get("600002"), 1)
+
+        MomentumScreenerService._shared_history_cache.clear()
+
+        second_service = self._build_service(fetcher)
+        second_service.screen(top_n=2, profile="aggressive")
+
+        self.assertEqual(fetcher.history_calls.get("600001"), 1)
+        self.assertEqual(fetcher.history_calls.get("600002"), 1)
 
 
 if __name__ == "__main__":

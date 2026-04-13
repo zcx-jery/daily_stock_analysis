@@ -511,6 +511,32 @@ class DataFetcherManager:
         self._fundamental_timeout_worker_limit = 8
         self._fundamental_timeout_slots = BoundedSemaphore(self._fundamental_timeout_worker_limit)
 
+    @staticmethod
+    def _resolve_realtime_source_priority_list(raw_priority: Any) -> List[str]:
+        """Normalize realtime source priority for runtime routing."""
+        from src.config import (
+            DEFAULT_REALTIME_SOURCE_PRIORITY,
+            normalize_realtime_source_priority,
+        )
+
+        raw_text = str(raw_priority or "").strip()
+        normalized_priority = normalize_realtime_source_priority(raw_text)
+        if normalized_priority:
+            return [source.strip() for source in normalized_priority.split(",") if source.strip()]
+
+        if raw_text:
+            logger.warning(
+                "[实时行情] realtime source priority %r is invalid; falling back to %s",
+                raw_text,
+                DEFAULT_REALTIME_SOURCE_PRIORITY,
+            )
+
+        return [
+            source.strip()
+            for source in DEFAULT_REALTIME_SOURCE_PRIORITY.split(",")
+            if source.strip()
+        ]
+
     def _ensure_concurrency_guards(self) -> None:
         """Lazily initialize thread-safety primitives for test scaffolds using __new__."""
         if not hasattr(self, "_fetchers_lock") or self._fetchers_lock is None:
@@ -1079,12 +1105,13 @@ class DataFetcherManager:
         # 检查优先级中是否包含全量拉取数据源
         # 注意：新增全量接口（如 tushare_realtime）时需同步更新此列表
         # 全量接口特征：一次 API 调用拉取全市场 5000+ 股票数据
-        priority = config.realtime_source_priority.lower()
+        priority_list = self._resolve_realtime_source_priority_list(
+            getattr(config, "realtime_source_priority", "")
+        )
         bulk_sources = ['efinance', 'akshare_em', 'tushare']  # 全量接口列表
         
         # 如果优先级中前两个都不是全量数据源，跳过预取
         # 因为新浪/腾讯是单股票查询，不需要预取
-        priority_list = [s.strip() for s in priority.split(',')]
         first_bulk_source_index = None
         for i, source in enumerate(priority_list):
             if source in bulk_sources:
@@ -1194,7 +1221,9 @@ class DataFetcherManager:
             return None
         
         # 获取配置的数据源优先级
-        source_priority = config.realtime_source_priority.split(',')
+        source_priority = self._resolve_realtime_source_priority_list(
+            getattr(config, "realtime_source_priority", "")
+        )
         
         errors = []
         # primary_quote holds the first successful result; we may supplement

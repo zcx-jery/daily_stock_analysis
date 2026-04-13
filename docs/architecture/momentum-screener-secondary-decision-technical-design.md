@@ -11,6 +11,7 @@
 - 关联文档：
   - [原始 SPEC](./momentum-screener-secondary-decision-spec.md)
   - [完整需求文档](./momentum-screener-secondary-decision-prd.md)
+  - [开发任务清单](./momentum-screener-secondary-decision-development-tasks.md)
   - [字段映射文档](./momentum-screener-field-mapping.md)
   - [开发任务拆分](./momentum-screener-development-tasks.md)
 
@@ -67,6 +68,11 @@
 5. `Buyability & Confidence Layer`
 6. `Evidence Assembly Layer`
 7. `Presentation Adapter Layer`
+
+补充约束：
+- 二次决策的真实输入源不是“当前页面展示的 TopN results”，而是“候选池完成全量评分后的完整排序集”。
+- `top_n` 只控制页面展示、导出和列表截断，不得影响主线识别、角色分配、默认组合和落选说明。
+- 标准链路应为：`候选池 -> 全量评分排序 -> 二次决策 -> 页面展示 TopN`。
 
 ## 6. 核心模块拆分
 
@@ -318,7 +324,92 @@
 }
 ```
 
-### 8.2 portfolio slot
+### 8.2 strategy_health
+
+当前实现说明：
+
+- `strategy_health` 不再使用纯当前截面的代理分数，而是按当前这套筛选参数回放最近交易日。
+- `short_window` 对应最近 20 个已完成验证样本，`long_window` 对应最近 60 个已完成验证样本。
+- 每个历史样本会先生成当时的默认组合，再基于后续 1-2 个交易日的利润窗口、回撤和组合成功率判断窗口状态。
+- 返回载荷除 `score` / `threshold` 外，还会包含 `sample_count`、`success_count`、`success_rate`、`avg_profit_window_pct`、`avg_max_drawdown_pct`、`avg_selected_count`。
+- API 运行时默认启用 `strategy_health` 后台预热：若真实历史验证结果尚未缓存，则当前响应先返回代理健康度，同时在后台异步计算真实 20/60 日结果。
+- 真实历史验证结果会同时写入进程内缓存与磁盘缓存；同一交易日、同一套筛选参数再次请求时优先命中缓存，避免重复跑 60 日回放。
+- 前端通过 `data_source` 与 `is_warming` 区分“真实历史验证”与“代理预热中”两种状态，避免把首轮代理结果误认为最终验证结果。
+
+```json
+{
+  "status": "recovery_mode",
+  "label": "恢复中",
+  "reason": "20 日窗口先恢复，但 60 日结构可信度还没完全修复，先降级到观察 / 少量推荐。",
+  "recommendation_cap": "limited",
+  "can_full_recommend": false,
+  "data_source": "historical",
+  "is_warming": false,
+  "short_window": {
+    "window": "short_20d",
+    "window_label": "20 日当前可用性",
+    "status": "healthy",
+    "status_label": "健康",
+    "score": 72.0,
+    "threshold": 68.0,
+    "sample_count": 20,
+    "success_count": 14,
+    "success_rate": 70.0,
+    "avg_profit_window_pct": 2.6,
+    "avg_max_drawdown_pct": 2.1,
+    "avg_selected_count": 2.1,
+    "summary": "20 日窗口当前可用性已达健康阈值，可继续支撑当前判断。"
+  },
+  "long_window": {
+    "window": "long_60d",
+    "window_label": "60 日结构可信度",
+    "status": "recovering",
+    "status_label": "恢复中",
+    "score": 59.0,
+    "threshold": 64.0,
+    "sample_count": 60,
+    "success_count": 35,
+    "success_rate": 58.3,
+    "avg_profit_window_pct": 1.9,
+    "avg_max_drawdown_pct": 3.8,
+    "avg_selected_count": 1.9,
+    "summary": "60 日窗口开始修复，但还没恢复到完整强推荐状态。"
+  },
+  "blockers": [
+    "60 日窗口结构可信度不足，当前更适合观察或少量推荐。"
+  ],
+  "recovery_conditions": [
+    "60 日窗口需要恢复到主线、角色与组合结构重新稳定。"
+  ]
+}
+```
+
+### 8.3 action_checklist
+
+```json
+{
+  "enabled": true,
+  "reason": "当前出手级别为“可正常出手”，系统会补充明日行动清单，帮助你在次日 60 分钟内完成收口。",
+  "steps": [
+    {
+      "phase": "pre_open",
+      "phase_label": "开盘前",
+      "objective": "先确认昨晚这套 1-3 票组合，今天是否还值得继续盯。",
+      "focus_items": [
+        "主仓：振江股份（电力设备 / 前排换手）",
+        "次仓：长城电工（电力设备 / 龙头核心）"
+      ],
+      "tasks": [
+        "先看主仓、次仓的竞价强弱，判断是否明显低于昨晚预期。",
+        "观察仓只保留主线确认价值，不因为单票冲高就临时改顺序。"
+      ],
+      "expected_outcome": "明确开盘后先盯主仓、次仓，观察仓只保留辅助确认作用。"
+    }
+  ]
+}
+```
+
+### 8.4 portfolio slot
 
 ```json
 {
@@ -333,7 +424,7 @@
 }
 ```
 
-### 8.3 intraday_signal
+### 8.5 intraday_signal
 
 ```json
 {
@@ -341,6 +432,11 @@
   "can_emit_buy_signal": false,
   "status": "low_confidence",
   "reason": "昨晚主仓排序与早盘实际走法明显背离",
+  "closing_note": "今天结论是不建议买入；主仓 / 次仓 / 观察仓仍按昨晚固定顺序跟踪。",
+  "focus_order": [
+    "优先关注：主仓 振江股份（继续等待触发）",
+    "次选关注：次仓 长城电工（仅保留观察）"
+  ],
   "watch_items": [
     "主仓仍未接近预设买点",
     "次仓分时强度明显反超主仓"
@@ -365,8 +461,8 @@
 
 建议新增接口：
 
-- `GET /api/v1/stocks/screener/momentum/decision`
-- `GET /api/v1/stocks/screener/momentum/decision/intraday`
+- `POST /api/v1/stocks/screener/momentum/decision`
+- `POST /api/v1/stocks/screener/momentum/decision/intraday`
 
 可选：
 
@@ -415,6 +511,7 @@
 
 - 不自动跳详情页
 - 不自动执行筛选
+- 盘中信号默认手动刷新，不在静态结果返回后自动拉盘中数据
 - 不在低置信度时继续显示强烈操作按钮
 - 明确展示 `不建议追入`
 - 明确展示 `还差哪些条件才会触发`

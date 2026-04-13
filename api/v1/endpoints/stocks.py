@@ -16,13 +16,15 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 
-from api.deps import get_momentum_screener_service
+from api.deps import get_momentum_screener_service, get_momentum_secondary_decision_service
 from api.v1.schemas.stocks import (
     ExtractFromImageResponse,
     ExtractItem,
     KLineData,
     MomentumScreenerRequest,
     MomentumScreenerResponse,
+    MomentumSecondaryDecisionIntradayResponse,
+    MomentumSecondaryDecisionResponse,
     StockHistoryResponse,
     StockQuote,
 )
@@ -37,6 +39,7 @@ from src.services.import_parser import (
     parse_import_from_bytes,
     parse_import_from_text,
 )
+from src.services.momentum_secondary_decision_service import MomentumSecondaryDecisionService
 from src.services.stock_service import StockService
 from src.services.momentum_screener_service import MomentumScreenerService
 
@@ -94,6 +97,98 @@ def screen_momentum_stocks(
         raise HTTPException(
             status_code=500,
             detail={"error": "internal_error", "message": f"筛选失败: {str(e)}"},
+        )
+
+
+@router.post(
+    "/screener/momentum/decision",
+    response_model=MomentumSecondaryDecisionResponse,
+    responses={
+        200: {"description": "筛选结果与二次决策结果"},
+        400: {"description": "参数错误", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="强势筛选二次决策",
+    description="在现有强势筛选结果基础上，输出主线识别、默认组合、落选原因与执行提示。",
+)
+def build_momentum_secondary_decision(
+    payload: MomentumScreenerRequest,
+    wait_for_strategy_health: bool = Query(
+        False,
+        description="Whether to wait for real 20/60-day strategy health validation before responding.",
+    ),
+    service: MomentumSecondaryDecisionService = Depends(get_momentum_secondary_decision_service),
+) -> MomentumSecondaryDecisionResponse:
+    """构建强势筛选二次决策结果。"""
+    try:
+        result = service.build(
+            top_n=payload.top_n,
+            min_change_pct=payload.min_change_pct,
+            min_amount=payload.min_amount,
+            min_turnover=payload.min_turnover,
+            exclude_st=payload.exclude_st,
+            main_board_only=payload.main_board_only,
+            trade_date=payload.trade_date,
+            profile=payload.profile,
+            wait_for_strategy_health=wait_for_strategy_health,
+        )
+        return MomentumSecondaryDecisionResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "bad_request", "message": str(e)},
+        )
+    except Exception as e:
+        logger.error("构建强势筛选二次决策失败: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"二次决策失败: {str(e)}"},
+        )
+
+
+@router.post(
+    "/screener/momentum/decision/intraday",
+    response_model=MomentumSecondaryDecisionIntradayResponse,
+    responses={
+        200: {"description": "筛选结果、二次决策与盘中信号"},
+        400: {"description": "参数错误", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="强势筛选盘中信号",
+    description="在现有强势筛选与二次决策基础上，补充盘中买点状态、低置信度与最终买/不买收口提示。",
+)
+def build_momentum_intraday_signal(
+    payload: MomentumScreenerRequest,
+    wait_for_strategy_health: bool = Query(
+        False,
+        description="Whether to wait for real 20/60-day strategy health validation before responding.",
+    ),
+    service: MomentumSecondaryDecisionService = Depends(get_momentum_secondary_decision_service),
+) -> MomentumSecondaryDecisionIntradayResponse:
+    """构建强势筛选盘中信号结果。"""
+    try:
+        result = service.build_intraday(
+            top_n=payload.top_n,
+            min_change_pct=payload.min_change_pct,
+            min_amount=payload.min_amount,
+            min_turnover=payload.min_turnover,
+            exclude_st=payload.exclude_st,
+            main_board_only=payload.main_board_only,
+            trade_date=payload.trade_date,
+            profile=payload.profile,
+            wait_for_strategy_health=wait_for_strategy_health,
+        )
+        return MomentumSecondaryDecisionIntradayResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "bad_request", "message": str(e)},
+        )
+    except Exception as e:
+        logger.error("构建强势筛选盘中信号失败: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"盘中信号失败: {str(e)}"},
         )
 
 

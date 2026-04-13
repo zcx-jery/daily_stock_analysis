@@ -21,9 +21,11 @@ from src.config import (
     canonicalize_llm_channel_protocol,
     channel_allows_empty_api_key,
     get_configured_llm_models,
+    normalize_realtime_source_priority,
     normalize_agent_litellm_model,
     normalize_news_strategy_profile,
     normalize_llm_channel_model,
+    parse_realtime_source_priority,
     parse_env_bool,
     resolve_news_window_days,
     resolve_llm_channel_protocol,
@@ -518,7 +520,7 @@ class SystemConfigService:
             key = item["key"].upper()
             value = item["value"]
             field_schema = get_field_definition(key, value)
-            normalized_value = self._normalize_value_for_storage(value, field_schema)
+            normalized_value = self._normalize_value_for_storage(key, value, field_schema)
             submitted_keys.add(key)
             updates.append((key, normalized_value))
             if bool(field_schema.get("is_sensitive", False)):
@@ -697,8 +699,9 @@ class SystemConfigService:
             if is_sensitive and value == mask_token and current_map.get(key):
                 continue
 
-            updated_map[key] = value
-            effective_map[key] = value
+            normalized_value = self._normalize_value_for_storage(key, value, field_schema)
+            updated_map[key] = normalized_value
+            effective_map[key] = normalized_value
             issues.extend(self._validate_value(key=key, value=value, field_schema=field_schema))
 
         issues.extend(self._validate_cross_field(effective_map=effective_map, updated_keys=set(updated_map.keys())))
@@ -822,6 +825,34 @@ class SystemConfigService:
                             }
                         )
 
+        if key == "REALTIME_SOURCE_PRIORITY":
+            normalized_sources, invalid_sources = parse_realtime_source_priority(value)
+            if invalid_sources:
+                issues.append(
+                    {
+                        "key": key,
+                        "code": "invalid_realtime_source",
+                        "message": (
+                            "Realtime source priority contains unsupported providers. "
+                            "Use tushare,tencent,akshare_sina,efinance,akshare_em."
+                        ),
+                        "severity": "error",
+                        "expected": "comma-separated supported realtime providers",
+                        "actual": ", ".join(invalid_sources[:3]),
+                    }
+                )
+            elif value.strip() and not normalized_sources:
+                issues.append(
+                    {
+                        "key": key,
+                        "code": "invalid_realtime_source",
+                        "message": "Realtime source priority must contain at least one supported provider",
+                        "severity": "error",
+                        "expected": "tushare,tencent,akshare_sina,efinance,akshare_em",
+                        "actual": value,
+                    }
+                )
+
         if "enum" in validation and value and value not in validation["enum"]:
             issues.append(
                 {
@@ -857,8 +888,12 @@ class SystemConfigService:
         return issues
 
     @staticmethod
-    def _normalize_value_for_storage(value: str, field_schema: Dict[str, Any]) -> str:
+    def _normalize_value_for_storage(key: str, value: str, field_schema: Dict[str, Any]) -> str:
         """Normalize submitted values before persisting to the single-line .env file."""
+        if key == "REALTIME_SOURCE_PRIORITY":
+            normalized_value = normalize_realtime_source_priority(value)
+            return normalized_value or value
+
         if field_schema.get("data_type", "string") != "json":
             return value
 

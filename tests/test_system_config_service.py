@@ -160,6 +160,25 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(current_map["STOCK_LIST"], "600519,300750")
         self.assertEqual(current_map["GEMINI_API_KEY"], "secret-key-value")
 
+    def test_update_normalizes_realtime_source_priority_display_label(self) -> None:
+        response = self.service.update(
+            config_version=self.manager.get_config_version(),
+            items=[{"key": "REALTIME_SOURCE_PRIORITY", "value": "Tushare Pro, Tencent, Akshare Sina"}],
+            reload_now=False,
+        )
+
+        self.assertTrue(response["success"])
+        current_map = self.manager.read_config_map()
+        self.assertEqual(current_map["REALTIME_SOURCE_PRIORITY"], "tushare,tencent,akshare_sina")
+
+    def test_validate_reports_invalid_realtime_source_priority_token(self) -> None:
+        validation = self.service.validate(
+            items=[{"key": "REALTIME_SOURCE_PRIORITY", "value": "tushare,NotAProvider"}]
+        )
+
+        self.assertFalse(validation["valid"])
+        self.assertTrue(any(issue["code"] == "invalid_realtime_source" for issue in validation["issues"]))
+
     def test_validate_reports_invalid_time(self) -> None:
         validation = self.service.validate(items=[{"key": "SCHEDULE_TIME", "value": "25:70"}])
         self.assertFalse(validation["valid"])

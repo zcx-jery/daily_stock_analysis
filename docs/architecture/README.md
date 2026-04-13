@@ -129,3 +129,4 @@
 - [Momentum Screener Secondary Decision SPEC](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-secondary-decision-spec.md)
 - [Momentum Screener Secondary Decision PRD](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-secondary-decision-prd.md)
 - [Momentum Screener Secondary Decision Technical Design](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-secondary-decision-technical-design.md)
+- [Momentum Screener Secondary Decision Development Tasks](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-secondary-decision-development-tasks.md)

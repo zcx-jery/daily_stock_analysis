@@ -11,6 +11,7 @@
 - 关联文档：
   - [完整需求文档](./momentum-screener-secondary-decision-prd.md)
   - [技术开发文档](./momentum-screener-secondary-decision-technical-design.md)
+  - [开发任务清单](./momentum-screener-secondary-decision-development-tasks.md)
   - [现有强势筛选 PRD](./momentum-screener-prd.md)
 
 ## 2. Problem Statement

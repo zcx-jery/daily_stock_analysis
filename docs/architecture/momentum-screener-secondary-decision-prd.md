@@ -11,6 +11,7 @@
 - 上游文档：
   - [原始 SPEC](./momentum-screener-secondary-decision-spec.md)
   - [技术开发文档](./momentum-screener-secondary-decision-technical-design.md)
+  - [开发任务清单](./momentum-screener-secondary-decision-development-tasks.md)
   - [现有强势筛选 PRD](./momentum-screener-prd.md)
 
 ## 2. 文档目标

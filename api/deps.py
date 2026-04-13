@@ -18,6 +18,8 @@ from sqlalchemy.orm import Session
 from src.storage import DatabaseManager
 from src.config import get_config, Config
 from src.services.momentum_screener_service import MomentumScreenerService
+from src.services.momentum_secondary_decision_service import MomentumSecondaryDecisionService
+from src.services.stock_service import StockService
 from src.services.system_config_service import SystemConfigService
 
 
@@ -78,4 +80,23 @@ def get_momentum_screener_service(request: Request) -> MomentumScreenerService:
     if service is None:
         service = MomentumScreenerService()
         request.app.state.momentum_screener_service = service
+    return service
+
+
+def get_momentum_secondary_decision_service(request: Request) -> MomentumSecondaryDecisionService:
+    """Get app-lifecycle shared MomentumSecondaryDecisionService instance."""
+    service = getattr(request.app.state, "momentum_secondary_decision_service", None)
+    if service is None:
+        screener_service = getattr(request.app.state, "momentum_screener_service", None)
+        stock_service = getattr(request.app.state, "stock_service", None)
+        if stock_service is None:
+            stock_service = StockService()
+            request.app.state.stock_service = stock_service
+        service = MomentumSecondaryDecisionService(
+            screener_service=screener_service,
+            stock_service=stock_service,
+            strategy_health_async=True,
+            strategy_health_async_delay_seconds=0.0,
+        )
+        request.app.state.momentum_secondary_decision_service = service
     return service
