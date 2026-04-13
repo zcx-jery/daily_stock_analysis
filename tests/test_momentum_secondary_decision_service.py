@@ -525,6 +525,29 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
             self.assertIsNotNone(trade_result)
             self.assertEqual(trade_result["selected_count"], 2)
 
+    def test_strategy_health_trade_date_uses_internal_evaluation_topn_when_results_are_truncated(self) -> None:
+        screening, request_params, historical_screener_service, stock_repo = _build_historical_strategy_fixture(
+            short_successes=14,
+            long_successes=38,
+        )
+        historical_trade_date = sorted(historical_screener_service.screens_by_date.keys())[0]
+        request_params = {**request_params, "top_n": 1}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = MomentumSecondaryDecisionService(
+                screener_service=historical_screener_service,
+                stock_repo=stock_repo,
+                strategy_health_async=False,
+                strategy_health_cache_dir=Path(temp_dir),
+            )
+
+            trade_result = service._evaluate_strategy_health_trade_date(
+                historical_trade_date=historical_trade_date,
+                request_params=request_params,
+            )
+
+            self.assertIsNotNone(trade_result)
+            self.assertEqual(trade_result["selected_count"], 2)
+
     def test_build_from_screening_downgrades_action_when_real_historical_validation_is_weak(self) -> None:
         screening, request_params, screener_service, stock_repo = _build_historical_strategy_fixture(
             short_successes=5,
@@ -662,6 +685,38 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
             self.assertEqual(second["strategy_health"]["data_source"], "historical")
             self.assertFalse(second["strategy_health"]["is_warming"])
             self.assertEqual(second["strategy_health"]["status"], first["strategy_health"]["status"])
+            self.assertEqual(len(screener_service.screen_calls), initial_calls)
+
+    def test_build_from_screening_reuses_cached_historical_health_across_display_topn(self) -> None:
+        screening, request_params, screener_service, stock_repo = _build_historical_strategy_fixture(
+            short_successes=14,
+            long_successes=38,
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            first_service = MomentumSecondaryDecisionService(
+                screener_service=screener_service,
+                stock_repo=stock_repo,
+                strategy_health_async=False,
+                strategy_health_cache_dir=Path(temp_dir),
+            )
+            first = first_service.build_from_screening(screening, request_params=request_params)
+            initial_calls = len(screener_service.screen_calls)
+
+            second_service = MomentumSecondaryDecisionService(
+                screener_service=screener_service,
+                stock_repo=stock_repo,
+                strategy_health_async=False,
+                strategy_health_cache_dir=Path(temp_dir),
+            )
+            second = second_service.build_from_screening(
+                screening,
+                request_params={**request_params, "top_n": 1},
+            )
+
+            self.assertEqual(second["strategy_health"]["data_source"], "historical")
+            self.assertFalse(second["strategy_health"]["is_warming"])
+            self.assertEqual(second["strategy_health"]["status"], first["strategy_health"]["status"])
+            self.assertEqual(second["action"]["level"], first["action"]["level"])
             self.assertEqual(len(screener_service.screen_calls), initial_calls)
 
     def test_build_from_screening_uses_fetcher_fallback_when_repo_lacks_forward_bars(self) -> None:

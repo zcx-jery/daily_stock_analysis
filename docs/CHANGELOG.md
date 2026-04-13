@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [修复] 强势筛选二次决策的策略健康缓存与历史验证回放不再受页面展示 `top_n` 影响，避免仅改返回数量时“今日出手级别”因预热/缓存分支而漂移
 - [修复] 强势筛选二次决策改为基于候选池全量评分后的完整排序集收口，而不是仅基于当前页面返回的 TopN 结果继续选择，避免“结果数量”参数改变主仓 / 次仓 / 观察仓结论
 - [修复] 盘中信号依赖的 `REALTIME_SOURCE_PRIORITY` 现支持把 `Tushare Pro`、`Tencent`、`Akshare Sina` 等展示值标准化为内部 provider key，并在非法取值时自动回退到默认优先级，避免实时行情链路因坏配置失效
 - [鏀硅繘] Momentum Screener 棣栬疆鍔犺浇鎻愰€燂細鏉垮潡涓婁笅鏂囨敼涓哄厛绛涘€欓€夋睜鍐嶆寜闇€琛ュ叏锛屽苟涓哄崟绁?80 鏃ユ棩绾垮巻鍙叉暟鎹鍔犲唴瀛樹笌纾佺洏缂撳瓨锛屽噺灏戦噸澶嶈姹?Tushare 鍐峰惎鍔ㄦ椂鐨勫垎閽熺骇绛夊緟

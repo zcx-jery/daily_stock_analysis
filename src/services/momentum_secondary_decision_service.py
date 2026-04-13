@@ -134,7 +134,7 @@ ROLE_VALIDATION_TARGETS = {
     "back": {"profit_window_pct": 2.0, "max_drawdown_pct": 4.0},
 }
 STRATEGY_HEALTH_CACHE_TTL = timedelta(hours=12)
-STRATEGY_HEALTH_CACHE_VERSION = "v2"
+STRATEGY_HEALTH_CACHE_VERSION = "v3"
 STRATEGY_HEALTH_DISK_CACHE_DIRNAME = "momentum_strategy_health"
 STRATEGY_HEALTH_ASYNC_DEFAULT_DELAY_SECONDS = 20.0
 STRATEGY_HEALTH_WAIT_TIMEOUT_SECONDS = 8.0
@@ -1495,7 +1495,6 @@ class MomentumSecondaryDecisionService:
     def _build_strategy_health_cache_key(self, trade_date: str, request_params: Dict[str, Any]) -> str:
         normalized = {
             "trade_date": trade_date,
-            "top_n": int(request_params.get("top_n", 10)),
             "min_change_pct": round(_safe_float(request_params.get("min_change_pct"), 7.0), 3),
             "min_amount": round(_safe_float(request_params.get("min_amount"), 3e8), 3),
             "min_turnover": round(_safe_float(request_params.get("min_turnover"), 3.0), 3),
@@ -1633,8 +1632,12 @@ class MomentumSecondaryDecisionService:
         if self.screener_service is None:
             return None
 
+        strategy_health_top_n = max(
+            int(_safe_float(request_params.get("top_n"), STRATEGY_HEALTH_MAX_SCORED_CANDIDATES)),
+            STRATEGY_HEALTH_MAX_SCORED_CANDIDATES,
+        )
         screening = self.screener_service.screen(
-            top_n=int(request_params.get("top_n", 10)),
+            top_n=strategy_health_top_n,
             min_change_pct=_safe_float(request_params.get("min_change_pct"), 7.0),
             min_amount=_safe_float(request_params.get("min_amount"), 3e8),
             min_turnover=_safe_float(request_params.get("min_turnover"), 3.0),
