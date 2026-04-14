@@ -1791,49 +1791,6 @@ class MomentumScreenerService:
         risk_tags = [name for name, _ in penalties]
         return float(total_penalty), risk_tags
 
-    @staticmethod
-    def _build_top_reasons(breakdown: Dict[str, Dict[str, Any]]) -> List[str]:
-        label_map = {
-            "strength_confirmation": "强势确认",
-            "volume_price_structure": "量价结构",
-            "trend_position": "趋势位置",
-            "sector_resonance": "板块共振",
-            "capital_support": "资金承接",
-            "elasticity_activity": "弹性与股性",
-        }
-        reasons: List[tuple[str, float]] = []
-        for key, value in breakdown.items():
-            max_score = max(value["max_score"], 1)
-            ratio = value["score"] / max_score
-            if ratio >= 0.70:
-                reasons.append((label_map.get(key, key), value["score"]))
-
-        reasons.sort(key=lambda item: item[1], reverse=True)
-        return [name for name, _ in reasons[:3]]
-
-    @staticmethod
-    def _build_top_reasons(breakdown: Dict[str, Dict[str, Any]]) -> List[str]:
-        label_map = {
-            "strength_confirmation": "强势确认",
-            "volume_price_structure": "量价结构",
-            "trend_position": "趋势位置",
-            "sector_resonance": "板块共振",
-            "capital_support": "资金承接",
-            "elasticity_activity": "弹性与股性",
-            "buyability": "买入可行性",
-            "volume_price_track": "量价双轨",
-            "trend_elasticity": "趋势位置与弹性",
-        }
-        reasons: List[tuple[str, float]] = []
-        for key, value in breakdown.items():
-            max_score = max(value["max_score"], 1)
-            ratio = value["score"] / max_score
-            if ratio >= 0.70:
-                reasons.append((label_map.get(key, key), value["score"]))
-
-        reasons.sort(key=lambda item: item[1], reverse=True)
-        return [name for name, _ in reasons[:3]]
-
     def _score_risk_penalty(self, row: pd.Series, features: Dict[str, Any]) -> tuple[float, List[str]]:
         penalties: List[tuple[str, int]] = []
         upper_shadow_ratio = _safe_float(features["upper_shadow_ratio"])
@@ -1888,7 +1845,7 @@ class MomentumScreenerService:
         if top_list_flag and top_list_net_amount < 0:
             penalties.append(("top_list_distribution", 3 if top_list_net_amount < -1e6 else 1))
 
-        total_penalty = min(sum(score for _, score in penalties), 20)
+        total_penalty = min(sum(score for _, score in penalties), 15)
         return float(total_penalty), [name for name, _ in penalties]
 
     @staticmethod

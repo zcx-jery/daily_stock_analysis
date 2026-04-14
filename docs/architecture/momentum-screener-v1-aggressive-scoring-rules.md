@@ -229,6 +229,8 @@ main_inflow_ratio = 主力净流入额 / amount
 | 强势上涨但净流入偏弱 | 1 |
 | 强势上涨且净流出 | 0 |
 
+> 实现说明：V1-Aggressive 代码中简化为两档打分：`pct_chg >= 7% 且主力净流入 > 0` 给 4 分，否则给 0 分。V1.5 可恢复 4 档细化。
+
 ### 7.4 龙虎榜质量 2
 
 计算口径：
@@ -515,6 +517,8 @@ upper_shadow_ratio = (high - max(open, close)) / (high - low)
 entry_range_low = max(prev_close * 0.985, prev_open)
 entry_range_high = prev_close * 1.015
 ```
+
+> 实现说明：V1-Aggressive 代码中 `entry_range_low` 仅使用 `prev_close * 0.985`，未加入 `max(prev_open, ...)` 约束。在低开场景下买入区间可能偏低，V1.5 可补齐。
 
 ### 13.2 机会标签建议
 
