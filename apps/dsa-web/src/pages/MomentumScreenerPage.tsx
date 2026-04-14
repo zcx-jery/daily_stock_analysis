@@ -303,6 +303,49 @@ function intradayStatusBadgeVariant(
   return 'default';
 }
 
+function resolveStrategyHealthValidationStatus(
+  health: MomentumSecondaryDecision['strategyHealth'],
+): 'proxy' | 'partial' | 'final' {
+  if (health.validationStatus) {
+    return health.validationStatus;
+  }
+  return health.dataSource === 'proxy' ? 'proxy' : 'final';
+}
+
+function shouldShowStrategyHealthRefresh(health: MomentumSecondaryDecision['strategyHealth']): boolean {
+  return health.isWarming === true || resolveStrategyHealthValidationStatus(health) !== 'final';
+}
+
+function buildStrategyHealthDataSourceLabel(health: MomentumSecondaryDecision['strategyHealth']): string {
+  const validationStatus = resolveStrategyHealthValidationStatus(health);
+  if (validationStatus === 'partial') {
+    return '历史验证 Partial';
+  }
+  if (validationStatus === 'proxy') {
+    return health.isWarming ? '历史验证计算中' : '代理健康度';
+  }
+  return '历史验证 Final';
+}
+
+function buildStrategyHealthProgressSummary(health: MomentumSecondaryDecision['strategyHealth']): string | null {
+  const progress = health.progress;
+  if (!progress) {
+    return null;
+  }
+
+  const processed =
+    progress.totalTradeDateCount > 0
+      ? `已处理 ${progress.processedTradeDateCount}/${progress.totalTradeDateCount} 个历史交易日`
+      : null;
+  const samples =
+    progress.validSampleCount > 0
+      ? `累计有效样本 ${progress.validSampleCount}/${progress.targetSampleCount}`
+      : null;
+  const lastTradeDate = progress.lastEvaluatedTradeDate ? `最近样本 ${progress.lastEvaluatedTradeDate}` : null;
+
+  return [processed, samples, lastTradeDate].filter(Boolean).join('，') || null;
+}
+
 function intradayConfidenceBadgeVariant(
   level: MomentumIntradaySignal['confidenceLevel'],
 ): 'success' | 'warning' | 'default' {
@@ -914,6 +957,10 @@ const StrategyHealthPanel: React.FC<{
   refreshing: boolean;
   refreshDisabled: boolean;
 }> = ({ health, onRefresh, refreshing, refreshDisabled }) => {
+  const validationStatus = resolveStrategyHealthValidationStatus(health);
+  const showRefresh = shouldShowStrategyHealthRefresh(health);
+  const healthDataSourceLabel = buildStrategyHealthDataSourceLabel(health);
+  const progressSummary = buildStrategyHealthProgressSummary(health);
   const capLabel =
     health.recommendationCap === 'full'
       ? '完整推荐'
@@ -938,9 +985,19 @@ const StrategyHealthPanel: React.FC<{
             <p className="text-sm font-semibold text-foreground">策略健康</p>
             <Badge variant={strategyHealthBadgeVariant(health.status)}>{health.label}</Badge>
             <Badge variant="default">{capLabel}</Badge>
-            <Badge variant={health.dataSource === 'proxy' ? 'warning' : 'success'}>{dataSourceLabel}</Badge>
+            <Badge variant={validationStatus === 'final' ? 'success' : 'warning'}>
+              {healthDataSourceLabel || dataSourceLabel}
+            </Badge>
           </div>
           <p className="mt-2 text-sm leading-6 text-secondary-text">{health.reason}</p>
+          {progressSummary ? (
+            <p className="mt-2 text-xs leading-6 text-secondary-text">{progressSummary}</p>
+          ) : null}
+          {validationStatus === 'partial' ? (
+            <p className="mt-2 text-xs leading-6 text-secondary-text">
+              当前展示的是 partial 历史验证结果，后台仍会继续补齐更早样本，刷新后可切换到最新进度或 final 结果。
+            </p>
+          ) : null}
           {health.isWarming ? (
             <p className="mt-2 text-xs leading-6 text-secondary-text">
               首轮请求已切换为后台预热模式，页面先给你代理健康度，等真实 20/60 日历史结果算完后，点击下方“刷新真实 20/60 结果”即可看到正式结论。
@@ -949,7 +1006,7 @@ const StrategyHealthPanel: React.FC<{
         </div>
       </div>
 
-      {health.dataSource === 'proxy' ? (
+      {showRefresh ? (
         <div className="mt-4 rounded-2xl border border-cyan/20 bg-cyan/5 p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="min-w-0">
@@ -1059,7 +1116,7 @@ const SecondaryDecisionPanel: React.FC<SecondaryDecisionPanelProps> = ({
           </Badge>
           <Button
             data-testid="momentum-secondary-refresh"
-            variant={decision.strategyHealth.dataSource === 'proxy' ? 'outline' : 'ghost'}
+            variant={shouldShowStrategyHealthRefresh(decision.strategyHealth) ? 'outline' : 'ghost'}
             size="sm"
             className="shrink-0"
             disabled={refreshDisabled}
@@ -1634,6 +1691,12 @@ const MomentumScreenerPage: React.FC = () => {
 
       {error ? <ApiErrorAlert error={error} className="mb-4" onDismiss={() => setError(null)} /> : null}
 
+      {response?.tradeDateNote ? (
+        <div className="mb-4 rounded-3xl border border-amber-500/25 bg-amber-500/10 px-4 py-3 text-sm text-secondary-text">
+          {response.tradeDateNote}
+        </div>
+      ) : null}
+
       <div className="grid items-start gap-4 xl:grid-cols-[340px_minmax(0,1fr)]">
         <Card className="rounded-3xl border-border/60 bg-card/55 xl:sticky xl:top-0">
           <div className="mb-4">
@@ -1687,7 +1750,7 @@ const MomentumScreenerPage: React.FC = () => {
               type="date"
               value={form.tradeDate}
               onChange={(event) => setForm((prev) => ({ ...prev, tradeDate: event.target.value }))}
-              hint="留空时默认使用最近一个有效交易日。"
+              hint="留空时优先使用当日收盘数据；若当天 EOD 数据未同步完成，则自动回退到上一交易日。"
             />
             <div className="mt-2 flex gap-2">
               <Button

@@ -111,7 +111,7 @@
 | `min_change_pct` | number | 是 | 今日涨幅阈值 |
 | `min_amount` | number | 是 | 最低成交额 |
 | `min_turnover` | number | 是 | 最低换手率 |
-| `trade_date` | date | 是 | 留空时使用最近一个有效交易日 |
+| `trade_date` | date | 是 | 留空时优先尝试当天交易日；若当天收盘批量数据未同步完成，则自动回退到上一交易日 |
 | `exclude_st` | boolean | 否，当前固定 | 当前 beta 固定为 `true` |
 | `main_board_only` | boolean | 否，当前固定 | 当前 beta 固定为 `true` |
 
@@ -173,6 +173,7 @@
 - `risk_score`：风险分
 - `final_score`：基础总分扣除风险后的最终分
 - `rank_score`：用于排序的排序分
+- `entry_range_low` / `entry_range_high`：为二次决策与执行辅助派生的建议区间
 
 当前 `standard` 排序公式为：
 
@@ -186,7 +187,8 @@ rank_score = continuation_score * 0.65 + extension_score * 0.25 - risk_score * 0
 
 - `buyability_score`：可买分
 - `opportunity_tag`：机会标签
-- `entry_range_low` / `entry_range_high`：建议区间
+
+两个画像在进入二次决策与执行辅助链路后，都可以携带 `entry_range_low` / `entry_range_high` 作为建议区间；其中 `aggressive` 为原生输出，`standard` 为派生输出。
 
 当前 `aggressive` 排序公式为：
 
@@ -303,6 +305,8 @@ rank_score = continuation_score * 0.55 + buyability_score * 0.25 + extension_sco
 | `main_board_only` | 当前固定为 `true` |
 | `trade_date` | 指定交易日 |
 
+当 `trade_date` 留空时，系统会在收盘后优先探测当天交易日的 EOD 批量数据是否已就绪；若 `daily` / `daily_basic` 等关键表尚未同步完成，则自动回退到上一交易日，并在响应中返回提示文案。
+
 #### 当前响应对象
 
 页面和 API 当前以以下结构为准：
@@ -311,6 +315,8 @@ rank_score = continuation_score * 0.55 + buyability_score * 0.25 + extension_sco
 |---|---|
 | `profile` | 当前画像 |
 | `trade_date` | 实际计算使用的交易日 |
+| `requested_trade_date` | 用户请求的交易日；自动模式下为空 |
+| `trade_date_note` | 当交易日被自动回退或当天数据尚未就绪时的提示文案 |
 | `candidate_count` | 进入评分池的候选数 |
 | `results` | 当前返回结果列表 |
 
@@ -327,7 +333,7 @@ rank_score = continuation_score * 0.55 + buyability_score * 0.25 + extension_sco
 | `risk_score` | 风险分 |
 | `buyability_score` | 可买分，仅 `aggressive` 使用 |
 | `opportunity_tag` | 机会标签，仅 `aggressive` 使用 |
-| `entry_range_low` / `entry_range_high` | 建议区间，仅 `aggressive` 使用 |
+| `entry_range_low` / `entry_range_high` | 建议区间；`aggressive` 原生输出，`standard` 可为二次决策派生输出 |
 | `final_score` | 最终总分 |
 | `rank_score` | 排序分 |
 | `themes` | 当前板块映射结果 |

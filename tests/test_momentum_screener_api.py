@@ -212,6 +212,8 @@ def test_momentum_screener_endpoint_runs_real_standard_service_flow(client):
     assert data["results"][0]["ts_code"] == "600001.SH"
     assert data["results"][0]["themes"][0] == "电力设备"
     assert "strength_confirmation" in data["results"][0]["score_breakdown"]
+    assert data["results"][0]["entry_range_low"] is not None
+    assert data["results"][0]["entry_range_high"] is not None
     assert hasattr(client.app.state, "momentum_screener_service")
 
 

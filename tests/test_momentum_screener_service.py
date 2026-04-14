@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from pathlib import Path
 import sys
 import tempfile
@@ -23,7 +24,12 @@ from src.services.momentum_screener_service import MomentumScreenerService
 
 
 class _FakeFetcher:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        current_time: datetime | None = None,
+        snapshot_by_trade_date: dict[str, dict[str, pd.DataFrame]] | None = None,
+    ) -> None:
         self.api_calls: dict[str, int] = {}
         self.history_calls: dict[str, int] = {}
         self.snapshot = {
@@ -137,6 +143,23 @@ class _FakeFetcher:
                 ]
             ),
         }
+        self.trade_snapshots = {
+            "20260410": {
+                "daily": self.snapshot["daily"].copy(),
+                "daily_basic": self.snapshot["daily_basic"].copy(),
+                "moneyflow": self.snapshot["moneyflow"].copy(),
+                "stk_limit": self.snapshot["stk_limit"].copy(),
+                "top_list": self.snapshot["top_list"].copy(),
+            }
+        }
+        if snapshot_by_trade_date:
+            for trade_date, tables in snapshot_by_trade_date.items():
+                self.trade_snapshots[trade_date] = {
+                    name: table.copy()
+                    for name, table in tables.items()
+                }
+        self.trade_dates = sorted(self.trade_snapshots.keys(), reverse=True)
+        self.current_time = current_time or datetime(2026, 4, 10, 18, 0, 0)
         self.index_member_by_code = {
             "801730.SI": pd.DataFrame(
                 [
@@ -212,15 +235,46 @@ class _FakeFetcher:
         return True
 
     def get_trade_time(self, early_time: str = "00:00", late_time: str = "17:00") -> str:
-        return "20260410"
+        china_date = self.current_time.strftime("%Y%m%d")
+        china_clock = self.current_time.strftime("%H:%M")
+        if china_date in self.trade_dates:
+            use_today = not (early_time < china_clock < late_time)
+        else:
+            use_today = False
+        if use_today or len(self.trade_dates) == 1:
+            return self.trade_dates[0]
+        return self.trade_dates[1]
+
+    def _get_china_now(self) -> datetime:
+        return self.current_time
 
     def _call_api_with_rate_limit(self, method_name: str, **kwargs):
         self.api_calls[method_name] = self.api_calls.get(method_name, 0) + 1
+        trade_date = kwargs.get("trade_date")
+        if method_name in {"daily", "daily_basic", "moneyflow", "stk_limit", "top_list"} and trade_date:
+            trade_snapshot = self.trade_snapshots.get(str(trade_date))
+            if trade_snapshot is None:
+                return pd.DataFrame()
+            return trade_snapshot.get(method_name, pd.DataFrame()).copy()
         if method_name == "index_member":
             return self.index_member_by_code.get(kwargs.get("index_code"), pd.DataFrame())
         if method_name == "index_daily":
             return self.index_daily_by_code.get(kwargs.get("ts_code"), pd.DataFrame())
         return self.snapshot.get(method_name, pd.DataFrame())
+
+    def build_trade_snapshot(self, trade_date: str, *, ready: bool) -> dict[str, pd.DataFrame]:
+        base = self.trade_snapshots["20260410"]
+        snapshot = {
+            name: table.copy()
+            for name, table in base.items()
+        }
+        for table in snapshot.values():
+            if "trade_date" in table.columns:
+                table["trade_date"] = trade_date
+        if not ready:
+            for name in ("daily", "daily_basic", "moneyflow", "top_list"):
+                snapshot[name] = snapshot[name].iloc[0:0].copy()
+        return snapshot
 
     def get_daily_data(self, stock_code: str, start_date=None, end_date=None, days: int = 80):
         normalized = str(stock_code).split(".")[0]
@@ -233,17 +287,20 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
         Config.reset_instance()
         os.environ.pop("MOMENTUM_SECTOR_CACHE_TTL_SECONDS", None)
         MomentumScreenerService.reset_sector_cache()
-        self.history_cache_dir = tempfile.TemporaryDirectory()
+        self.cache_root_dir = tempfile.TemporaryDirectory()
 
     def tearDown(self) -> None:
         os.environ.pop("MOMENTUM_SECTOR_CACHE_TTL_SECONDS", None)
-        self.history_cache_dir.cleanup()
+        self.cache_root_dir.cleanup()
         Config.reset_instance()
 
     def _build_service(self, fetcher: _FakeFetcher | None = None) -> MomentumScreenerService:
+        cache_root = Path(self.cache_root_dir.name)
         return MomentumScreenerService(
             fetcher=fetcher or _FakeFetcher(),
-            history_cache_dir=Path(self.history_cache_dir.name),
+            history_cache_dir=cache_root / "histories",
+            trade_snapshot_cache_dir=cache_root / "snapshots",
+            candidate_pool_cache_dir=cache_root / "candidate_pools",
         )
 
     def test_screen_returns_ranked_results(self) -> None:
@@ -259,7 +316,58 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
         self.assertEqual(result["results"][0]["themes"][0], "电力设备")
         self.assertIn("continuation_score", result["results"][0])
         self.assertIn("score_breakdown", result["results"][0])
+        self.assertIsNotNone(result["results"][0]["entry_range_low"])
+        self.assertIsNotNone(result["results"][0]["entry_range_high"])
+        self.assertIsNotNone(result["results"][1]["entry_range_low"])
+        self.assertIsNotNone(result["results"][1]["entry_range_high"])
         self.assertGreater(result["results"][0]["rank_score"], result["results"][1]["rank_score"])
+        self.assertEqual(result["results"][0]["entry_range_low"], 10.89)
+        self.assertEqual(result["results"][0]["entry_range_high"], 11.11)
+        self.assertEqual(result["results"][1]["entry_range_low"], 8.56)
+        self.assertEqual(result["results"][1]["entry_range_high"], 8.74)
+
+        leader_width = result["results"][0]["entry_range_high"] - result["results"][0]["entry_range_low"]
+        front_width = result["results"][1]["entry_range_high"] - result["results"][1]["entry_range_low"]
+        self.assertLessEqual(round(leader_width, 4), round(11.0 * 0.02 + 0.01, 4))
+        self.assertLessEqual(round(front_width, 4), round(8.65 * 0.03 + 0.01, 4))
+
+    def test_screen_prefers_current_trade_date_after_close_when_eod_snapshot_ready(self) -> None:
+        fetcher = _FakeFetcher(current_time=datetime(2026, 4, 11, 15, 10, 0))
+        fetcher.trade_snapshots["20260411"] = fetcher.build_trade_snapshot("20260411", ready=True)
+        fetcher.trade_dates = sorted(fetcher.trade_snapshots.keys(), reverse=True)
+        service = self._build_service(fetcher)
+
+        result = service.screen(top_n=2, profile="standard")
+
+        self.assertEqual(result["trade_date"], "2026-04-11")
+        self.assertIsNone(result["trade_date_note"])
+        self.assertIsNone(result["requested_trade_date"])
+
+    def test_screen_falls_back_to_previous_trade_date_when_today_snapshot_not_ready(self) -> None:
+        fetcher = _FakeFetcher(current_time=datetime(2026, 4, 11, 15, 10, 0))
+        fetcher.trade_snapshots["20260411"] = fetcher.build_trade_snapshot("20260411", ready=False)
+        fetcher.trade_dates = sorted(fetcher.trade_snapshots.keys(), reverse=True)
+        service = self._build_service(fetcher)
+
+        result = service.screen(top_n=2, profile="standard")
+
+        self.assertEqual(result["trade_date"], "2026-04-10")
+        self.assertIn("2026-04-11", result["trade_date_note"])
+        self.assertIn("2026-04-10", result["trade_date_note"])
+        self.assertIsNone(result["requested_trade_date"])
+
+    def test_screen_explicit_today_trade_date_falls_back_with_note_when_eod_not_ready(self) -> None:
+        fetcher = _FakeFetcher(current_time=datetime(2026, 4, 11, 15, 10, 0))
+        fetcher.trade_snapshots["20260411"] = fetcher.build_trade_snapshot("20260411", ready=False)
+        fetcher.trade_dates = sorted(fetcher.trade_snapshots.keys(), reverse=True)
+        service = self._build_service(fetcher)
+
+        result = service.screen(top_n=2, profile="standard", trade_date="2026-04-11")
+
+        self.assertEqual(result["trade_date"], "2026-04-10")
+        self.assertEqual(result["requested_trade_date"], "2026-04-11")
+        self.assertIn("你选择了 2026-04-11", result["trade_date_note"])
+        self.assertIn("2026-04-10", result["trade_date_note"])
 
     def test_screen_keeps_full_ranked_results_for_downstream_decision(self) -> None:
         service = self._build_service()
@@ -391,6 +499,80 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
 
         self.assertEqual(fetcher.history_calls.get("600001"), 1)
         self.assertEqual(fetcher.history_calls.get("600002"), 1)
+
+    def test_trade_snapshot_cache_reuses_disk_snapshot_across_service_instances(self) -> None:
+        fetcher = _FakeFetcher()
+
+        first_service = self._build_service(fetcher)
+        first_service._load_trade_snapshot("20260410")
+
+        self.assertEqual(fetcher.api_calls.get("stock_basic"), 1)
+        self.assertEqual(fetcher.api_calls.get("daily"), 1)
+        self.assertEqual(fetcher.api_calls.get("daily_basic"), 1)
+        self.assertEqual(fetcher.api_calls.get("moneyflow"), 1)
+        self.assertEqual(fetcher.api_calls.get("stk_limit"), 1)
+        self.assertEqual(fetcher.api_calls.get("top_list"), 1)
+
+        MomentumScreenerService._shared_trade_snapshot_cache.clear()
+
+        second_service = self._build_service(fetcher)
+        second_snapshot = second_service._load_trade_snapshot("20260410")
+
+        self.assertFalse(second_snapshot["daily"].empty)
+        self.assertEqual(fetcher.api_calls.get("stock_basic"), 1)
+        self.assertEqual(fetcher.api_calls.get("daily"), 1)
+        self.assertEqual(fetcher.api_calls.get("daily_basic"), 1)
+        self.assertEqual(fetcher.api_calls.get("moneyflow"), 1)
+        self.assertEqual(fetcher.api_calls.get("stk_limit"), 1)
+        self.assertEqual(fetcher.api_calls.get("top_list"), 1)
+
+    def test_incomplete_trade_snapshot_is_not_cached(self) -> None:
+        fetcher = _FakeFetcher(current_time=datetime(2026, 4, 11, 15, 10, 0))
+        fetcher.trade_snapshots["20260411"] = fetcher.build_trade_snapshot("20260411", ready=False)
+        fetcher.trade_dates = sorted(fetcher.trade_snapshots.keys(), reverse=True)
+        service = self._build_service(fetcher)
+
+        first_snapshot = service._load_trade_snapshot("20260411")
+        self.assertTrue(first_snapshot["daily"].empty)
+
+        fetcher.trade_snapshots["20260411"] = fetcher.build_trade_snapshot("20260411", ready=True)
+        second_snapshot = service._load_trade_snapshot("20260411")
+
+        self.assertFalse(second_snapshot["daily"].empty)
+        self.assertEqual(fetcher.api_calls.get("daily"), 2)
+        self.assertEqual(fetcher.api_calls.get("daily_basic"), 2)
+
+    def test_candidate_pool_cache_reuses_filtered_pool_across_profiles_and_topn(self) -> None:
+        fetcher = _FakeFetcher()
+        service = self._build_service(fetcher)
+
+        first = service.screen(top_n=2, profile="standard")
+        self.assertEqual(first["candidate_count"], 2)
+
+        with patch.object(service, "_build_candidates", side_effect=AssertionError("candidate pool should come from cache")):
+            second = service.screen(top_n=1, profile="aggressive")
+
+        self.assertEqual(second["candidate_count"], 2)
+        self.assertEqual(len(second["ranked_results"]), 2)
+
+    def test_candidate_pool_cache_reuses_disk_filtered_pool_across_service_instances(self) -> None:
+        fetcher = _FakeFetcher()
+
+        first_service = self._build_service(fetcher)
+        first_service.screen(top_n=2, profile="standard")
+
+        MomentumScreenerService._shared_candidate_pool_cache.clear()
+
+        second_service = self._build_service(fetcher)
+        with patch.object(
+            second_service,
+            "_build_candidates",
+            side_effect=AssertionError("candidate pool should be loaded from disk cache"),
+        ):
+            second = second_service.screen(top_n=1, profile="aggressive")
+
+        self.assertEqual(second["candidate_count"], 2)
+        self.assertEqual(len(second["ranked_results"]), 2)
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 import tempfile
 import time
+from unittest.mock import patch
 import pandas as pd
 
 from src.services.momentum_screener_service import MomentumScreenerService
@@ -393,6 +394,61 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         self.assertFalse(result["action_checklist"]["enabled"])
         self.assertTrue(all(item["suggested_action"] == "observe_only" for item in result["portfolio"]))
 
+    def test_build_from_screening_requires_entry_range_for_clear_buy_point(self) -> None:
+        service = MomentumSecondaryDecisionService(screener_service=None)
+        screening = {
+            "profile": "standard",
+            "trade_date": "2026-04-10",
+            "candidate_count": 2,
+            "results": [
+                {
+                    "rank": 1,
+                    "ts_code": "600011.SH",
+                    "name": "标准龙头",
+                    "pct_chg": 9.8,
+                    "continuation_score": 86.0,
+                    "extension_score": 79.0,
+                    "risk_score": 18.0,
+                    "buyability_score": None,
+                    "opportunity_tag": None,
+                    "entry_range_low": None,
+                    "entry_range_high": None,
+                    "final_score": 88.0,
+                    "rank_score": 74.0,
+                    "themes": ["电力设备"],
+                    "leader_level": "龙头",
+                    "top_reasons": ["强势确认", "资金承接"],
+                    "risk_tags": [],
+                    "score_breakdown": {},
+                },
+                {
+                    "rank": 2,
+                    "ts_code": "600012.SH",
+                    "name": "标准前排",
+                    "pct_chg": 8.1,
+                    "continuation_score": 73.0,
+                    "extension_score": 68.0,
+                    "risk_score": 28.0,
+                    "buyability_score": None,
+                    "opportunity_tag": None,
+                    "entry_range_low": None,
+                    "entry_range_high": None,
+                    "final_score": 79.0,
+                    "rank_score": 63.0,
+                    "themes": ["电力设备"],
+                    "leader_level": "前排",
+                    "top_reasons": ["量价结构"],
+                    "risk_tags": [],
+                    "score_breakdown": {},
+                },
+            ],
+        }
+
+        result = service.build_from_screening(screening)
+
+        self.assertEqual(result["portfolio"][0]["buy_point_status"], "waiting")
+        self.assertEqual(result["portfolio"][0]["suggested_action"], "wait_for_trigger")
+
     def test_build_from_screening_prefers_full_ranked_results_over_display_topn(self) -> None:
         service = MomentumSecondaryDecisionService(screener_service=None)
         ranked_results = [
@@ -718,6 +774,123 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
             self.assertEqual(second["strategy_health"]["status"], first["strategy_health"]["status"])
             self.assertEqual(second["action"]["level"], first["action"]["level"])
             self.assertEqual(len(screener_service.screen_calls), initial_calls)
+
+    def test_build_from_screening_surfaces_partial_historical_health_while_background_job_continues(self) -> None:
+        screening, request_params, screener_service, stock_repo = _build_historical_strategy_fixture(
+            short_successes=14,
+            long_successes=38,
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = MomentumSecondaryDecisionService(
+                screener_service=screener_service,
+                stock_repo=stock_repo,
+                strategy_health_async=True,
+                strategy_health_cache_dir=Path(temp_dir),
+            )
+            original_evaluate = service._evaluate_strategy_health_trade_date
+
+            def slow_evaluate(*, historical_trade_date: str, request_params: dict[str, object]):
+                time.sleep(0.01)
+                return original_evaluate(
+                    historical_trade_date=historical_trade_date,
+                    request_params=request_params,
+                )
+
+            try:
+                with patch(
+                    "src.services.momentum_secondary_decision_service.STRATEGY_HEALTH_COMPUTE_TIME_BUDGET_SECONDS",
+                    0.03,
+                ), patch.object(service, "_evaluate_strategy_health_trade_date", side_effect=slow_evaluate):
+                    first = service.build_from_screening(screening, request_params=request_params)
+
+                    self.assertEqual(first["strategy_health"]["data_source"], "proxy")
+                    self.assertEqual(first["strategy_health"]["validation_status"], "proxy")
+                    self.assertTrue(first["strategy_health"]["is_warming"])
+
+                    partial = None
+                    deadline = time.time() + 3.0
+                    while time.time() < deadline:
+                        partial = service.build_from_screening(screening, request_params=request_params)
+                        if partial["strategy_health"]["validation_status"] == "partial":
+                            break
+                        time.sleep(0.05)
+
+                    self.assertIsNotNone(partial)
+                    self.assertEqual(partial["strategy_health"]["data_source"], "historical")
+                    self.assertEqual(partial["strategy_health"]["validation_status"], "partial")
+                    self.assertTrue(partial["strategy_health"]["is_warming"])
+                    self.assertGreater(partial["strategy_health"]["progress"]["valid_sample_count"], 0)
+                    self.assertLess(
+                        partial["strategy_health"]["progress"]["processed_trade_date_count"],
+                        partial["strategy_health"]["progress"]["total_trade_date_count"],
+                    )
+
+                    final = None
+                    deadline = time.time() + 4.0
+                    while time.time() < deadline:
+                        final = service.build_from_screening(screening, request_params=request_params)
+                        if final["strategy_health"]["validation_status"] == "final":
+                            break
+                        time.sleep(0.05)
+
+                    self.assertIsNotNone(final)
+                    self.assertEqual(final["strategy_health"]["data_source"], "historical")
+                    self.assertEqual(final["strategy_health"]["validation_status"], "final")
+                    self.assertFalse(final["strategy_health"]["is_warming"])
+                    self.assertEqual(final["strategy_health"]["progress"]["valid_sample_count"], 60)
+            finally:
+                if service._strategy_health_executor is not None:
+                    service._strategy_health_executor.shutdown(wait=True)
+
+    def test_strategy_health_state_resumes_from_partial_checkpoint_across_service_instances(self) -> None:
+        screening, request_params, screener_service, stock_repo = _build_historical_strategy_fixture(
+            short_successes=14,
+            long_successes=38,
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            first_service = MomentumSecondaryDecisionService(
+                screener_service=screener_service,
+                stock_repo=stock_repo,
+                strategy_health_async=False,
+                strategy_health_cache_dir=Path(temp_dir),
+            )
+            cache_key = first_service._build_strategy_health_cache_key(screening["trade_date"], request_params)
+            original_evaluate = first_service._evaluate_strategy_health_trade_date
+
+            def slow_evaluate(*, historical_trade_date: str, request_params: dict[str, object]):
+                time.sleep(0.01)
+                return original_evaluate(
+                    historical_trade_date=historical_trade_date,
+                    request_params=request_params,
+                )
+
+            with patch(
+                "src.services.momentum_secondary_decision_service.STRATEGY_HEALTH_COMPUTE_TIME_BUDGET_SECONDS",
+                0.03,
+            ), patch.object(first_service, "_evaluate_strategy_health_trade_date", side_effect=slow_evaluate):
+                partial_state = first_service._advance_strategy_health_state(
+                    cache_key=cache_key,
+                    trade_date=screening["trade_date"],
+                    request_params=request_params,
+                )
+
+            self.assertIsNotNone(partial_state)
+            self.assertEqual(partial_state["status"], "partial")
+            self.assertLess(len(screener_service.screen_calls), 60)
+
+            second_service = MomentumSecondaryDecisionService(
+                screener_service=screener_service,
+                stock_repo=stock_repo,
+                strategy_health_async=False,
+                strategy_health_cache_dir=Path(temp_dir),
+            )
+
+            result = second_service.build_from_screening(screening, request_params=request_params)
+
+            self.assertEqual(result["strategy_health"]["data_source"], "historical")
+            self.assertEqual(result["strategy_health"]["validation_status"], "final")
+            self.assertEqual(result["strategy_health"]["progress"]["valid_sample_count"], 60)
+            self.assertEqual(len(screener_service.screen_calls), 60)
 
     def test_build_from_screening_uses_fetcher_fallback_when_repo_lacks_forward_bars(self) -> None:
         screening, request_params, screener_service, _ = _build_historical_strategy_fixture(

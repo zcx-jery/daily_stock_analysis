@@ -20,6 +20,9 @@ from src.config import get_config
 
 logger = logging.getLogger(__name__)
 
+MOMENTUM_EOD_READY_COVERAGE_RATIO = 0.6
+MOMENTUM_MARKET_CLOSE_CUTOFF = "15:00"
+
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
@@ -42,6 +45,12 @@ class MomentumScreenerService:
     _shared_sector_context_cache: Dict[str, Dict[str, Any]] = {}
     _shared_sector_cache_stats: Dict[str, int] = {"hit": 0, "miss": 0, "expired": 0}
     _sector_cache_ttl_seconds: int = 6 * 60 * 60
+    _shared_trade_snapshot_cache: Dict[str, Dict[str, Any]] = {}
+    _trade_snapshot_cache_ttl_seconds: int = 7 * 24 * 60 * 60
+    _trade_snapshot_cache_dirname: str = "momentum_trade_snapshots"
+    _shared_candidate_pool_cache: Dict[str, Dict[str, Any]] = {}
+    _candidate_pool_cache_ttl_seconds: int = 7 * 24 * 60 * 60
+    _candidate_pool_cache_dirname: str = "momentum_candidate_pools"
     _shared_history_cache: Dict[str, Dict[str, Any]] = {}
     _history_cache_ttl_seconds: int = 12 * 60 * 60
     _history_cache_dirname: str = "momentum_histories"
@@ -50,11 +59,25 @@ class MomentumScreenerService:
         self,
         fetcher: Optional[TushareFetcher] = None,
         history_cache_dir: Optional[Path] = None,
+        trade_snapshot_cache_dir: Optional[Path] = None,
+        candidate_pool_cache_dir: Optional[Path] = None,
     ) -> None:
         self.fetcher = fetcher or TushareFetcher(rate_limit_per_minute=200)
         self._sector_context_cache = self.__class__._shared_sector_context_cache
+        self._trade_snapshot_cache = self.__class__._shared_trade_snapshot_cache
+        self._candidate_pool_cache = self.__class__._shared_candidate_pool_cache
         self._history_cache = self.__class__._shared_history_cache
         self.__class__._refresh_sector_cache_ttl_from_config()
+        self._trade_snapshot_cache_dir = (
+            Path(trade_snapshot_cache_dir)
+            if trade_snapshot_cache_dir is not None
+            else Path.cwd() / "data" / "cache" / self.__class__._trade_snapshot_cache_dirname
+        )
+        self._candidate_pool_cache_dir = (
+            Path(candidate_pool_cache_dir)
+            if candidate_pool_cache_dir is not None
+            else Path.cwd() / "data" / "cache" / self.__class__._candidate_pool_cache_dirname
+        )
         self._history_cache_dir = (
             Path(history_cache_dir)
             if history_cache_dir is not None
@@ -67,6 +90,8 @@ class MomentumScreenerService:
     def reset_sector_cache(cls) -> None:
         cls._shared_sector_context_cache.clear()
         cls._shared_sector_cache_stats = {"hit": 0, "miss": 0, "expired": 0}
+        cls._shared_trade_snapshot_cache.clear()
+        cls._shared_candidate_pool_cache.clear()
         cls._shared_history_cache.clear()
 
     @classmethod
@@ -107,9 +132,11 @@ class MomentumScreenerService:
         if profile not in {"standard", "aggressive"}:
             raise ValueError("仅支持 profile=standard 或 profile=aggressive")
 
-        resolved_trade_date = self._resolve_trade_date(trade_date)
-        snapshot = self._load_trade_snapshot(resolved_trade_date)
-        candidates = self._build_candidates(
+        trade_date_resolution = self._resolve_trade_date_and_snapshot(trade_date)
+        resolved_trade_date = trade_date_resolution["trade_date"]
+        snapshot = trade_date_resolution["snapshot"]
+        candidates = self._load_candidate_pool(
+            trade_date=resolved_trade_date,
             snapshot=snapshot,
             min_change_pct=min_change_pct,
             min_amount=min_amount,
@@ -122,6 +149,8 @@ class MomentumScreenerService:
             return {
                 "profile": profile,
                 "trade_date": self._format_trade_date(resolved_trade_date),
+                "requested_trade_date": trade_date_resolution.get("requested_trade_date"),
+                "trade_date_note": trade_date_resolution.get("trade_date_note"),
                 "candidate_count": 0,
                 "ranked_results": [],
                 "results": [],
@@ -160,6 +189,8 @@ class MomentumScreenerService:
         return {
             "profile": profile,
             "trade_date": self._format_trade_date(resolved_trade_date),
+            "requested_trade_date": trade_date_resolution.get("requested_trade_date"),
+            "trade_date_note": trade_date_resolution.get("trade_date_note"),
             "candidate_count": len(candidates),
             "ranked_results": results,
             "results": results[:top_n],
@@ -189,14 +220,114 @@ class MomentumScreenerService:
             .reset_index(drop=True)
         )
 
-    def _resolve_trade_date(self, trade_date: Optional[str]) -> str:
-        if trade_date:
-            return trade_date.replace("-", "")
+    def _resolve_trade_date_and_snapshot(self, trade_date: Optional[str]) -> Dict[str, Any]:
+        requested_trade_date = trade_date.replace("-", "") if trade_date else None
+        current_time = self._get_china_now()
+        current_date = current_time.strftime("%Y%m%d")
+        current_clock = current_time.strftime("%H:%M")
+        market_closed = current_clock >= MOMENTUM_MARKET_CLOSE_CUTOFF
+        today_trade_date = self._pick_latest_trade_date_candidate(use_today=True)
+        previous_trade_date = self._pick_latest_trade_date_candidate(use_today=False)
+        current_trade_date = today_trade_date if today_trade_date == current_date else None
 
-        resolved = self.fetcher.get_trade_time(early_time="00:00", late_time="17:00")
-        if not resolved:
-            raise RuntimeError("无法解析有效交易日")
-        return resolved
+        if requested_trade_date and requested_trade_date != current_trade_date:
+            return {
+                "trade_date": requested_trade_date,
+                "snapshot": self._load_trade_snapshot(requested_trade_date),
+                "requested_trade_date": self._format_trade_date(requested_trade_date),
+                "trade_date_note": None,
+            }
+
+        if current_trade_date is None:
+            resolved_trade_date = requested_trade_date or previous_trade_date or today_trade_date
+            if not resolved_trade_date:
+                raise RuntimeError("无法解析有效交易日")
+            return {
+                "trade_date": resolved_trade_date,
+                "snapshot": self._load_trade_snapshot(resolved_trade_date),
+                "requested_trade_date": self._format_trade_date(requested_trade_date) if requested_trade_date else None,
+                "trade_date_note": None,
+            }
+
+        fallback_trade_date = previous_trade_date or current_trade_date
+        requested_trade_date_formatted = (
+            self._format_trade_date(requested_trade_date)
+            if requested_trade_date
+            else None
+        )
+
+        if not market_closed and fallback_trade_date != current_trade_date:
+            note = (
+                f"当前时间 {current_clock} 尚未到收盘后批量筛选时段，"
+                f"系统自动使用上一交易日 {self._format_trade_date(fallback_trade_date)}。"
+            )
+            if requested_trade_date == current_trade_date:
+                note = (
+                    f"你选择了 {self._format_trade_date(current_trade_date)}，"
+                    f"但当前时间 {current_clock} 尚未收盘，系统暂时回退到上一交易日 "
+                    f"{self._format_trade_date(fallback_trade_date)}。"
+                )
+            return {
+                "trade_date": fallback_trade_date,
+                "snapshot": self._load_trade_snapshot(fallback_trade_date),
+                "requested_trade_date": requested_trade_date_formatted,
+                "trade_date_note": note,
+            }
+
+        today_snapshot = self._load_trade_snapshot(current_trade_date)
+        if self._is_trade_snapshot_ready(today_snapshot):
+            return {
+                "trade_date": current_trade_date,
+                "snapshot": today_snapshot,
+                "requested_trade_date": requested_trade_date_formatted,
+                "trade_date_note": None,
+            }
+
+        if fallback_trade_date == current_trade_date:
+            return {
+                "trade_date": current_trade_date,
+                "snapshot": today_snapshot,
+                "requested_trade_date": requested_trade_date_formatted,
+                "trade_date_note": None,
+            }
+
+        if requested_trade_date == current_trade_date:
+            note = (
+                f"你选择了 {self._format_trade_date(current_trade_date)}，"
+                f"但当天收盘数据尚未同步完成，系统暂时回退到上一交易日 "
+                f"{self._format_trade_date(fallback_trade_date)}。"
+            )
+        else:
+            note = (
+                f"{self._format_trade_date(current_trade_date)} 收盘数据尚未同步完成，"
+                f"当前自动使用上一交易日 {self._format_trade_date(fallback_trade_date)}。"
+            )
+        return {
+            "trade_date": fallback_trade_date,
+            "snapshot": self._load_trade_snapshot(fallback_trade_date),
+            "requested_trade_date": requested_trade_date_formatted,
+            "trade_date_note": note,
+        }
+
+    def _pick_latest_trade_date_candidate(self, *, use_today: bool) -> Optional[str]:
+        try:
+            if use_today:
+                return self.fetcher.get_trade_time(early_time="00:00", late_time="00:00")
+            return self.fetcher.get_trade_time(early_time="00:00", late_time="23:59")
+        except Exception:
+            logger.debug("Momentum screener failed to resolve trade-date candidate", exc_info=True)
+            return None
+
+    def _get_china_now(self) -> datetime:
+        fetcher_now = getattr(self.fetcher, "_get_china_now", None)
+        if callable(fetcher_now):
+            try:
+                current_time = fetcher_now()
+                if isinstance(current_time, datetime):
+                    return current_time
+            except Exception:
+                logger.debug("Momentum screener failed to fetch China clock from data source", exc_info=True)
+        return datetime.now(timezone(timedelta(hours=8)))
 
     @staticmethod
     def _format_trade_date(trade_date: str) -> str:
@@ -209,6 +340,10 @@ class MomentumScreenerService:
         return df.copy()
 
     def _load_trade_snapshot(self, trade_date: str) -> Dict[str, pd.DataFrame]:
+        cached = self._load_cached_trade_snapshot(trade_date)
+        if cached is not None:
+            return cached
+
         basic = self._call_tushare(
             "stock_basic",
             exchange="",
@@ -238,7 +373,7 @@ class MomentumScreenerService:
         if "circ_mv" in daily_basic.columns:
             daily_basic["circ_mv"] = pd.to_numeric(daily_basic["circ_mv"], errors="coerce") * 10000
 
-        return {
+        snapshot = {
             "basic": basic,
             "daily": daily,
             "daily_basic": daily_basic,
@@ -246,6 +381,9 @@ class MomentumScreenerService:
             "stk_limit": stk_limit,
             "top_list": top_list,
         }
+        if self._is_trade_snapshot_ready(snapshot):
+            self._store_cached_trade_snapshot(trade_date, snapshot)
+        return self._copy_snapshot(snapshot)
 
     @staticmethod
     def _pick_first_column(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
@@ -476,6 +614,41 @@ class MomentumScreenerService:
 
         return filtered.reset_index(drop=True)
 
+    def _load_candidate_pool(
+        self,
+        *,
+        trade_date: str,
+        snapshot: Dict[str, pd.DataFrame],
+        min_change_pct: float,
+        min_amount: float,
+        min_turnover: float,
+        exclude_st: bool,
+        main_board_only: bool,
+    ) -> pd.DataFrame:
+        cache_key = self._build_candidate_pool_cache_key(
+            trade_date=trade_date,
+            min_change_pct=min_change_pct,
+            min_amount=min_amount,
+            min_turnover=min_turnover,
+            exclude_st=exclude_st,
+            main_board_only=main_board_only,
+        )
+        cached = self._load_cached_candidate_pool(cache_key)
+        if cached is not None:
+            return cached
+
+        candidates = self._build_candidates(
+            snapshot=snapshot,
+            min_change_pct=min_change_pct,
+            min_amount=min_amount,
+            min_turnover=min_turnover,
+            exclude_st=exclude_st,
+            main_board_only=main_board_only,
+        )
+        if not candidates.empty:
+            self._store_cached_candidate_pool(cache_key, candidates)
+        return candidates.copy()
+
     @staticmethod
     def _apply_sector_context(candidates: pd.DataFrame, sector_context: Optional[Dict[str, Any]]) -> pd.DataFrame:
         if candidates.empty:
@@ -650,6 +823,249 @@ class MomentumScreenerService:
         normalized = _safe_str(stock_code).strip().upper()
         return f"{normalized}|{start_date}|{end_date}|{days}"
 
+    def _build_candidate_pool_cache_key(
+        self,
+        *,
+        trade_date: str,
+        min_change_pct: float,
+        min_amount: float,
+        min_turnover: float,
+        exclude_st: bool,
+        main_board_only: bool,
+    ) -> str:
+        normalized = {
+            "trade_date": trade_date,
+            "min_change_pct": round(_safe_float(min_change_pct), 3),
+            "min_amount": round(_safe_float(min_amount), 3),
+            "min_turnover": round(_safe_float(min_turnover), 3),
+            "exclude_st": bool(exclude_st),
+            "main_board_only": bool(main_board_only),
+        }
+        return "|".join(f"{key}={value}" for key, value in normalized.items())
+
+    @staticmethod
+    def _copy_snapshot(snapshot: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
+        return {name: frame.copy() for name, frame in snapshot.items()}
+
+    @staticmethod
+    def _serialize_dataframe(df: pd.DataFrame) -> Dict[str, Any]:
+        serializable = df.copy()
+        datetime_columns = [
+            column
+            for column in serializable.columns
+            if pd.api.types.is_datetime64_any_dtype(serializable[column])
+        ]
+        for column in datetime_columns:
+            serializable[column] = pd.to_datetime(serializable[column]).dt.strftime("%Y-%m-%dT%H:%M:%S")
+        return {
+            "columns": serializable.columns.tolist(),
+            "records": serializable.to_dict(orient="records"),
+        }
+
+    @staticmethod
+    def _deserialize_dataframe(payload: Dict[str, Any]) -> pd.DataFrame:
+        columns = payload.get("columns") if isinstance(payload, dict) else None
+        records = payload.get("records") if isinstance(payload, dict) else None
+        if not isinstance(columns, list):
+            return pd.DataFrame()
+        if not isinstance(records, list):
+            records = []
+        return pd.DataFrame.from_records(records, columns=columns)
+
+    def _load_cached_trade_snapshot(self, trade_date: str) -> Optional[Dict[str, pd.DataFrame]]:
+        cached = self._trade_snapshot_cache.get(trade_date)
+        if cached is not None:
+            expires_at = _safe_float(cached.get("expires_at"))
+            if expires_at > self.__class__._cache_now_ts():
+                payload = cached.get("payload")
+                if isinstance(payload, dict):
+                    snapshot = self._copy_snapshot(payload)
+                    if self._is_trade_snapshot_ready(snapshot):
+                        return snapshot
+                    self._trade_snapshot_cache.pop(trade_date, None)
+            else:
+                self._trade_snapshot_cache.pop(trade_date, None)
+
+        return self._load_disk_cached_trade_snapshot(trade_date)
+
+    def _store_cached_trade_snapshot(self, trade_date: str, snapshot: Dict[str, pd.DataFrame]) -> None:
+        payload = self._copy_snapshot(snapshot)
+        expires_at = self.__class__._cache_now_ts() + self.__class__._trade_snapshot_cache_ttl_seconds
+        self._trade_snapshot_cache[trade_date] = {"payload": payload, "expires_at": expires_at}
+        self._store_disk_cached_trade_snapshot(trade_date, payload, expires_at)
+
+    def _trade_snapshot_cache_path(self, trade_date: str) -> Path:
+        digest = hashlib.sha1(f"snapshot|{trade_date}".encode("utf-8")).hexdigest()
+        return self._trade_snapshot_cache_dir / f"{digest}.json"
+
+    def _load_disk_cached_trade_snapshot(self, trade_date: str) -> Optional[Dict[str, pd.DataFrame]]:
+        cache_path = self._trade_snapshot_cache_path(trade_date)
+        if not cache_path.exists():
+            return None
+
+        try:
+            payload = json.loads(cache_path.read_text(encoding="utf-8"))
+            expires_at = _safe_float(payload.get("expires_at"))
+            if expires_at <= self.__class__._cache_now_ts():
+                return None
+
+            tables = payload.get("tables")
+            if not isinstance(tables, dict):
+                return None
+
+            snapshot = {
+                name: self._deserialize_dataframe(table_payload)
+                for name, table_payload in tables.items()
+                if isinstance(table_payload, dict)
+            }
+            if not snapshot or not self._is_trade_snapshot_ready(snapshot):
+                try:
+                    cache_path.unlink(missing_ok=True)
+                except Exception:
+                    logger.debug("Momentum trade snapshot disk cache cleanup failed: trade_date=%s", trade_date, exc_info=True)
+                return None
+
+            self._trade_snapshot_cache[trade_date] = {
+                "payload": self._copy_snapshot(snapshot),
+                "expires_at": expires_at,
+            }
+            return snapshot
+        except Exception:
+            logger.debug(
+                "Momentum trade snapshot disk cache read failed: trade_date=%s path=%s",
+                trade_date,
+                cache_path,
+                exc_info=True,
+            )
+            return None
+
+    def _store_disk_cached_trade_snapshot(
+        self,
+        trade_date: str,
+        snapshot: Dict[str, pd.DataFrame],
+        expires_at: float,
+    ) -> None:
+        try:
+            self._trade_snapshot_cache_dir.mkdir(parents=True, exist_ok=True)
+            cache_path = self._trade_snapshot_cache_path(trade_date)
+            cache_path.write_text(
+                json.dumps(
+                    {
+                        "expires_at": expires_at,
+                        "tables": {
+                            name: self._serialize_dataframe(frame)
+                            for name, frame in snapshot.items()
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+        except Exception:
+            logger.debug("Momentum trade snapshot disk cache write failed: trade_date=%s", trade_date, exc_info=True)
+
+    def _load_cached_candidate_pool(self, cache_key: str) -> Optional[pd.DataFrame]:
+        cached = self._candidate_pool_cache.get(cache_key)
+        if cached is not None:
+            expires_at = _safe_float(cached.get("expires_at"))
+            if expires_at > self.__class__._cache_now_ts():
+                payload = cached.get("payload")
+                if isinstance(payload, pd.DataFrame):
+                    if not payload.empty:
+                        return payload.copy()
+                    self._candidate_pool_cache.pop(cache_key, None)
+            else:
+                self._candidate_pool_cache.pop(cache_key, None)
+
+        return self._load_disk_cached_candidate_pool(cache_key)
+
+    def _store_cached_candidate_pool(self, cache_key: str, candidates: pd.DataFrame) -> None:
+        payload = candidates.copy()
+        expires_at = self.__class__._cache_now_ts() + self.__class__._candidate_pool_cache_ttl_seconds
+        self._candidate_pool_cache[cache_key] = {"payload": payload, "expires_at": expires_at}
+        self._store_disk_cached_candidate_pool(cache_key, payload, expires_at)
+
+    def _candidate_pool_cache_path(self, cache_key: str) -> Path:
+        digest = hashlib.sha1(f"candidate|{cache_key}".encode("utf-8")).hexdigest()
+        return self._candidate_pool_cache_dir / f"{digest}.json"
+
+    def _load_disk_cached_candidate_pool(self, cache_key: str) -> Optional[pd.DataFrame]:
+        cache_path = self._candidate_pool_cache_path(cache_key)
+        if not cache_path.exists():
+            return None
+
+        try:
+            payload = json.loads(cache_path.read_text(encoding="utf-8"))
+            expires_at = _safe_float(payload.get("expires_at"))
+            if expires_at <= self.__class__._cache_now_ts():
+                return None
+
+            table_payload = payload.get("table")
+            if not isinstance(table_payload, dict):
+                return None
+
+            candidates = self._deserialize_dataframe(table_payload)
+            if candidates.empty:
+                try:
+                    cache_path.unlink(missing_ok=True)
+                except Exception:
+                    logger.debug("Momentum candidate pool disk cache cleanup failed: key=%s", cache_key, exc_info=True)
+                return None
+            self._candidate_pool_cache[cache_key] = {
+                "payload": candidates.copy(),
+                "expires_at": expires_at,
+            }
+            return candidates
+        except Exception:
+            logger.debug("Momentum candidate pool disk cache read failed: key=%s", cache_key, exc_info=True)
+            return None
+
+    def _store_disk_cached_candidate_pool(self, cache_key: str, candidates: pd.DataFrame, expires_at: float) -> None:
+        try:
+            self._candidate_pool_cache_dir.mkdir(parents=True, exist_ok=True)
+            cache_path = self._candidate_pool_cache_path(cache_key)
+            cache_path.write_text(
+                json.dumps(
+                    {
+                        "expires_at": expires_at,
+                        "table": self._serialize_dataframe(candidates),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+        except Exception:
+            logger.debug("Momentum candidate pool disk cache write failed: key=%s", cache_key, exc_info=True)
+
+    @staticmethod
+    def _is_trade_snapshot_ready(snapshot: Dict[str, pd.DataFrame]) -> bool:
+        if not isinstance(snapshot, dict):
+            return False
+
+        daily = snapshot.get("daily")
+        daily_basic = snapshot.get("daily_basic")
+        if not isinstance(daily, pd.DataFrame) or not isinstance(daily_basic, pd.DataFrame):
+            return False
+        if daily.empty or daily_basic.empty:
+            return False
+
+        basic = snapshot.get("basic")
+        expected_count = 0
+        if isinstance(basic, pd.DataFrame) and not basic.empty:
+            expected_count = len(basic)
+        else:
+            expected_count = max(len(daily), len(daily_basic))
+
+        if expected_count <= 0:
+            return False
+
+        daily_coverage = len(daily) / expected_count
+        daily_basic_coverage = len(daily_basic) / expected_count
+        return (
+            daily_coverage >= MOMENTUM_EOD_READY_COVERAGE_RATIO
+            and daily_basic_coverage >= MOMENTUM_EOD_READY_COVERAGE_RATIO
+        )
+
     def _load_cached_history(self, cache_key: str) -> Optional[pd.DataFrame]:
         cached = self._history_cache.get(cache_key)
         if cached is not None:
@@ -817,6 +1233,12 @@ class MomentumScreenerService:
 
         sector_stats = features["sector_stats"]
         leader_rank = sector_stats.get("leader_map", {}).get(row["ts_code"], 999)
+        leader_level = self._classify_leader_level(leader_rank)
+        entry_range_low, entry_range_high = self._build_standard_entry_range(
+            row,
+            features,
+            leader_rank=leader_rank,
+        )
 
         return {
             "ts_code": row["ts_code"],
@@ -829,7 +1251,7 @@ class MomentumScreenerService:
             "final_score": round(final_score, 1),
             "rank_score": round(rank_score, 1),
             "themes": [features["sector"]],
-            "leader_level": self._classify_leader_level(leader_rank),
+            "leader_level": leader_level,
             "top_reasons": self._build_top_reasons(breakdown),
             "risk_tags": risk_tags,
             "score_breakdown": {
@@ -841,9 +1263,48 @@ class MomentumScreenerService:
                 for key, value in breakdown.items()
             },
             "opportunity_tag": None,
-            "entry_range_low": None,
-            "entry_range_high": None,
+            "entry_range_low": entry_range_low,
+            "entry_range_high": entry_range_high,
         }
+
+    def _build_standard_entry_range(
+        self,
+        row: pd.Series,
+        features: Dict[str, Any],
+        *,
+        leader_rank: int,
+    ) -> tuple[Optional[float], Optional[float]]:
+        close_price = _safe_float(row.get("close"))
+        if close_price <= 0:
+            return None, None
+
+        open_price = _safe_float(row.get("open"))
+        ma5 = _safe_float(features.get("ma5"))
+        prev_20d_high = _safe_float(features.get("prev_20d_high"))
+
+        is_leader_like = int(leader_rank) <= 2
+        total_width_ratio = 0.02 if is_leader_like else 0.03
+        half_width_ratio = total_width_ratio / 2
+
+        support_floor = close_price * (1 - half_width_ratio)
+        if open_price > 0:
+            support_floor = max(support_floor, min(open_price, close_price))
+        if ma5 > 0:
+            support_floor = max(support_floor, ma5 * (0.997 if is_leader_like else 0.995))
+
+        confirm_ceiling = close_price * (1 + half_width_ratio)
+        if prev_20d_high > 0 and close_price >= prev_20d_high * 0.97:
+            breakout_confirmation = prev_20d_high * (1.005 if is_leader_like else 1.01)
+            if breakout_confirmation >= support_floor:
+                confirm_ceiling = min(confirm_ceiling, breakout_confirmation)
+
+        entry_low = support_floor
+        entry_high = max(entry_low, confirm_ceiling)
+        max_width_value = close_price * total_width_ratio
+        if entry_high - entry_low > max_width_value:
+            entry_high = entry_low + max_width_value
+
+        return round(entry_low, 2), round(max(entry_low, entry_high), 2)
 
     def _score_aggressive(self, row: pd.Series, features: Dict[str, Any]) -> Dict[str, Any]:
         breakdown = {
@@ -881,7 +1342,7 @@ class MomentumScreenerService:
 
         sector_stats = features["sector_stats"]
         leader_rank = sector_stats.get("leader_map", {}).get(row["ts_code"], 999)
-        entry_range_low, entry_range_high = self._build_aggressive_entry_range(features)
+        entry_range_low, entry_range_high = self._build_aggressive_entry_range(row, features)
         opportunity_tag = self._build_aggressive_opportunity_tag(row, features)
 
         return {
@@ -988,14 +1449,15 @@ class MomentumScreenerService:
             },
         }
 
-    def _build_aggressive_entry_range(self, features: Dict[str, Any]) -> tuple[Optional[float], Optional[float]]:
-        prev_close = _safe_float(features.get("prev_close"))
-        prev_open = _safe_float(features.get("prev_open"))
-        if prev_close <= 0:
+    def _build_aggressive_entry_range(self, row: pd.Series, features: Dict[str, Any]) -> tuple[Optional[float], Optional[float]]:
+        close_price = _safe_float(row.get("close"))
+        open_price = _safe_float(row.get("open"))
+        if close_price <= 0:
             return None, None
 
-        entry_low = max(prev_close * 0.985, prev_open) if prev_open > 0 else prev_close * 0.985
-        entry_high = prev_close * 1.015
+        body_low = min(open_price, close_price) if open_price > 0 else close_price
+        entry_low = max(close_price * 0.985, body_low)
+        entry_high = close_price * 1.015
         return round(entry_low, 2), round(entry_high, 2)
 
     def _build_aggressive_opportunity_tag(self, row: pd.Series, features: Dict[str, Any]) -> Optional[str]:

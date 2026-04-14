@@ -41,6 +41,8 @@ export interface MomentumScreenerResult {
 export interface MomentumScreenerResponse {
   profile: MomentumProfile;
   tradeDate: string;
+  requestedTradeDate?: string | null;
+  tradeDateNote?: string | null;
   candidateCount: number;
   results: MomentumScreenerResult[];
 }
@@ -163,6 +165,17 @@ export interface MomentumStrategyHealthWindow {
   summary: string;
 }
 
+export interface MomentumStrategyHealthProgress {
+  status: 'proxy' | 'queued' | 'running' | 'partial' | 'final' | 'failed';
+  processedTradeDateCount: number;
+  totalTradeDateCount: number;
+  validSampleCount: number;
+  targetSampleCount: number;
+  progressPct: number;
+  lastEvaluatedTradeDate?: string | null;
+  updatedAt?: string | null;
+}
+
 export interface MomentumStrategyHealth {
   status: MomentumStrategyHealthStatus;
   label: string;
@@ -175,6 +188,8 @@ export interface MomentumStrategyHealth {
   recoveryConditions: string[];
   dataSource?: 'historical' | 'proxy';
   isWarming?: boolean;
+  validationStatus?: 'proxy' | 'partial' | 'final';
+  progress?: MomentumStrategyHealthProgress;
 }
 
 export interface MomentumSecondaryDecision {

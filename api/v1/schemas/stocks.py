@@ -145,8 +145,8 @@ class MomentumScreenerResult(BaseModel):
     risk_score: float = Field(..., description="风险分")
     buyability_score: Optional[float] = Field(None, description="可买性分，仅 aggressive 使用")
     opportunity_tag: Optional[str] = Field(None, description="机会标签，仅 aggressive 使用")
-    entry_range_low: Optional[float] = Field(None, description="建议低位买入区间，仅 aggressive 使用")
-    entry_range_high: Optional[float] = Field(None, description="建议高位买入区间，仅 aggressive 使用")
+    entry_range_low: Optional[float] = Field(None, description="建议低位买入区间，二次决策可复用")
+    entry_range_high: Optional[float] = Field(None, description="建议高位买入区间，二次决策可复用")
     final_score: float = Field(..., description="最终总分")
     rank_score: float = Field(..., description="排序分")
     themes: List[str] = Field(default_factory=list, description="所属板块/主线")
@@ -160,7 +160,9 @@ class MomentumScreenerResponse(BaseModel):
     """次日强势股筛选响应。"""
 
     profile: Literal["standard", "aggressive"] = Field(..., description="评分画像")
-    trade_date: str = Field(..., description="交易日")
+    trade_date: str = Field(..., description="实际用于筛选的交易日")
+    requested_trade_date: Optional[str] = Field(None, description="用户请求的交易日；自动模式下为空")
+    trade_date_note: Optional[str] = Field(None, description="交易日自动回退或数据未就绪时的提示文案")
     candidate_count: int = Field(..., description="候选池数量")
     results: List[MomentumScreenerResult] = Field(default_factory=list, description="筛选结果")
 
@@ -291,6 +293,22 @@ class MomentumStrategyHealthWindow(BaseModel):
     avg_selected_count: float = Field(..., description="姣忔棩榛樿缁勫悎鍧囧€煎叆閫夋暟")
 
 
+class MomentumStrategyHealthProgress(BaseModel):
+    """策略健康历史验证进度。"""
+
+    status: Literal["proxy", "queued", "running", "partial", "final", "failed"] = Field(
+        "proxy",
+        description="当前策略健康计算进度状态",
+    )
+    processed_trade_date_count: int = Field(0, description="已处理的历史交易日数量")
+    total_trade_date_count: int = Field(0, description="待处理的历史交易日总数量")
+    valid_sample_count: int = Field(0, description="已累计的有效样本数量")
+    target_sample_count: int = Field(60, description="目标有效样本数量")
+    progress_pct: float = Field(0.0, description="按历史交易日处理进度计算的百分比")
+    last_evaluated_trade_date: Optional[str] = Field(None, description="最近一次完成验证的历史交易日")
+    updated_at: Optional[str] = Field(None, description="最近一次进度更新时间")
+
+
 class MomentumStrategyHealth(BaseModel):
     """策略健康状态。"""
 
@@ -308,6 +326,15 @@ class MomentumStrategyHealth(BaseModel):
     recovery_conditions: List[str] = Field(default_factory=list, description="恢复条件")
     data_source: Literal["historical", "proxy"] = Field("historical", description="当前策略健康结果来源")
     is_warming: bool = Field(False, description="真实历史验证是否仍在后台计算")
+
+    validation_status: Literal["proxy", "partial", "final"] = Field(
+        "final",
+        description="历史验证结果当前处于代理、部分结果还是正式结果",
+    )
+    progress: MomentumStrategyHealthProgress = Field(
+        default_factory=MomentumStrategyHealthProgress,
+        description="历史验证进度信息",
+    )
 
 
 class MomentumSecondaryDecision(BaseModel):

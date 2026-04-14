@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [文档] 新增强势筛选新手使用说明书，补齐参数设置、页面窗口解读与基础筛选 / 二次决策 / 盘中信号返回字段释义
+- [文档] 新增强势筛选执行逻辑说明文档与 PDF 导出脚本，补齐交易日解析、候选池过滤、评分引擎、二次决策、策略健康、盘中信号的完整流程图与计算逻辑
+- [修复] 强势筛选默认交易日不再固定等到 17:00 才切换；收盘后会优先探测当天 EOD 数据是否就绪，未就绪时自动回退到上一交易日并返回页面提示
+- [修复] Standard 引擎的二次决策与执行辅助现在也会生成明确买入区间，并要求“买点清晰”必须建立在区间已生成的前提上，避免出现“判定清晰但没有区间可等”的自相矛盾
 - [修复] 强势筛选二次决策的策略健康缓存与历史验证回放不再受页面展示 `top_n` 影响，避免仅改返回数量时“今日出手级别”因预热/缓存分支而漂移
 - [修复] 强势筛选二次决策改为基于候选池全量评分后的完整排序集收口，而不是仅基于当前页面返回的 TopN 结果继续选择，避免“结果数量”参数改变主仓 / 次仓 / 观察仓结论
 - [修复] 盘中信号依赖的 `REALTIME_SOURCE_PRIORITY` 现支持把 `Tushare Pro`、`Tencent`、`Akshare Sina` 等展示值标准化为内部 provider key，并在非法取值时自动回退到默认优先级，避免实时行情链路因坏配置失效
@@ -64,6 +68,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [改进] TushareFetcher `_normalize_data` 对港股（`hk_daily`）不再对 `vol`/`amount` 做 A 股手→股、千元→元 的缩放，与 Tushare 港股字段语义一致。
 - [测试] 补充 `TushareFetcher._normalize_data` 港股与 A 股/ETF 单位处理的单元测试。
 - [新功能] 集成 Anspire Search 作为可选语义搜索后端; 配置 `ANSPIRE_*` 可使用Anspire Search获取实时行情及新闻资讯，未配置时行为与此前一致。Anspire Search请使用 `tests/test_anspire_search.py`（手动脚本）。
+
+- [改进] 强势筛选新增交易日快照缓存与候选池缓存，相同筛选条件下复用候选池，降低二次决策与历史回放的首轮计算开销
+- [改进] 二次决策的 `strategy_health` 升级为可续跑、可累积、区分 `partial/final` 的后台历史验证任务，并在接口与页面同步展示验证进度和刷新状态
 
 ## [3.12.0] - 2026-04-01
 

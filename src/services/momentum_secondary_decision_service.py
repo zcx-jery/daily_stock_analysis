@@ -134,7 +134,7 @@ ROLE_VALIDATION_TARGETS = {
     "back": {"profit_window_pct": 2.0, "max_drawdown_pct": 4.0},
 }
 STRATEGY_HEALTH_CACHE_TTL = timedelta(hours=12)
-STRATEGY_HEALTH_CACHE_VERSION = "v3"
+STRATEGY_HEALTH_CACHE_VERSION = "v4"
 STRATEGY_HEALTH_DISK_CACHE_DIRNAME = "momentum_strategy_health"
 STRATEGY_HEALTH_ASYNC_DEFAULT_DELAY_SECONDS = 20.0
 STRATEGY_HEALTH_WAIT_TIMEOUT_SECONDS = 8.0
@@ -142,6 +142,8 @@ STRATEGY_HEALTH_WAIT_POLL_INTERVAL_SECONDS = 0.1
 STRATEGY_HEALTH_COMPUTE_TIME_BUDGET_SECONDS = 75.0
 STRATEGY_HEALTH_MIN_PARTIAL_SAMPLE_COUNT = 5
 STRATEGY_HEALTH_MAX_SCORED_CANDIDATES = 30
+STRATEGY_HEALTH_TARGET_SAMPLE_COUNT = STRATEGY_HEALTH_WINDOW_TARGETS["long_60d"]["lookback"]
+STRATEGY_HEALTH_IN_PROGRESS_STATUSES = {"queued", "running", "partial"}
 STRATEGY_HEALTH_WARMING_REASON = (
     "真实 20/60 日历史验证正在后台计算，本次先展示代理健康度，稍后刷新即可切换为真实结果。"
 )
@@ -977,7 +979,7 @@ class MomentumSecondaryDecisionService:
         request_params: Optional[Dict[str, Any]],
         wait_for_strategy_health: bool = False,
     ) -> Dict[str, Any]:
-        historical_health, is_warming = self._build_historical_strategy_health(
+        historical_health, runtime_metadata = self._build_historical_strategy_health(
             trade_date=trade_date,
             request_params=request_params,
             wait_for_strategy_health=wait_for_strategy_health,
@@ -986,18 +988,29 @@ class MomentumSecondaryDecisionService:
             return self._attach_strategy_health_runtime_metadata(
                 historical_health,
                 data_source="historical",
-                is_warming=False,
+                is_warming=bool(runtime_metadata.get("is_warming", False)),
+                validation_status=_safe_str(runtime_metadata.get("validation_status"), "final"),
+                progress=runtime_metadata.get("progress"),
             )
         if not themes or not portfolio:
             return self._attach_strategy_health_runtime_metadata(
                 self._build_empty_strategy_health(),
                 data_source="proxy",
                 is_warming=False,
+                validation_status="proxy",
+                progress=runtime_metadata.get("progress"),
             )
         return self._attach_strategy_health_runtime_metadata(
-            self._build_proxy_strategy_health(candidates, themes, portfolio, is_warming=is_warming),
+            self._build_proxy_strategy_health(
+                candidates,
+                themes,
+                portfolio,
+                is_warming=bool(runtime_metadata.get("is_warming", False)),
+            ),
             data_source="proxy",
-            is_warming=is_warming,
+            is_warming=bool(runtime_metadata.get("is_warming", False)),
+            validation_status="proxy",
+            progress=runtime_metadata.get("progress"),
         )
 
     def _build_historical_strategy_health(
@@ -1006,15 +1019,17 @@ class MomentumSecondaryDecisionService:
         trade_date: str,
         request_params: Optional[Dict[str, Any]],
         wait_for_strategy_health: bool = False,
-    ) -> Tuple[Optional[Dict[str, Any]], bool]:
+    ) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
         normalized_trade_date = self._normalize_trade_date(trade_date)
         if not normalized_trade_date or not request_params or self.screener_service is None:
-            return None, False
+            return None, self._build_strategy_health_runtime_metadata()
 
         cache_key = self._build_strategy_health_cache_key(normalized_trade_date, request_params)
-        cached = self._load_cached_strategy_health(cache_key)
-        if cached is not None:
-            return cached, False
+        state = self._load_strategy_health_state(cache_key)
+        health = self._extract_strategy_health_from_state(state)
+        runtime_metadata = self._build_strategy_health_runtime_metadata(state)
+        if _safe_str((state or {}).get("status")) == "final" and health is not None:
+            return health, runtime_metadata
 
         if wait_for_strategy_health:
             if self.strategy_health_async:
@@ -1025,40 +1040,41 @@ class MomentumSecondaryDecisionService:
                     force_immediate=True,
                 )
                 if scheduled:
-                    cached = self._wait_for_cached_strategy_health(
+                    state = self._wait_for_strategy_health_state(
                         cache_key,
                         timeout_seconds=STRATEGY_HEALTH_WAIT_TIMEOUT_SECONDS,
                     )
-                    if cached is not None:
-                        return cached, False
-                    return None, self._has_active_strategy_health_job(cache_key)
+                    runtime_metadata = self._build_strategy_health_runtime_metadata(state)
+                    health = self._extract_strategy_health_from_state(state)
+                    if health is not None:
+                        return health, runtime_metadata
+                    return None, runtime_metadata
 
-            health = self._compute_historical_strategy_health(
+            state = self._compute_strategy_health_to_completion(
+                cache_key=cache_key,
                 trade_date=normalized_trade_date,
                 request_params=request_params,
             )
-            if health is None:
-                return None, False
-
-            self._store_cached_strategy_health(cache_key, health)
-            return health, False
+            runtime_metadata = self._build_strategy_health_runtime_metadata(state)
+            return self._extract_strategy_health_from_state(state), runtime_metadata
 
         if self.strategy_health_async and self._schedule_strategy_health_compute(
             cache_key=cache_key,
             trade_date=normalized_trade_date,
             request_params=request_params,
         ):
-            return None, True
+            state = self._load_strategy_health_state(cache_key)
+            runtime_metadata = self._build_strategy_health_runtime_metadata(state, fallback_is_warming=True)
+            health = self._extract_strategy_health_from_state(state)
+            return health, runtime_metadata
 
-        health = self._compute_historical_strategy_health(
+        state = self._compute_strategy_health_to_completion(
+            cache_key=cache_key,
             trade_date=normalized_trade_date,
             request_params=request_params,
         )
-        if health is None:
-            return None, False
-
-        self._store_cached_strategy_health(cache_key, health)
-        return health, False
+        runtime_metadata = self._build_strategy_health_runtime_metadata(state)
+        return self._extract_strategy_health_from_state(state), runtime_metadata
 
     def _build_proxy_strategy_health(
         self,
@@ -1122,28 +1138,200 @@ class MomentumSecondaryDecisionService:
         *,
         data_source: str,
         is_warming: bool,
+        validation_status: str,
+        progress: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         enriched = deepcopy(health)
         enriched["data_source"] = data_source
         enriched["is_warming"] = is_warming
+        enriched["validation_status"] = validation_status
+        enriched["progress"] = deepcopy(progress) if isinstance(progress, dict) else {
+            "status": "proxy" if data_source == "proxy" else validation_status,
+            "processed_trade_date_count": 0,
+            "total_trade_date_count": 0,
+            "valid_sample_count": 0,
+            "target_sample_count": STRATEGY_HEALTH_TARGET_SAMPLE_COUNT,
+            "progress_pct": 0.0,
+            "last_evaluated_trade_date": None,
+            "updated_at": None,
+        }
         return enriched
 
-    def _compute_historical_strategy_health(
+    def _build_strategy_health_runtime_metadata(
+        self,
+        state: Optional[Dict[str, Any]] = None,
+        *,
+        fallback_is_warming: bool = False,
+    ) -> Dict[str, Any]:
+        state = deepcopy(state) if isinstance(state, dict) else {}
+        status = _safe_str(state.get("status"))
+        has_partial = isinstance(state.get("partial_health"), dict)
+        if status == "final":
+            validation_status = "final"
+            is_warming = False
+        elif has_partial:
+            validation_status = "partial"
+            is_warming = True
+        else:
+            validation_status = "proxy"
+            is_warming = fallback_is_warming or status in STRATEGY_HEALTH_IN_PROGRESS_STATUSES
+        return {
+            "validation_status": validation_status,
+            "is_warming": is_warming,
+            "progress": self._build_strategy_health_progress(state, validation_status=validation_status),
+        }
+
+    def _build_strategy_health_progress(
+        self,
+        state: Optional[Dict[str, Any]] = None,
+        *,
+        validation_status: str,
+    ) -> Dict[str, Any]:
+        state = state or {}
+        processed_trade_date_count = int(
+            state.get("processed_trade_date_count", state.get("next_trade_date_index", 0)) or 0
+        )
+        total_trade_date_count = int(state.get("total_trade_date_count", 0) or 0)
+        valid_sample_count = len(state.get("validations", [])) if isinstance(state.get("validations"), list) else 0
+        progress_pct = (
+            round(processed_trade_date_count / max(total_trade_date_count, 1) * 100, 1)
+            if total_trade_date_count > 0
+            else 0.0
+        )
+        runtime_status = _safe_str(state.get("status")) or validation_status
+        if validation_status == "proxy" and runtime_status == "":
+            runtime_status = "proxy"
+        return {
+            "status": runtime_status,
+            "processed_trade_date_count": processed_trade_date_count,
+            "total_trade_date_count": total_trade_date_count,
+            "valid_sample_count": valid_sample_count,
+            "target_sample_count": STRATEGY_HEALTH_TARGET_SAMPLE_COUNT,
+            "progress_pct": progress_pct,
+            "last_evaluated_trade_date": state.get("last_evaluated_trade_date"),
+            "updated_at": state.get("updated_at"),
+        }
+
+    @staticmethod
+    def _extract_strategy_health_from_state(state: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not isinstance(state, dict):
+            return None
+        final_health = state.get("final_health")
+        if isinstance(final_health, dict):
+            return deepcopy(final_health)
+        partial_health = state.get("partial_health")
+        if isinstance(partial_health, dict):
+            return deepcopy(partial_health)
+        return None
+
+    def _summarize_strategy_health_validations(self, validations: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not validations:
+            return None
+        short_window = self._summarize_strategy_health_window(
+            "short_20d",
+            validations[: STRATEGY_HEALTH_WINDOW_TARGETS["short_20d"]["lookback"]],
+        )
+        long_window = self._summarize_strategy_health_window(
+            "long_60d",
+            validations[: STRATEGY_HEALTH_WINDOW_TARGETS["long_60d"]["lookback"]],
+        )
+        return self._compose_strategy_health(short_window, long_window)
+
+    def _create_strategy_health_state(
         self,
         *,
         trade_date: str,
         request_params: Dict[str, Any],
-    ) -> Optional[Dict[str, Any]]:
-        started_at = time_module.monotonic()
-        trade_dates = self._load_strategy_health_trade_dates(
-            end_trade_date=trade_date,
-            limit=STRATEGY_HEALTH_WINDOW_TARGETS["long_60d"]["lookback"] + 12,
-        )
-        if not trade_dates:
-            return None
+    ) -> Dict[str, Any]:
+        now = datetime.now().isoformat()
+        return {
+            "status": "queued",
+            "trade_date": trade_date,
+            "request_params": deepcopy(request_params),
+            "trade_dates": [],
+            "total_trade_date_count": 0,
+            "next_trade_date_index": 0,
+            "processed_trade_date_count": 0,
+            "validations": [],
+            "partial_health": None,
+            "final_health": None,
+            "last_evaluated_trade_date": None,
+            "last_error": None,
+            "started_at": now,
+            "updated_at": now,
+            "completed_at": None,
+        }
 
-        validations: List[Dict[str, Any]] = []
-        for historical_trade_date in trade_dates:
+    def _compute_strategy_health_to_completion(
+        self,
+        *,
+        cache_key: str,
+        trade_date: str,
+        request_params: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        state = self._load_strategy_health_state(cache_key)
+        while True:
+            state = self._advance_strategy_health_state(
+                cache_key=cache_key,
+                trade_date=trade_date,
+                request_params=request_params,
+                state=state,
+            )
+            if not isinstance(state, dict):
+                return None
+            if _safe_str(state.get("status")) in {"final", "failed"}:
+                return state
+            if int(state.get("processed_trade_date_count", 0)) >= int(state.get("total_trade_date_count", 0)):
+                return state
+
+    def _advance_strategy_health_state(
+        self,
+        *,
+        cache_key: str,
+        trade_date: str,
+        request_params: Dict[str, Any],
+        state: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        working_state = deepcopy(state) if isinstance(state, dict) else self._load_strategy_health_state(cache_key)
+        if not isinstance(working_state, dict):
+            working_state = self._create_strategy_health_state(
+                trade_date=trade_date,
+                request_params=request_params,
+            )
+
+        if _safe_str(working_state.get("status")) == "final":
+            return working_state
+
+        trade_dates = working_state.get("trade_dates")
+        if not isinstance(trade_dates, list) or not trade_dates:
+            trade_dates = self._load_strategy_health_trade_dates(
+                end_trade_date=trade_date,
+                limit=STRATEGY_HEALTH_TARGET_SAMPLE_COUNT + 12,
+            )
+            working_state["trade_dates"] = trade_dates
+            working_state["total_trade_date_count"] = len(trade_dates)
+            if not trade_dates:
+                working_state["status"] = "failed"
+                working_state["last_error"] = "no_trade_dates"
+                working_state["updated_at"] = datetime.now().isoformat()
+                self._store_strategy_health_state(cache_key, working_state)
+                return working_state
+
+        started_at = time_module.monotonic()
+        validations = working_state.get("validations")
+        if not isinstance(validations, list):
+            validations = []
+            working_state["validations"] = validations
+        working_state["status"] = "running"
+        working_state["last_error"] = None
+
+        while int(working_state.get("next_trade_date_index", 0)) < len(trade_dates):
+            next_index = int(working_state.get("next_trade_date_index", 0))
+            historical_trade_date = _safe_str(trade_dates[next_index])
+            working_state["next_trade_date_index"] = next_index + 1
+            working_state["processed_trade_date_count"] = next_index + 1
+            working_state["last_evaluated_trade_date"] = historical_trade_date
+
             try:
                 validation = self._evaluate_strategy_health_trade_date(
                     historical_trade_date=historical_trade_date,
@@ -1154,10 +1342,9 @@ class MomentumSecondaryDecisionService:
                     "Failed to evaluate momentum strategy health sample: trade_date=%s",
                     historical_trade_date,
                 )
-                continue
-            if validation is None:
-                should_stop_early = False
-            else:
+                validation = None
+
+            if validation is not None:
                 validations.append(validation)
                 if len(validations) == 1 or len(validations) % 5 == 0:
                     logger.info(
@@ -1166,34 +1353,34 @@ class MomentumSecondaryDecisionService:
                         len(validations),
                         historical_trade_date,
                     )
-                should_stop_early = len(validations) >= STRATEGY_HEALTH_WINDOW_TARGETS["long_60d"]["lookback"]
+                if len(validations) >= STRATEGY_HEALTH_TARGET_SAMPLE_COUNT:
+                    break
 
-            if not should_stop_early and len(validations) >= STRATEGY_HEALTH_MIN_PARTIAL_SAMPLE_COUNT:
+            if len(validations) >= STRATEGY_HEALTH_MIN_PARTIAL_SAMPLE_COUNT:
                 elapsed_seconds = time_module.monotonic() - started_at
                 if elapsed_seconds >= STRATEGY_HEALTH_COMPUTE_TIME_BUDGET_SECONDS:
                     logger.info(
-                        "Momentum strategy health compute reached time budget: trade_date=%s samples=%d elapsed=%.1fs",
+                        "Momentum strategy health compute reached slice budget: trade_date=%s samples=%d elapsed=%.1fs",
                         trade_date,
                         len(validations),
                         elapsed_seconds,
                     )
-                    should_stop_early = True
+                    break
 
-            if should_stop_early:
-                break
+        summary = self._summarize_strategy_health_validations(validations)
+        if summary is not None:
+            working_state["partial_health"] = summary
 
-        if not validations:
-            return None
+        working_state["updated_at"] = datetime.now().isoformat()
+        if len(validations) >= STRATEGY_HEALTH_TARGET_SAMPLE_COUNT or int(working_state.get("next_trade_date_index", 0)) >= len(trade_dates):
+            working_state["status"] = "final"
+            working_state["final_health"] = deepcopy(working_state.get("partial_health"))
+            working_state["completed_at"] = working_state["updated_at"]
+        elif summary is not None:
+            working_state["status"] = "partial"
 
-        short_window = self._summarize_strategy_health_window(
-            "short_20d",
-            validations[: STRATEGY_HEALTH_WINDOW_TARGETS["short_20d"]["lookback"]],
-        )
-        long_window = self._summarize_strategy_health_window(
-            "long_60d",
-            validations[: STRATEGY_HEALTH_WINDOW_TARGETS["long_60d"]["lookback"]],
-        )
-        return self._compose_strategy_health(short_window, long_window)
+        self._store_strategy_health_state(cache_key, working_state)
+        return deepcopy(working_state)
 
     def _schedule_strategy_health_compute(
         self,
@@ -1264,7 +1451,7 @@ class MomentumSecondaryDecisionService:
                 return current.is_alive()
             return current is not None
 
-    def _wait_for_cached_strategy_health(
+    def _wait_for_strategy_health_state(
         self,
         cache_key: str,
         *,
@@ -1272,15 +1459,18 @@ class MomentumSecondaryDecisionService:
     ) -> Optional[Dict[str, Any]]:
         deadline = time_module.time() + max(0.0, timeout_seconds)
         while time_module.time() <= deadline:
-            cached = self._load_cached_strategy_health(cache_key)
-            if cached is not None:
-                return cached
+            state = self._load_strategy_health_state(cache_key)
+            if isinstance(state, dict):
+                if _safe_str(state.get("status")) == "final":
+                    return state
+                if self._extract_strategy_health_from_state(state) is not None:
+                    return state
 
             if not self._has_active_strategy_health_job(cache_key):
                 break
 
             time_module.sleep(STRATEGY_HEALTH_WAIT_POLL_INTERVAL_SECONDS)
-        return self._load_cached_strategy_health(cache_key)
+        return self._load_strategy_health_state(cache_key)
 
     def _start_delayed_strategy_health_compute(
         self,
@@ -1289,7 +1479,8 @@ class MomentumSecondaryDecisionService:
         trade_date: str,
         request_params: Dict[str, Any],
     ) -> None:
-        if self._load_cached_strategy_health(cache_key) is not None:
+        state = self._load_strategy_health_state(cache_key)
+        if _safe_str((state or {}).get("status")) == "final":
             self._clear_strategy_health_job(cache_key, None)
             return
 
@@ -1323,19 +1514,29 @@ class MomentumSecondaryDecisionService:
                 trade_date,
                 request_params.get("profile"),
             )
-            health = self._compute_historical_strategy_health(
-                trade_date=trade_date,
-                request_params=request_params,
-            )
-            if health is not None:
-                self._store_cached_strategy_health(cache_key, health)
-                logger.info(
-                    "Momentum strategy health cache warmed: cache_key=%s short_samples=%s long_samples=%s status=%s",
-                    cache_key,
-                    health.get("short_window", {}).get("sample_count"),
-                    health.get("long_window", {}).get("sample_count"),
-                    health.get("status"),
+            state = self._load_strategy_health_state(cache_key)
+            while True:
+                state = self._advance_strategy_health_state(
+                    cache_key=cache_key,
+                    trade_date=trade_date,
+                    request_params=request_params,
+                    state=state,
                 )
+                if not isinstance(state, dict):
+                    break
+                status = _safe_str(state.get("status"))
+                health = self._extract_strategy_health_from_state(state)
+                if health is not None and status in {"partial", "final"}:
+                    logger.info(
+                        "Momentum strategy health checkpoint saved: cache_key=%s samples=%s processed=%s/%s status=%s",
+                        cache_key,
+                        len(state.get("validations", [])) if isinstance(state.get("validations"), list) else 0,
+                        state.get("processed_trade_date_count"),
+                        state.get("total_trade_date_count"),
+                        status,
+                    )
+                if status in {"final", "failed"}:
+                    break
         except Exception:
             logger.exception("Failed to warm momentum strategy health cache for %s", cache_key)
 
@@ -1505,12 +1706,51 @@ class MomentumSecondaryDecisionService:
         return "|".join(f"{key}={value}" for key, value in normalized.items())
 
     def _load_cached_strategy_health(self, cache_key: str) -> Optional[Dict[str, Any]]:
+        state = self._load_strategy_health_state(cache_key)
+        health = self._extract_strategy_health_from_state(state)
+        if health is None:
+            return None
+        runtime_metadata = self._build_strategy_health_runtime_metadata(state)
+        return self._attach_strategy_health_runtime_metadata(
+            health,
+            data_source="historical",
+            is_warming=bool(runtime_metadata.get("is_warming", False)),
+            validation_status=_safe_str(runtime_metadata.get("validation_status"), "final"),
+            progress=runtime_metadata.get("progress"),
+        )
+
+    def _store_cached_strategy_health(self, cache_key: str, value: Dict[str, Any]) -> None:
+        now = datetime.now().isoformat()
+        self._store_strategy_health_state(
+            cache_key,
+            {
+                "status": "final",
+                "trade_date": None,
+                "request_params": {},
+                "trade_dates": [],
+                "total_trade_date_count": 0,
+                "next_trade_date_index": 0,
+                "processed_trade_date_count": 0,
+                "validations": [],
+                "partial_health": deepcopy(value),
+                "final_health": deepcopy(value),
+                "last_evaluated_trade_date": None,
+                "last_error": None,
+                "started_at": now,
+                "updated_at": now,
+                "completed_at": now,
+            },
+        )
+
+    def _load_strategy_health_state(self, cache_key: str) -> Optional[Dict[str, Any]]:
         cached = self._strategy_health_cache.get(cache_key)
         if cached is not None:
             if cached["expires_at"] <= datetime.now():
                 self._strategy_health_cache.pop(cache_key, None)
             else:
-                return deepcopy(cached["value"])
+                value = cached.get("value")
+                if isinstance(value, dict):
+                    return deepcopy(value)
 
         disk_cached = self._load_disk_cached_strategy_health(cache_key)
         if disk_cached is not None:
@@ -1521,7 +1761,7 @@ class MomentumSecondaryDecisionService:
             return disk_cached
         return None
 
-    def _store_cached_strategy_health(self, cache_key: str, value: Dict[str, Any]) -> None:
+    def _store_strategy_health_state(self, cache_key: str, value: Dict[str, Any]) -> None:
         cache_value = deepcopy(value)
         self._strategy_health_cache[cache_key] = {
             "value": cache_value,
@@ -1555,11 +1795,7 @@ class MomentumSecondaryDecisionService:
         value = payload.get("value")
         if not isinstance(value, dict):
             return None
-        return self._attach_strategy_health_runtime_metadata(
-            value,
-            data_source=_safe_str(value.get("data_source"), "historical"),
-            is_warming=bool(value.get("is_warming", False)),
-        )
+        return value
 
     def _store_disk_cached_strategy_health(self, cache_key: str, value: Dict[str, Any]) -> None:
         cache_path = self._strategy_health_cache_path(cache_key)
@@ -2102,16 +2338,26 @@ class MomentumSecondaryDecisionService:
         rank_score = _safe_float(item.get("rank_score"))
         continuation_score = _safe_float(item.get("continuation_score"))
         risk_score = _safe_float(item.get("risk_score"))
+        has_entry_range = (
+            item.get("entry_range_low") is not None
+            and item.get("entry_range_high") is not None
+        )
 
         if buyability is not None:
             buyability_score = _safe_float(buyability)
-            if buyability_score >= 72 and risk_score <= 35:
+            if buyability_score >= 72 and risk_score <= 35 and has_entry_range:
                 return "clear", BUY_POINT_LABELS["clear"]
             if buyability_score >= 60 and rank_score >= 65 and risk_score <= 55:
                 return "waiting", BUY_POINT_LABELS["waiting"]
             return "unclear", BUY_POINT_LABELS["unclear"]
 
-        if role_key == "leader" and continuation_score >= 82 and rank_score >= 70 and risk_score <= 40:
+        if (
+            role_key == "leader"
+            and continuation_score >= 82
+            and rank_score >= 70
+            and risk_score <= 40
+            and has_entry_range
+        ):
             return "clear", BUY_POINT_LABELS["clear"]
         if continuation_score >= 72 and rank_score >= 60 and risk_score <= 55:
             return "waiting", BUY_POINT_LABELS["waiting"]
