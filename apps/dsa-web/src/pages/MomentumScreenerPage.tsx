@@ -1,8 +1,9 @@
 import type React from 'react';
 import { useEffect, useMemo, useState } from 'react';
-import { BarChart3, Flame, ListChecks, Radar, RefreshCw, ShieldAlert, Target, TrendingUp } from 'lucide-react';
+import { BarChart3, Flame, ListChecks, Radar, RefreshCw, ShieldAlert, Sparkles, Target, TrendingUp } from 'lucide-react';
 import { momentumScreenerApi } from '../api/momentumScreener';
 import { systemConfigApi } from '../api/systemConfig';
+import ScreenerAiDrawer from '../components/screener/ScreenerAiDrawer';
 import { getParsedApiError, type ParsedApiError } from '../api/error';
 import { ApiErrorAlert, Badge, Button, Card, Drawer, EmptyState, Input, Select } from '../components/common';
 import type {
@@ -19,6 +20,8 @@ import type {
   MomentumScreenerResponse,
   MomentumScreenerResult,
 } from '../types/momentumScreener';
+import type { MomentumScreenerAiReviewTarget } from '../types/momentumScreenerAi';
+import { useMomentumScreenerAiStore } from '../stores/momentumScreenerAiStore';
 
 type FormState = {
   profile: MomentumProfile;
@@ -1084,6 +1087,8 @@ type SecondaryDecisionPanelProps = {
   onRefresh: () => void;
   refreshing: boolean;
   refreshDisabled: boolean;
+  onAiDecisionReview: () => void;
+  onAiExcludedReview: () => void;
 };
 
 const SecondaryDecisionPanel: React.FC<SecondaryDecisionPanelProps> = ({
@@ -1091,6 +1096,8 @@ const SecondaryDecisionPanel: React.FC<SecondaryDecisionPanelProps> = ({
   onRefresh,
   refreshing,
   refreshDisabled,
+  onAiDecisionReview,
+  onAiExcludedReview,
 }) => (
   <div data-testid="momentum-secondary-decision">
     <Card className="rounded-3xl border-border/60 bg-card/55">
@@ -1114,6 +1121,16 @@ const SecondaryDecisionPanel: React.FC<SecondaryDecisionPanelProps> = ({
           <Badge variant="info">
             {decision.action.sourceProfile === 'aggressive' ? 'Aggressive 引擎' : 'Standard 引擎'}
           </Badge>
+          <Button
+            data-testid="momentum-secondary-ai-review"
+            variant="outline"
+            size="sm"
+            disabled={!decision}
+            onClick={onAiDecisionReview}
+          >
+            <Sparkles className="h-4 w-4" />
+            AI 综合建议
+          </Button>
           <Button
             data-testid="momentum-secondary-refresh"
             variant={shouldShowStrategyHealthRefresh(decision.strategyHealth) ? 'outline' : 'ghost'}
@@ -1189,9 +1206,19 @@ const SecondaryDecisionPanel: React.FC<SecondaryDecisionPanelProps> = ({
 
         <div className="space-y-4">
           <div>
-            <div className="mb-3 flex items-center gap-2">
+            <div className="mb-3 flex items-center justify-between gap-3">
               <ShieldAlert className="h-4 w-4 text-cyan" />
               <p className="text-sm font-semibold text-foreground">落选说明</p>
+              <Button
+                data-testid="momentum-excluded-ai-review"
+                variant="ghost"
+                size="sm"
+                disabled={!decision}
+                onClick={onAiExcludedReview}
+              >
+                <Sparkles className="h-4 w-4" />
+                AI 落选分析
+              </Button>
             </div>
             <ExcludedCandidateList items={decision.excludedCandidates} />
           </div>
@@ -1287,6 +1314,7 @@ type IntradaySignalPanelProps = {
   error: ParsedApiError | null;
   onRefresh: () => void;
   onDismissError: () => void;
+  onAiReview: () => void;
 };
 
 const IntradaySignalPanel: React.FC<IntradaySignalPanelProps> = ({
@@ -1296,6 +1324,7 @@ const IntradaySignalPanel: React.FC<IntradaySignalPanelProps> = ({
   error,
   onRefresh,
   onDismissError,
+  onAiReview,
 }) => (
   <div data-testid="momentum-intraday-signal">
     <Card className="rounded-3xl border-border/60 bg-card/55">
@@ -1320,6 +1349,16 @@ const IntradaySignalPanel: React.FC<IntradaySignalPanelProps> = ({
               </Badge>
             </>
           ) : null}
+          <Button
+            data-testid="momentum-intraday-ai-review"
+            variant="outline"
+            size="sm"
+            disabled={!decision}
+            onClick={onAiReview}
+          >
+            <Sparkles className="h-4 w-4" />
+            AI 盘中解读
+          </Button>
           <Button
             data-testid="momentum-intraday-refresh"
             variant="ghost"
@@ -1434,6 +1473,7 @@ const MomentumScreenerPage: React.FC = () => {
   const [error, setError] = useState<ParsedApiError | null>(null);
   const [intradayError, setIntradayError] = useState<ParsedApiError | null>(null);
   const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
+  const openAiPanel = useMomentumScreenerAiStore((state) => state.openPanel);
 
   useEffect(() => {
     document.title = '强势筛选 - DSA';
@@ -1442,6 +1482,10 @@ const MomentumScreenerPage: React.FC = () => {
   useEffect(() => {
     persistState(form, sortBy);
   }, [form, sortBy]);
+
+  const openMomentumAiPanel = async (target: MomentumScreenerAiReviewTarget) => {
+    await openAiPanel(target);
+  };
 
   const runScreening = async (nextForm = form) => {
     setLoading(true);
@@ -1568,6 +1612,65 @@ const MomentumScreenerPage: React.FC = () => {
     [form.profile, response?.profile, response?.tradeDate, sortedResults],
   );
   const isBusy = loading || decisionRefreshing || intradayLoading;
+
+  const buildAiTargetBase = (): Pick<
+    MomentumScreenerAiReviewTarget,
+    'payload' | 'screening' | 'decision' | 'intradaySignal'
+  > | null => {
+    if (!lastSubmittedPayload || !response) {
+      return null;
+    }
+    return {
+      payload: lastSubmittedPayload,
+      screening: response,
+      decision,
+      intradaySignal,
+    };
+  };
+
+  const handleOpenCandidateAiReview = async (item: MomentumScreenerResult) => {
+    const base = buildAiTargetBase();
+    if (!base) return;
+    await openMomentumAiPanel({
+      ...base,
+      reviewType: 'candidate',
+      reviewKey: item.tsCode,
+      title: `候选股 AI 点评 · ${item.name}`,
+    });
+  };
+
+  const handleOpenDecisionAiReview = async () => {
+    const base = buildAiTargetBase();
+    if (!base || !decision) return;
+    await openMomentumAiPanel({
+      ...base,
+      reviewType: 'decision',
+      reviewKey: 'summary',
+      title: '二次决策 AI 综合建议',
+    });
+  };
+
+  const handleOpenIntradayAiReview = async () => {
+    const base = buildAiTargetBase();
+    if (!base || !decision) return;
+    await openMomentumAiPanel({
+      ...base,
+      reviewType: 'intraday',
+      reviewKey: 'summary',
+      title: '盘中信号 AI 解读',
+    });
+  };
+
+  const handleOpenExcludedAiReview = async () => {
+    const base = buildAiTargetBase();
+    if (!base || !decision) return;
+    await openMomentumAiPanel({
+      ...base,
+      reviewType: 'excluded',
+      reviewKey: 'summary',
+      title: '落选说明 AI 分析',
+    });
+  };
 
   const handleCopyResults = async () => {
     if (sortedResults.length === 0) {
@@ -1823,6 +1926,8 @@ const MomentumScreenerPage: React.FC = () => {
             onRefresh={() => void handleRefreshDecision()}
             refreshing={decisionRefreshing}
             refreshDisabled={!decision || !lastSubmittedPayload || loading || intradayLoading}
+            onAiDecisionReview={() => void handleOpenDecisionAiReview()}
+            onAiExcludedReview={() => void handleOpenExcludedAiReview()}
           />
           <IntradaySignalPanel
             decision={decision}
@@ -1831,6 +1936,7 @@ const MomentumScreenerPage: React.FC = () => {
             error={intradayError}
             onRefresh={() => void handleRefreshIntradaySignal()}
             onDismissError={() => setIntradayError(null)}
+            onAiReview={() => void handleOpenIntradayAiReview()}
           />
 
           <Card className="rounded-3xl border-border/60 bg-card/55">
@@ -2065,6 +2171,17 @@ const MomentumScreenerPage: React.FC = () => {
                         <td className="px-3 py-3">
                           <div className="flex gap-2">
                             <Button
+                              data-testid={`momentum-screener-ai-${item.tsCode}`}
+                              variant="ghost"
+                              size="sm"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void handleOpenCandidateAiReview(item);
+                              }}
+                            >
+                              AI 点评
+                            </Button>
+                            <Button
                               data-testid={`momentum-screener-copy-${item.tsCode}`}
                               variant="ghost"
                               size="sm"
@@ -2106,6 +2223,17 @@ const MomentumScreenerPage: React.FC = () => {
       >
         {selectedResult ? (
           <div className="space-y-6">
+            <div className="flex justify-end">
+              <Button
+                data-testid="momentum-screener-drawer-ai-review"
+                variant="outline"
+                size="sm"
+                onClick={() => void handleOpenCandidateAiReview(selectedResult)}
+              >
+                <Sparkles className="h-4 w-4" />
+                AI 点评这只票
+              </Button>
+            </div>
             <div className="grid gap-3 md:grid-cols-4">
               <SummaryCard icon={Flame} label="最终总分" value={selectedResult.finalScore.toFixed(1)} />
               <SummaryCard icon={TrendingUp} label="排序分" value={selectedResult.rankScore.toFixed(1)} />
@@ -2184,6 +2312,7 @@ const MomentumScreenerPage: React.FC = () => {
           </div>
         ) : null}
       </Drawer>
+      <ScreenerAiDrawer />
     </div>
   );
 };
