@@ -20,6 +20,7 @@
 ### 2. 产品需求文档 PRD
 
 - [次日强势股筛选 PRD](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-prd.md)
+- [强势筛选 V1 产品原则 + 总闸门规则](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-v1-product-principles-and-gate-rules.md)
 
 用途：
 
@@ -27,6 +28,7 @@
 - 记录页面结构
 - 记录输入输出设计
 - 记录核心交互流程
+- 记录 V1 入口标准、画像边界与总闸门规则
 
 ### 3. Standard 评分规则
 
@@ -100,6 +102,10 @@
 - `standard` 作为默认画像
 - `aggressive` 作为进攻型可选画像
 - `V1` 板块口径固定为申万一级行业
+- `V1` 候选池入口固定为全市场统一 `5 / 3 / 3`
+- `V1` 普通用户不可调整入口参数，不保留研究模式
+- `Standard` 为官方生产引擎，`Aggressive` 为进攻补充引擎
+- `V1` 总闸门采用 `市场环境 × 当日机会质量 × 历史有效性` 联合裁决
 
 ## 维护建议
 
@@ -112,6 +118,11 @@
 - 实现拆分变化：更新开发任务拆分文档
 ## Additional Docs
 
+- [Momentum Screener V1 Backtest and Diagnosis Framework](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-v1-backtest-and-diagnosis-framework.md)
+- [Momentum Screener V1 Backtest Metrics and Dashboard Design](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-v1-backtest-metrics-and-dashboard.md)
+- [Momentum Screener V1 Backtest Data and API Draft](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-v1-backtest-data-and-api-draft.md)
+- [Momentum Screener V1 Development Refactor Checklist](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-v1-development-refactor-checklist.md)
+- [Momentum Screener V1 Backtest Development Tasks](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-v1-backtest-development-tasks.md)
 - [Momentum Screener Launch Readiness](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-launch-readiness.md)
 - [Momentum Screener Internal Beta Notes](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-internal-beta-notes.md)
 - [Momentum Screener Release Notes](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-release-notes.md)

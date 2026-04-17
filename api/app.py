@@ -42,8 +42,14 @@ async def app_lifespan(app: FastAPI):
     try:
         yield
     finally:
+        if hasattr(app.state, "momentum_screener_ai_commentary_service"):
+            delattr(app.state, "momentum_screener_ai_commentary_service")
         if hasattr(app.state, "momentum_screener_service"):
             delattr(app.state, "momentum_screener_service")
+        if hasattr(app.state, "momentum_secondary_decision_service"):
+            delattr(app.state, "momentum_secondary_decision_service")
+        if hasattr(app.state, "stock_service"):
+            delattr(app.state, "stock_service")
         if hasattr(app.state, "system_config_service"):
             delattr(app.state, "system_config_service")
 

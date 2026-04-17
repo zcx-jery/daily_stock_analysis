@@ -23,6 +23,10 @@ vi.mock('../../api/backtest', () => ({
   },
 }));
 
+vi.mock('../../components/history/MomentumBacktestPanel', () => ({
+  MomentumBacktestPanel: () => <div>Mock Momentum Backtest Panel</div>,
+}));
+
 const basePerformance = {
   scope: 'overall',
   evalWindowDays: 10,
@@ -86,8 +90,16 @@ beforeEach(() => {
 });
 
 describe('BacktestPage', () => {
+  it('defaults to the V1 momentum backtest mode', async () => {
+    render(<BacktestPage />);
+
+    expect(screen.getByText('Mock Momentum Backtest Panel')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'V1 强势筛选回测' })).toBeInTheDocument();
+  });
+
   it('renders shared surface inputs and prediction tracking outputs', async () => {
     render(<BacktestPage />);
+    fireEvent.click(screen.getByRole('button', { name: '传统回测' }));
 
     const filterInput = await screen.findByPlaceholderText('Filter by stock code (leave empty for all)');
     const windowInput = screen.getByPlaceholderText('10');
@@ -110,6 +122,7 @@ describe('BacktestPage', () => {
 
   it('filters results with stock code, window, and analysis date range when clicking Filter', async () => {
     render(<BacktestPage />);
+    fireEvent.click(screen.getByRole('button', { name: '传统回测' }));
 
     const filterInput = await screen.findByPlaceholderText('Filter by stock code (leave empty for all)');
     const windowInput = screen.getByPlaceholderText('10');
@@ -141,6 +154,7 @@ describe('BacktestPage', () => {
 
   it('runs a backtest and refreshes results using the shared filter values', async () => {
     render(<BacktestPage />);
+    fireEvent.click(screen.getByRole('button', { name: '传统回测' }));
 
     const filterInput = await screen.findByPlaceholderText('Filter by stock code (leave empty for all)');
     const windowInput = screen.getByPlaceholderText('10');
@@ -180,6 +194,7 @@ describe('BacktestPage', () => {
 
   it('switches to next-day validation with the 1D shortcut', async () => {
     render(<BacktestPage />);
+    fireEvent.click(screen.getByRole('button', { name: '传统回测' }));
 
     await screen.findByPlaceholderText('Filter by stock code (leave empty for all)');
     fireEvent.click(screen.getByRole('button', { name: '1D Validation' }));

@@ -1,4 +1,4 @@
-import type React from 'react';
+﻿import type React from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import { BarChart3, Flame, ListChecks, Radar, RefreshCw, ShieldAlert, Sparkles, Target, TrendingUp } from 'lucide-react';
 import { momentumScreenerApi } from '../api/momentumScreener';
@@ -26,20 +26,17 @@ import { useMomentumScreenerAiStore } from '../stores/momentumScreenerAiStore';
 type FormState = {
   profile: MomentumProfile;
   topN: string;
-  minChangePct: string;
-  minAmountYi: string;
-  minTurnover: string;
   tradeDate: string;
+};
+
+type SelectedResultState = {
+  source: MomentumProfile;
+  item: MomentumScreenerResult;
 };
 
 type SortKey = 'rank_score' | 'continuation_score' | 'extension_score' | 'risk_score' | 'buyability_score';
 
 const STORAGE_KEY = 'dsa.momentum-screener.page-state';
-
-const PROFILE_OPTIONS = [
-  { value: 'standard', label: 'Standard' },
-  { value: 'aggressive', label: 'Aggressive' },
-];
 
 const SORT_OPTIONS = [
   { value: 'rank_score', label: '按排序分' },
@@ -52,9 +49,6 @@ const SORT_OPTIONS = [
 const DEFAULT_FORM: FormState = {
   profile: 'standard',
   topN: '10',
-  minChangePct: '7',
-  minAmountYi: '3',
-  minTurnover: '3',
   tradeDate: '',
 };
 
@@ -64,11 +58,6 @@ function buildScreeningPayload(nextForm: FormState): MomentumScreenerRequest {
   return {
     profile: nextForm.profile,
     topN: Number.parseInt(nextForm.topN, 10) || 10,
-    minChangePct: Number.parseFloat(nextForm.minChangePct) || 7,
-    minAmount: (Number.parseFloat(nextForm.minAmountYi) || 3) * 1e8,
-    minTurnover: Number.parseFloat(nextForm.minTurnover) || 3,
-    excludeSt: true,
-    mainBoardOnly: true,
     tradeDate: nextForm.tradeDate || undefined,
   };
 }
@@ -168,6 +157,18 @@ const riskTagLabelMap: Record<string, string> = {
   'risk-drift': '风险漂移',
 };
 
+const gateModuleLabelMap: Record<string, string> = {
+  index_trend: '指数趋势',
+  profitability: '赚钱效应',
+  sentiment: '市场情绪',
+  theme_breadth: '主线扩散',
+  theme_clarity: '主线清晰度',
+  portfolio_quality: '组合质量',
+  buy_point_clarity: '买点清晰度',
+  role_structure: '角色结构',
+  risk_control: '风险可控度',
+};
+
 function loadPersistedState(): PersistedState {
   if (typeof window === 'undefined') {
     return { form: DEFAULT_FORM, sortBy: DEFAULT_SORT, hasPersisted: false };
@@ -181,7 +182,7 @@ function loadPersistedState(): PersistedState {
 
     const parsed = JSON.parse(raw) as Partial<{ form: FormState; sortBy: SortKey }>;
     return {
-      form: { ...DEFAULT_FORM, ...(parsed.form ?? {}) },
+      form: { ...DEFAULT_FORM, ...(parsed.form ?? {}), profile: 'standard' },
       sortBy: parsed.sortBy ?? DEFAULT_SORT,
       hasPersisted: true,
     };
@@ -194,14 +195,10 @@ function buildFormFromSystemConfig(
   items: Array<{ key: string; value: string }> | undefined,
 ): FormState {
   const itemMap = new Map((items ?? []).map((item) => [item.key, item.value]));
-  const profile = itemMap.get('MOMENTUM_SCREENER_DEFAULT_PROFILE');
 
   return {
-    profile: profile === 'aggressive' ? 'aggressive' : DEFAULT_FORM.profile,
+    profile: DEFAULT_FORM.profile,
     topN: itemMap.get('MOMENTUM_SCREENER_DEFAULT_TOP_N') || DEFAULT_FORM.topN,
-    minChangePct: itemMap.get('MOMENTUM_SCREENER_DEFAULT_MIN_CHANGE_PCT') || DEFAULT_FORM.minChangePct,
-    minAmountYi: itemMap.get('MOMENTUM_SCREENER_DEFAULT_MIN_AMOUNT_YI') || DEFAULT_FORM.minAmountYi,
-    minTurnover: itemMap.get('MOMENTUM_SCREENER_DEFAULT_MIN_TURNOVER') || DEFAULT_FORM.minTurnover,
     tradeDate: DEFAULT_FORM.tradeDate,
   };
 }
@@ -225,16 +222,16 @@ function translateRiskTag(tag: string): string {
   return riskTagLabelMap[tag] ?? tag;
 }
 
+function translateGateModuleKey(key: string): string {
+  return gateModuleLabelMap[key] ?? key;
+}
+
 function translateDimensionKey(key: string): string {
   return dimensionLabelLookup[normalizeMetricLookupKey(key)] ?? key;
 }
 
 function translateItemKey(key: string): string {
   return itemLabelLookup[normalizeMetricLookupKey(key)] ?? key;
-}
-
-function profileBadgeVariant(profile: MomentumProfile): 'default' | 'warning' {
-  return profile === 'aggressive' ? 'warning' : 'default';
 }
 
 function leaderBadgeVariant(level: string): 'success' | 'warning' | 'default' {
@@ -257,6 +254,20 @@ function actionLevelBadgeVariant(level: MomentumActionLevel): 'success' | 'info'
   if (level === 'cautious_go') return 'warning';
   if (level === 'stand_aside') return 'danger';
   return 'default';
+}
+
+function gateLevelBadgeVariant(level: 'strong' | 'medium' | 'weak'): 'success' | 'warning' | 'danger' {
+  if (level === 'strong') return 'success';
+  if (level === 'medium') return 'warning';
+  return 'danger';
+}
+
+function historicalValidityBadgeVariant(
+  level: MomentumSecondaryDecision['historicalValidity']['level'],
+): 'success' | 'info' | 'warning' {
+  if (level === 'healthy') return 'success';
+  if (level === 'general') return 'info';
+  return 'warning';
 }
 
 function strategyHealthBadgeVariant(
@@ -370,6 +381,7 @@ function intradayFinalRecommendationBadgeVariant(
   recommendation: MomentumIntradaySignal['finalRecommendation'],
 ): 'success' | 'warning' | 'danger' {
   if (recommendation === 'buy') return 'success';
+  if (recommendation === 'main_only_consider') return 'warning';
   if (recommendation === 'watch') return 'warning';
   return 'danger';
 }
@@ -690,9 +702,7 @@ function buildWatchlistSummary(
   }
 
   const actionHint =
-    profile === 'aggressive'
-      ? '先看龙头和前排的承接，再结合可买分与建议区间确认是否参与，不追高。'
-      : '先看延续分与低风险的交集，优先保留量价结构更稳定、板块地位更靠前的标的。';
+    '先看主仓与次仓的延续结构，再结合风险分和建议区间确认是否继续跟踪，观察仓只作主线确认。';
 
   return {
     profile,
@@ -770,6 +780,139 @@ const SummaryCard: React.FC<{
     </div>
   </Card>
 );
+
+const AggressiveSupplementPanel: React.FC<{
+  officialActionLevel: MomentumActionLevel | null;
+  tradeDate?: string;
+  loading: boolean;
+  error: ParsedApiError | null;
+  items: MomentumScreenerResult[];
+  onReview: (item: MomentumScreenerResult) => void;
+  onOpenDetail: (item: MomentumScreenerResult) => void;
+}> = ({ officialActionLevel, tradeDate, loading, error, items, onReview, onOpenDetail }) => {
+  const isExecutionBlocked =
+    officialActionLevel === 'observe_only' || officialActionLevel === 'stand_aside';
+
+  return (
+    <Card data-testid="momentum-aggressive-supplement" className="rounded-3xl border-border/60 bg-card/55">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border/60 pb-4">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-sm font-semibold text-foreground">Aggressive 进攻补充视图</p>
+            <Badge variant="warning">补充视图</Badge>
+            <Badge variant="default">不推翻 Standard 总闸门</Badge>
+            {tradeDate ? <Badge variant="default">{tradeDate}</Badge> : null}
+          </div>
+          <p className="mt-2 text-xs leading-6 text-secondary-text">
+            这里只补充更有弹性、可参与性更强的候选，不单独输出新的官方组合。真正的出手级别、默认组合和盘中权限，仍以 Standard 主引擎为准。
+          </p>
+        </div>
+      </div>
+
+      {error ? <ApiErrorAlert error={error} className="mt-4" onDismiss={() => undefined} /> : null}
+
+      {loading ? (
+        <div className="pt-4">
+          <div className="rounded-2xl border border-border/50 bg-hover/10 px-4 py-5 text-sm text-secondary-text">
+            Aggressive 补充视图加载中，先展示 Standard 官方主结论。
+          </div>
+        </div>
+      ) : items.length === 0 ? (
+        <div className="pt-4">
+          <EmptyState
+            title="暂无 Aggressive 补充结果"
+            description="当前没有额外的进攻型补充标的，先以 Standard 官方主结论为主。"
+          />
+        </div>
+      ) : (
+        <div className="space-y-4 pt-4">
+          <div
+            className={`rounded-2xl border px-4 py-3 text-sm leading-6 ${
+              isExecutionBlocked
+                ? 'border-amber-500/25 bg-amber-500/10 text-secondary-text'
+                : 'border-border/50 bg-hover/10 text-secondary-text'
+            }`}
+          >
+            {isExecutionBlocked
+              ? '当前 Standard 官方结论还未开放执行，这里的 Aggressive 结果只保留进攻观察价值，不构成翻盘信号。'
+              : '当前官方总闸门允许继续跟踪机会，以下标的用于补充观察更高弹性位置，但仍需服从 Standard 的主仓 / 次仓顺序和纪律。'}
+          </div>
+
+          <div className="grid gap-4 xl:grid-cols-3">
+            {items.map((item) => (
+              <div key={item.tsCode} className="rounded-2xl border border-border/50 bg-card/50 p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant="warning">进攻补充 #{item.rank}</Badge>
+                      <Badge variant={leaderBadgeVariant(item.leaderLevel)}>
+                        {translateLeaderLevel(item.leaderLevel)}
+                      </Badge>
+                    </div>
+                    <p className="mt-3 text-sm font-semibold text-foreground">{item.name}</p>
+                    <p className="mt-1 text-xs text-secondary-text">
+                      {item.tsCode} · {item.marketSegmentLabel} · {item.themes[0] ?? '未标记题材'}
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <p className={`text-lg font-semibold ${scoreTone(item.rankScore)}`}>
+                      {item.rankScore.toFixed(1)}
+                    </p>
+                    <p className="mt-1 text-xs text-secondary-text">进攻排序分</p>
+                  </div>
+                </div>
+
+                <div className="mt-4 grid gap-3 md:grid-cols-3">
+                  <div className="rounded-xl border border-border/40 bg-hover/20 px-3 py-2">
+                    <p className="text-xs text-secondary-text">可买分</p>
+                    <p className="mt-1 text-sm font-medium text-foreground">
+                      {item.buyabilityScore != null ? item.buyabilityScore.toFixed(1) : '--'}
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-border/40 bg-hover/20 px-3 py-2">
+                    <p className="text-xs text-secondary-text">风险分</p>
+                    <p className="mt-1 text-sm font-medium text-foreground">{item.riskScore.toFixed(1)}</p>
+                  </div>
+                  <div className="rounded-xl border border-border/40 bg-hover/20 px-3 py-2">
+                    <p className="text-xs text-secondary-text">建议区间</p>
+                    <p className="mt-1 text-sm font-medium text-foreground">
+                      {formatEntryRange(item) || '--'}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {item.opportunityTag ? <Badge variant="warning">{item.opportunityTag}</Badge> : null}
+                  {item.topReasons.slice(0, 2).map((reason) => (
+                    <Badge key={reason} variant="success">
+                      {reason}
+                    </Badge>
+                  ))}
+                </div>
+
+                <p className="mt-4 text-sm leading-6 text-secondary-text">
+                  {isExecutionBlocked
+                    ? '当前只保留进攻观察价值；如果价格明显偏离区间或总闸门继续收紧，不建议据此执行。'
+                    : '适合作为进攻补充对象继续跟踪，重点看承接、区间确认和次日触发效率，不单独替代 Standard 官方排序。'}
+                </p>
+
+                <div className="mt-4 flex gap-2">
+                  <Button variant="ghost" size="sm" onClick={() => onReview(item)}>
+                    <Sparkles className="h-4 w-4" />
+                    AI 点评
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => onOpenDetail(item)}>
+                    查看详情
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+};
 
 const DecisionThemeCard: React.FC<{ theme: MomentumDecisionTheme }> = ({ theme }) => (
   <div className="rounded-2xl border border-border/50 bg-card/50 p-4">
@@ -898,6 +1041,60 @@ const ExcludedCandidateList: React.FC<{ items: MomentumDecisionExcludedCandidate
   );
 };
 
+const GateLayerPanel: React.FC<{
+  title: string;
+  icon: React.ComponentType<{ className?: string }>;
+  layer:
+    | MomentumSecondaryDecision['marketEnvironment']
+    | MomentumSecondaryDecision['opportunityQuality']
+    | MomentumSecondaryDecision['historicalValidity'];
+}> = ({ title, icon: Icon, layer }) => {
+  const isHistoricalLayer = 'maxActionLevel' in layer;
+  const badgeVariant = isHistoricalLayer
+    ? historicalValidityBadgeVariant(layer.level)
+    : gateLevelBadgeVariant(layer.level);
+
+  return (
+    <div className="rounded-2xl border border-border/50 bg-card/50 p-4">
+      <div className="flex items-start gap-3">
+        <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-border/60 bg-hover/30 text-cyan">
+          <Icon className="h-5 w-5" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-sm font-semibold text-foreground">{title}</p>
+            <Badge variant={badgeVariant}>{layer.label}</Badge>
+            <Badge variant="default">{layer.score.toFixed(1)}</Badge>
+            {isHistoricalLayer ? (
+              <Badge variant="default">
+                {layer.recommendationCap === 'full' ? '完整推荐' : '有限推荐'}
+              </Badge>
+            ) : null}
+          </div>
+          <p className="mt-2 text-sm leading-6 text-secondary-text">{layer.reason}</p>
+        </div>
+      </div>
+
+      {'modules' in layer && layer.modules.length > 0 ? (
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          {layer.modules.map((module) => (
+            <div key={module.key} className="rounded-2xl border border-border/40 bg-hover/10 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm font-medium text-foreground">{translateGateModuleKey(module.key)}</p>
+                <div className="flex items-center gap-2">
+                  <Badge variant={gateLevelBadgeVariant(module.level)}>{module.label}</Badge>
+                  <span className="text-xs text-secondary-text">{module.score.toFixed(1)}</span>
+                </div>
+              </div>
+              <p className="mt-2 text-sm leading-6 text-secondary-text">{module.summary}</p>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+};
+
 const ActionChecklistPanel: React.FC<{
   checklist: MomentumSecondaryDecision['actionChecklist'];
 }> = ({ checklist }) => (
@@ -907,7 +1104,12 @@ const ActionChecklistPanel: React.FC<{
         <ListChecks className="h-5 w-5" />
       </div>
       <div className="min-w-0 flex-1">
-        <p className="text-sm font-semibold text-foreground">明日行动清单</p>
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="text-sm font-semibold text-foreground">明日行动清单</p>
+          <Badge variant={checklist.mode === 'full' ? 'success' : checklist.mode === 'simplified' ? 'warning' : 'default'}>
+            {checklist.mode === 'full' ? '完整版' : checklist.mode === 'simplified' ? '简化版' : '未启用'}
+          </Badge>
+        </div>
         <p className="mt-2 text-sm leading-6 text-secondary-text">{checklist.reason}</p>
       </div>
     </div>
@@ -1118,9 +1320,7 @@ const SecondaryDecisionPanel: React.FC<SecondaryDecisionPanelProps> = ({
             {decision.action.label}
           </Badge>
           <Badge variant="default">{decision.tradeDate}</Badge>
-          <Badge variant="info">
-            {decision.action.sourceProfile === 'aggressive' ? 'Aggressive 引擎' : 'Standard 引擎'}
-          </Badge>
+          <Badge variant="info">Standard 官方主引擎</Badge>
           <Button
             data-testid="momentum-secondary-ai-review"
             variant="outline"
@@ -1168,6 +1368,24 @@ const SecondaryDecisionPanel: React.FC<SecondaryDecisionPanelProps> = ({
                 <p className="mt-2 text-base leading-7 text-foreground">{decision.action.reason}</p>
               </div>
             </div>
+          </div>
+
+          <div className="grid gap-4 xl:grid-cols-3">
+            <GateLayerPanel
+              title="市场环境"
+              icon={BarChart3}
+              layer={decision.marketEnvironment}
+            />
+            <GateLayerPanel
+              title="当日机会质量"
+              icon={Target}
+              layer={decision.opportunityQuality}
+            />
+            <GateLayerPanel
+              title="历史有效性"
+              icon={ShieldAlert}
+              layer={decision.historicalValidity}
+            />
           </div>
 
           <StrategyHealthPanel
@@ -1463,14 +1681,17 @@ const MomentumScreenerPage: React.FC = () => {
   const [form, setForm] = useState<FormState>(persisted.form);
   const [sortBy, setSortBy] = useState<SortKey>(persisted.sortBy);
   const [response, setResponse] = useState<MomentumScreenerResponse | null>(null);
+  const [aggressiveResponse, setAggressiveResponse] = useState<MomentumScreenerResponse | null>(null);
   const [decision, setDecision] = useState<MomentumSecondaryDecision | null>(null);
   const [intradaySignal, setIntradaySignal] = useState<MomentumIntradaySignal | null>(null);
   const [lastSubmittedPayload, setLastSubmittedPayload] = useState<MomentumScreenerRequest | null>(null);
-  const [selectedResult, setSelectedResult] = useState<MomentumScreenerResult | null>(null);
+  const [selectedResult, setSelectedResult] = useState<SelectedResultState | null>(null);
   const [loading, setLoading] = useState(false);
+  const [aggressiveLoading, setAggressiveLoading] = useState(false);
   const [decisionRefreshing, setDecisionRefreshing] = useState(false);
   const [intradayLoading, setIntradayLoading] = useState(false);
   const [error, setError] = useState<ParsedApiError | null>(null);
+  const [aggressiveError, setAggressiveError] = useState<ParsedApiError | null>(null);
   const [intradayError, setIntradayError] = useState<ParsedApiError | null>(null);
   const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
   const openAiPanel = useMomentumScreenerAiStore((state) => state.openPanel);
@@ -1487,6 +1708,21 @@ const MomentumScreenerPage: React.FC = () => {
     await openAiPanel(target);
   };
 
+  const loadAggressiveSupplement = async (payload: MomentumScreenerRequest) => {
+    setAggressiveLoading(true);
+    setAggressiveError(null);
+
+    try {
+      const data = await momentumScreenerApi.screen({ ...payload, profile: 'aggressive' });
+      setAggressiveResponse(data);
+    } catch (err) {
+      setAggressiveResponse(null);
+      setAggressiveError(getParsedApiError(err));
+    } finally {
+      setAggressiveLoading(false);
+    }
+  };
+
   const runScreening = async (nextForm = form) => {
     setLoading(true);
     setError(null);
@@ -1494,18 +1730,22 @@ const MomentumScreenerPage: React.FC = () => {
     setIntradaySignal(null);
     setIntradayError(null);
     setSelectedResult(null);
+    setAggressiveResponse(null);
+    setAggressiveError(null);
 
-    const payload = buildScreeningPayload(nextForm);
+    const payload = buildScreeningPayload({ ...nextForm, profile: 'standard' });
     setLastSubmittedPayload(payload);
 
     try {
       const data = await momentumScreenerApi.screenWithDecision(payload);
       setResponse(data.screening);
       setDecision(data.decision);
+      void loadAggressiveSupplement(payload);
     } catch (err) {
       setError(getParsedApiError(err));
       setResponse(null);
       setDecision(null);
+      setAggressiveResponse(null);
     } finally {
       setLoading(false);
     }
@@ -1527,6 +1767,7 @@ const MomentumScreenerPage: React.FC = () => {
       setDecision(data.decision);
       setIntradaySignal(null);
       setIntradayError(null);
+      void loadAggressiveSupplement(lastSubmittedPayload);
     } catch (err) {
       setError(getParsedApiError(err));
     } finally {
@@ -1588,9 +1829,44 @@ const MomentumScreenerPage: React.FC = () => {
     () => (response ? sortResults(response.results, sortBy) : []),
     [response, sortBy],
   );
-  const selectedResultTsCode = selectedResult?.tsCode;
+  const aggressiveHighlights = useMemo(() => {
+    if (!aggressiveResponse) {
+      return [];
+    }
+
+    return [...aggressiveResponse.results]
+      .sort(
+        (a, b) =>
+          (b.buyabilityScore ?? -1) - (a.buyabilityScore ?? -1) ||
+          b.rankScore - a.rankScore ||
+          b.finalScore - a.finalScore,
+      )
+      .slice(0, 3)
+      .map((item, index) => ({ ...item, rank: index + 1 }));
+  }, [aggressiveResponse]);
+  const selectedResultTsCode = selectedResult?.item.tsCode;
+  const selectedResultSource = selectedResult?.source;
 
   useEffect(() => {
+    if (!selectedResultSource) {
+      return;
+    }
+
+    if (selectedResultSource === 'aggressive') {
+      if (aggressiveHighlights.length === 0) {
+        setSelectedResult(null);
+        return;
+      }
+
+      if (!selectedResultTsCode) {
+        return;
+      }
+
+      const matched = aggressiveHighlights.find((item) => item.tsCode === selectedResultTsCode);
+      setSelectedResult(matched ? { source: 'aggressive', item: matched } : null);
+      return;
+    }
+
     if (sortedResults.length === 0) {
       setSelectedResult(null);
       return;
@@ -1601,15 +1877,15 @@ const MomentumScreenerPage: React.FC = () => {
     }
 
     const matched = sortedResults.find((item) => item.tsCode === selectedResultTsCode);
-    setSelectedResult(matched ?? null);
-  }, [sortedResults, selectedResultTsCode]);
+    setSelectedResult(matched ? { source: 'standard', item: matched } : null);
+  }, [aggressiveHighlights, selectedResultSource, sortedResults, selectedResultTsCode]);
 
   const averageRankScore = sortedResults.length
     ? sortedResults.reduce((sum, item) => sum + item.rankScore, 0) / sortedResults.length
     : 0;
   const watchlistSummary = useMemo(
-    () => buildWatchlistSummary(response?.profile ?? form.profile, response?.tradeDate, sortedResults),
-    [form.profile, response?.profile, response?.tradeDate, sortedResults],
+    () => buildWatchlistSummary('standard', response?.tradeDate, sortedResults),
+    [response?.tradeDate, sortedResults],
   );
   const isBusy = loading || decisionRefreshing || intradayLoading;
 
@@ -1628,11 +1904,16 @@ const MomentumScreenerPage: React.FC = () => {
     };
   };
 
-  const handleOpenCandidateAiReview = async (item: MomentumScreenerResult) => {
+  const handleOpenCandidateAiReview = async (
+    item: MomentumScreenerResult,
+    source: MomentumProfile = 'standard',
+  ) => {
     const base = buildAiTargetBase();
     if (!base) return;
     await openMomentumAiPanel({
       ...base,
+      payload: source === 'aggressive' ? { ...base.payload, profile: 'aggressive' } : base.payload,
+      screening: source === 'aggressive' && aggressiveResponse ? aggressiveResponse : base.screening,
       reviewType: 'candidate',
       reviewKey: item.tsCode,
       title: `候选股 AI 点评 · ${item.name}`,
@@ -1678,7 +1959,7 @@ const MomentumScreenerPage: React.FC = () => {
       return;
     }
 
-    const text = buildCopyText(response?.profile ?? form.profile, response?.tradeDate, sortBy, sortedResults);
+    const text = buildCopyText('standard', response?.tradeDate, sortBy, sortedResults);
     try {
       await navigator.clipboard.writeText(text);
       setCopyFeedback('\u5df2\u590d\u5236\u5f53\u524d\u7b5b\u9009\u7ed3\u679c');
@@ -1688,7 +1969,7 @@ const MomentumScreenerPage: React.FC = () => {
   };
 
   const handleCopySingleResult = async (item: MomentumScreenerResult) => {
-    const text = buildSingleResultText(response?.profile ?? form.profile, response?.tradeDate, item);
+    const text = buildSingleResultText('standard', response?.tradeDate, item);
 
     try {
       await navigator.clipboard.writeText(text);
@@ -1704,9 +1985,9 @@ const MomentumScreenerPage: React.FC = () => {
       return;
     }
 
-    const content = buildMarkdownText(response?.profile ?? form.profile, response?.tradeDate, sortBy, sortedResults);
+    const content = buildMarkdownText('standard', response?.tradeDate, sortBy, sortedResults);
     const datePart = (response?.tradeDate ?? form.tradeDate ?? 'latest').replace(/-/g, '');
-    const fileName = `momentum_screener_${form.profile}_${datePart}.md`;
+    const fileName = `momentum_screener_standard_${datePart}.md`;
     downloadTextFile(content, fileName, 'text/markdown;charset=utf-8');
     setCopyFeedback('\u5df2\u5bfc\u51fa Markdown');
   };
@@ -1719,13 +2000,13 @@ const MomentumScreenerPage: React.FC = () => {
 
     const content = buildCsvText(sortedResults);
     const datePart = (response?.tradeDate ?? form.tradeDate ?? 'latest').replace(/-/g, '');
-    const fileName = `momentum_screener_${form.profile}_${datePart}.csv`;
+    const fileName = `momentum_screener_standard_${datePart}.csv`;
     downloadTextFile(content, fileName, 'text/csv;charset=utf-8');
     setCopyFeedback('\u5df2\u5bfc\u51fa CSV');
   };
 
   const handleExportSingleMarkdown = (item: MomentumScreenerResult) => {
-    const content = buildSingleResultMarkdown(response?.profile ?? form.profile, response?.tradeDate, item);
+    const content = buildSingleResultMarkdown('standard', response?.tradeDate, item);
     const datePart = (response?.tradeDate ?? form.tradeDate ?? 'latest').replace(/-/g, '');
     const fileName = `momentum_screener_${item.tsCode.replace('.', '_')}_${datePart}.md`;
     downloadTextFile(content, fileName, 'text/markdown;charset=utf-8');
@@ -1781,12 +2062,15 @@ const MomentumScreenerPage: React.FC = () => {
         <div>
           <h1 className="text-lg font-semibold text-foreground">强势筛选</h1>
           <p className="text-sm text-secondary-text">
-            收盘后扫描今日强势股，按 Standard / Aggressive 两套画像输出次日候选。
+            收盘后扫描全市场强势股；Standard 给官方主结论，Aggressive 只作进攻补充。
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Badge variant={profileBadgeVariant(form.profile)} size="md">
-            {form.profile === 'aggressive' ? 'Aggressive' : 'Standard'}
+          <Badge variant="default" size="md">
+            Standard 官方主引擎
+          </Badge>
+          <Badge variant="warning" size="md">
+            Aggressive 进攻补充
           </Badge>
           {response ? <Badge variant="default" size="md">{response.tradeDate}</Badge> : null}
         </div>
@@ -1804,16 +2088,20 @@ const MomentumScreenerPage: React.FC = () => {
         <Card className="rounded-3xl border-border/60 bg-card/55 xl:sticky xl:top-0">
           <div className="mb-4">
             <p className="text-sm font-semibold text-foreground">筛选参数</p>
-            <p className="mt-1 text-xs text-secondary-text">本页会自动记住上次使用的参数和排序方式。</p>
+            <p className="mt-1 text-xs text-secondary-text">V1 主页面只保留官方生产入口，参数和输出口径都会自动保持统一。</p>
           </div>
           <div className="grid gap-3">
-            <Select
-              label="评分画像"
-              id="momentum-screener-profile"
-              value={form.profile}
-              onChange={(value) => setForm((prev) => ({ ...prev, profile: value as MomentumProfile }))}
-              options={PROFILE_OPTIONS}
-            />
+            <div className="rounded-2xl border border-border/50 bg-hover/10 px-4 py-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-sm font-medium text-foreground">页面输出关系</p>
+                <Badge variant="default">Standard 官方主结论</Badge>
+                <Badge variant="warning">Aggressive 进攻补充</Badge>
+              </div>
+              <div className="mt-2 space-y-2 text-sm leading-6 text-secondary-text">
+                <p>官方今日出手级别、默认组合、行动清单和盘中权限都由 Standard 主引擎输出。</p>
+                <p>Aggressive 只补充更高弹性候选，不单独形成新的官方组合，也不会推翻总闸门。</p>
+              </div>
+            </div>
             <Input
               label="返回数量"
               type="number"
@@ -1822,32 +2110,18 @@ const MomentumScreenerPage: React.FC = () => {
               value={form.topN}
               onChange={(event) => setForm((prev) => ({ ...prev, topN: event.target.value }))}
             />
-            <Input
-              label="最小涨幅 (%)"
-              type="number"
-              min={0}
-              max={20}
-              step="0.1"
-              value={form.minChangePct}
-              onChange={(event) => setForm((prev) => ({ ...prev, minChangePct: event.target.value }))}
-            />
-            <Input
-              label="最小成交额 (亿)"
-              type="number"
-              min={0}
-              step="0.5"
-              value={form.minAmountYi}
-              onChange={(event) => setForm((prev) => ({ ...prev, minAmountYi: event.target.value }))}
-            />
-            <Input
-              label="最小换手率 (%)"
-              type="number"
-              min={0}
-              max={100}
-              step="0.1"
-              value={form.minTurnover}
-              onChange={(event) => setForm((prev) => ({ ...prev, minTurnover: event.target.value }))}
-            />
+            <div className="rounded-2xl border border-border/50 bg-hover/10 px-4 py-3">
+              <p className="text-sm font-medium text-foreground">V1 统一入口基线</p>
+              <div className="mt-2 grid gap-2 text-sm text-secondary-text sm:grid-cols-2">
+                <p>最小涨幅 5%</p>
+                <p>最小成交额 3 亿</p>
+                <p>最小换手率 3%</p>
+                <p>市场范围：主板 + 创业板 + 科创板</p>
+              </div>
+              <p className="mt-2 text-xs leading-6 text-secondary-text">
+                V1 生产模式下候选池入口已固定，普通用户不再修改底层样本门槛。
+              </p>
+            </div>
             <Input
               label="交易日"
               type="date"
@@ -1929,6 +2203,15 @@ const MomentumScreenerPage: React.FC = () => {
             onAiDecisionReview={() => void handleOpenDecisionAiReview()}
             onAiExcludedReview={() => void handleOpenExcludedAiReview()}
           />
+          <AggressiveSupplementPanel
+            officialActionLevel={decision?.action.level ?? null}
+            tradeDate={aggressiveResponse?.tradeDate ?? response?.tradeDate}
+            loading={aggressiveLoading}
+            error={aggressiveError}
+            items={aggressiveHighlights}
+            onReview={(item) => void handleOpenCandidateAiReview(item, 'aggressive')}
+            onOpenDetail={(item) => setSelectedResult({ source: 'aggressive', item })}
+          />
           <IntradaySignalPanel
             decision={decision}
             intradaySignal={intradaySignal}
@@ -1943,9 +2226,9 @@ const MomentumScreenerPage: React.FC = () => {
             <div data-testid="momentum-screener-watchlist-summary">
               <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border/60 pb-4">
                 <div>
-                  <p className="text-sm font-semibold text-foreground">明日观察池摘要</p>
+                  <p className="text-sm font-semibold text-foreground">官方明日观察池摘要</p>
                   <p className="mt-1 text-xs text-secondary-text">
-                    把排序结果压缩成可直接复盘和分享的观察清单，减少手工整理。
+                    这里收口的是 Standard 主引擎的官方观察顺序，方便复盘和分享，不与 Aggressive 补充视图混用。
                   </p>
                 </div>
                 <Button
@@ -1970,9 +2253,7 @@ const MomentumScreenerPage: React.FC = () => {
                   <div className="rounded-2xl border border-border/60 bg-hover/20 p-4">
                     <div className="flex flex-wrap items-center gap-2">
                       <Badge variant="info">自动整理</Badge>
-                      <Badge variant={profileBadgeVariant(watchlistSummary.profile)}>
-                        {watchlistSummary.profile === 'aggressive' ? 'Aggressive' : 'Standard'}
-                      </Badge>
+                      <Badge variant="default">Standard 官方观察池</Badge>
                       {watchlistSummary.tradeDate ? (
                         <Badge variant="default">{watchlistSummary.tradeDate}</Badge>
                       ) : null}
@@ -2010,30 +2291,18 @@ const MomentumScreenerPage: React.FC = () => {
 
                   <div className="grid gap-3">
                     <div className="rounded-2xl border border-border/60 bg-card/45 p-4">
-                      <p className="text-xs uppercase tracking-[0.12em] text-secondary-text">
-                        {watchlistSummary.profile === 'aggressive' ? '进攻首选' : '低风险优先'}
-                      </p>
+                      <p className="text-xs uppercase tracking-[0.12em] text-secondary-text">官方优先观察</p>
                       <p className="mt-2 text-base font-semibold text-foreground">
-                        {(watchlistSummary.profile === 'aggressive'
-                          ? watchlistSummary.buyableCandidate?.name
-                          : watchlistSummary.lowRiskCandidate?.name) ?? watchlistSummary.headlineCandidate.name}
+                        {watchlistSummary.lowRiskCandidate?.name ?? watchlistSummary.headlineCandidate.name}
                       </p>
                       <p className="mt-1 text-sm text-secondary-text">
-                        {(watchlistSummary.profile === 'aggressive'
-                          ? watchlistSummary.buyableCandidate?.tsCode
-                          : watchlistSummary.lowRiskCandidate?.tsCode) ?? watchlistSummary.headlineCandidate.tsCode}
+                        {watchlistSummary.lowRiskCandidate?.tsCode ?? watchlistSummary.headlineCandidate.tsCode}
                       </p>
                       <p className="mt-3 text-sm leading-6 text-secondary-text">
-                        {watchlistSummary.profile === 'aggressive'
-                          ? `可买分 ${(
-                              watchlistSummary.buyableCandidate?.buyabilityScore ??
-                              watchlistSummary.headlineCandidate.buyabilityScore ??
-                              0
-                            ).toFixed(1)}，优先配合承接和区间确认。`
-                          : `风险分 ${(
-                              watchlistSummary.lowRiskCandidate?.riskScore ??
-                              watchlistSummary.headlineCandidate.riskScore
-                            ).toFixed(1)}，更适合保守观察和次日跟踪。`}
+                        {`风险分 ${(
+                          watchlistSummary.lowRiskCandidate?.riskScore ??
+                          watchlistSummary.headlineCandidate.riskScore
+                        ).toFixed(1)}，更适合作为官方主路径里的优先观察对象。`}
                       </p>
                     </div>
 
@@ -2072,8 +2341,8 @@ const MomentumScreenerPage: React.FC = () => {
           <Card className="min-h-0 flex-1 overflow-hidden rounded-3xl border-border/60 bg-card/55">
             <div className="mb-4 flex items-center justify-between gap-3 border-b border-border/60 pb-4">
               <div>
-                <p className="text-sm font-semibold text-foreground">筛选结果</p>
-                <p className="mt-1 text-xs text-secondary-text">支持按不同指标重新排序，点击行可查看维度拆解。</p>
+                <p className="text-sm font-semibold text-foreground">Standard 官方筛选结果</p>
+                <p className="mt-1 text-xs text-secondary-text">这里展示官方主路径结果；Aggressive 候选已经单独收进上方补充视图。</p>
               </div>
               <div className="flex items-end gap-2">
                 <div className="w-[180px]">
@@ -2123,7 +2392,7 @@ const MomentumScreenerPage: React.FC = () => {
             {sortedResults.length === 0 ? (
               <EmptyState
                 title="暂无筛选结果"
-                description="先执行一次筛选，或调整涨幅、成交额和换手率参数。"
+                description="先执行一次筛选；V1 候选池入口已经固定为全市场统一 5 / 3 / 3 基线。"
               />
             ) : (
               <div className="overflow-x-auto">
@@ -2149,13 +2418,13 @@ const MomentumScreenerPage: React.FC = () => {
                         key={item.tsCode}
                         data-testid={`momentum-screener-row-${item.tsCode}`}
                         className="cursor-pointer border-b border-border/40 transition-colors hover:bg-hover/40"
-                        onClick={() => setSelectedResult(item)}
+                        onClick={() => setSelectedResult({ source: 'standard', item })}
                       >
                         <td className="px-3 py-3 font-mono text-foreground">#{item.rank}</td>
                         <td className="px-3 py-3">
                           <div>
                             <p className="font-medium text-foreground">{item.name}</p>
-                            <p className="mt-1 text-xs text-secondary-text">{item.tsCode}</p>
+                            <p className="mt-1 text-xs text-secondary-text">{item.tsCode} · {item.marketSegmentLabel}</p>
                           </div>
                         </td>
                         <td className="px-3 py-3 font-medium text-danger">+{item.pctChg.toFixed(2)}%</td>
@@ -2176,7 +2445,7 @@ const MomentumScreenerPage: React.FC = () => {
                               size="sm"
                               onClick={(event) => {
                                 event.stopPropagation();
-                                void handleOpenCandidateAiReview(item);
+                                void handleOpenCandidateAiReview(item, 'standard');
                               }}
                             >
                               AI 点评
@@ -2218,62 +2487,68 @@ const MomentumScreenerPage: React.FC = () => {
       <Drawer
         isOpen={selectedResult != null}
         onClose={() => setSelectedResult(null)}
-        title={selectedResult ? `${selectedResult.name} · ${selectedResult.tsCode}` : undefined}
+        title={selectedResult ? `${selectedResult.item.name} · ${selectedResult.item.tsCode}` : undefined}
         width="max-w-3xl"
       >
         {selectedResult ? (
           <div className="space-y-6">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant={selectedResult.source === 'aggressive' ? 'warning' : 'default'}>
+                {selectedResult.source === 'aggressive' ? 'Aggressive 进攻补充' : 'Standard 官方结果'}
+              </Badge>
+              {response?.tradeDate ? <Badge variant="default">{response.tradeDate}</Badge> : null}
+            </div>
             <div className="flex justify-end">
               <Button
                 data-testid="momentum-screener-drawer-ai-review"
                 variant="outline"
                 size="sm"
-                onClick={() => void handleOpenCandidateAiReview(selectedResult)}
+                onClick={() => void handleOpenCandidateAiReview(selectedResult.item, selectedResult.source)}
               >
                 <Sparkles className="h-4 w-4" />
                 AI 点评这只票
               </Button>
             </div>
             <div className="grid gap-3 md:grid-cols-4">
-              <SummaryCard icon={Flame} label="最终总分" value={selectedResult.finalScore.toFixed(1)} />
-              <SummaryCard icon={TrendingUp} label="排序分" value={selectedResult.rankScore.toFixed(1)} />
-              <SummaryCard icon={Radar} label="延续分" value={selectedResult.continuationScore.toFixed(1)} />
-              <SummaryCard icon={ShieldAlert} label="风险分" value={selectedResult.riskScore.toFixed(1)} />
+              <SummaryCard icon={Flame} label="最终总分" value={selectedResult.item.finalScore.toFixed(1)} />
+              <SummaryCard icon={TrendingUp} label="排序分" value={selectedResult.item.rankScore.toFixed(1)} />
+              <SummaryCard icon={Radar} label="延续分" value={selectedResult.item.continuationScore.toFixed(1)} />
+              <SummaryCard icon={ShieldAlert} label="风险分" value={selectedResult.item.riskScore.toFixed(1)} />
             </div>
 
-            {response?.profile === 'aggressive' ? (
+            {selectedResult.source === 'aggressive' ? (
               <div className="grid gap-3 md:grid-cols-3">
                 <SummaryCard
                   icon={BarChart3}
                   label="可买分"
-                  value={selectedResult.buyabilityScore != null ? selectedResult.buyabilityScore.toFixed(1) : '--'}
+                  value={selectedResult.item.buyabilityScore != null ? selectedResult.item.buyabilityScore.toFixed(1) : '--'}
                 />
                 <SummaryCard
                   icon={TrendingUp}
                   label="机会标签"
-                  value={selectedResult.opportunityTag ?? '--'}
+                  value={selectedResult.item.opportunityTag ?? '--'}
                 />
                 <SummaryCard
                   icon={Radar}
                   label="建议区间"
-                  value={formatEntryRange(selectedResult) || '--'}
+                  value={formatEntryRange(selectedResult.item) || '--'}
                 />
               </div>
             ) : null}
 
             <Card className="rounded-2xl border-border/60 bg-card/45">
               <div className="flex flex-wrap gap-2">
-                <Badge variant={leaderBadgeVariant(selectedResult.leaderLevel)}>{translateLeaderLevel(selectedResult.leaderLevel)}</Badge>
-                {selectedResult.themes.map((theme) => (
+                <Badge variant={leaderBadgeVariant(selectedResult.item.leaderLevel)}>{translateLeaderLevel(selectedResult.item.leaderLevel)}</Badge>
+                {selectedResult.item.themes.map((theme) => (
                   <Badge key={theme} variant="default">{theme}</Badge>
                 ))}
-                {selectedResult.opportunityTag ? (
-                  <Badge variant="warning">{selectedResult.opportunityTag}</Badge>
+                {selectedResult.item.opportunityTag ? (
+                  <Badge variant="warning">{selectedResult.item.opportunityTag}</Badge>
                 ) : null}
-                {selectedResult.topReasons.map((reason) => (
+                {selectedResult.item.topReasons.map((reason) => (
                   <Badge key={reason} variant="success">{reason}</Badge>
                 ))}
-                {selectedResult.riskTags.map((tag) => (
+                {selectedResult.item.riskTags.map((tag) => (
                   <Badge key={tag} variant="warning">{translateRiskTag(tag)}</Badge>
                 ))}
               </div>
@@ -2282,7 +2557,7 @@ const MomentumScreenerPage: React.FC = () => {
             <Card className="rounded-2xl border-border/60 bg-card/45">
               <p className="mb-3 text-sm font-semibold text-foreground">维度拆解</p>
               <div className="space-y-3">
-                {Object.entries(selectedResult.scoreBreakdown).map(([key, value]) => (
+                {Object.entries(selectedResult.item.scoreBreakdown).map(([key, value]) => (
                   <div key={key} className="rounded-2xl border border-border/50 bg-card/55 p-4">
                     <div className="flex items-center justify-between gap-3">
                       <div>
@@ -2318,3 +2593,4 @@ const MomentumScreenerPage: React.FC = () => {
 };
 
 export default MomentumScreenerPage;
+

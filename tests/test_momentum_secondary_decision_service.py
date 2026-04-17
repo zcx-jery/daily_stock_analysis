@@ -44,6 +44,37 @@ class _FakeStockRepo:
         return list(self.forward_bars.get((code, analysis_date), []))[:eval_window_days]
 
 
+class _FakeIndexApi:
+    def __init__(self, frames=None):
+        self.frames = frames or {}
+
+    def index_daily(self, ts_code: str, start_date: str | None = None, end_date: str | None = None):
+        del start_date, end_date
+        frame = self.frames.get(ts_code)
+        if frame is None:
+            return pd.DataFrame()
+        return frame.copy()
+
+
+class _FakeGateFetcher:
+    def __init__(self, *, index_frames=None, index_snapshot=None, market_stats=None):
+        self._api = _FakeIndexApi(index_frames) if index_frames is not None else None
+        self._index_snapshot = index_snapshot or []
+        self._market_stats = market_stats
+
+    def get_main_indices(self, region: str = "cn"):
+        del region
+        return [dict(item) for item in self._index_snapshot]
+
+    def get_market_stats(self):
+        return dict(self._market_stats) if self._market_stats is not None else None
+
+
+class _FakeGateScreenerService:
+    def __init__(self, fetcher):
+        self.fetcher = fetcher
+
+
 class _FakeHistoricalScreenerService:
     def __init__(self, screens_by_date):
         self.screens_by_date = screens_by_date
@@ -343,7 +374,7 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         result = service.build_from_screening(screening)
 
         self.assertEqual(result["profile"], "aggressive")
-        self.assertEqual(result["action"]["level"], "normal_go")
+        self.assertEqual(result["action"]["level"], "cautious_go")
         self.assertEqual(result["strategy_health"]["status"], "healthy")
         self.assertGreaterEqual(len(result["themes"]), 2)
         self.assertEqual(result["themes"][0]["name"], "机器人")
@@ -390,7 +421,7 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
 
         self.assertEqual(result["strategy_health"]["status"], "disabled")
         self.assertEqual(result["strategy_health"]["recommendation_cap"], "disabled")
-        self.assertEqual(result["action"]["level"], "stand_aside")
+        self.assertEqual(result["action"]["level"], "observe_only")
         self.assertFalse(result["action_checklist"]["enabled"])
         self.assertTrue(all(item["suggested_action"] == "observe_only" for item in result["portfolio"]))
 
@@ -447,7 +478,7 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         result = service.build_from_screening(screening)
 
         self.assertEqual(result["portfolio"][0]["buy_point_status"], "waiting")
-        self.assertEqual(result["portfolio"][0]["suggested_action"], "wait_for_trigger")
+        self.assertEqual(result["portfolio"][0]["suggested_action"], "observe_only")
 
     def test_build_from_screening_prefers_full_ranked_results_over_display_topn(self) -> None:
         service = MomentumSecondaryDecisionService(screener_service=None)
@@ -621,9 +652,10 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
 
             self.assertEqual(result["strategy_health"]["status"], "disabled")
             self.assertEqual(result["strategy_health"]["recommendation_cap"], "disabled")
-            self.assertEqual(result["action"]["level"], "stand_aside")
+            self.assertEqual(result["action"]["level"], "cautious_go")
             self.assertTrue(result["strategy_health"]["blockers"])
-            self.assertTrue(all(item["suggested_action"] == "observe_only" for item in result["portfolio"]))
+            self.assertIn(result["portfolio"][0]["suggested_action"], {"ready", "wait_for_trigger"})
+            self.assertTrue(all(item["suggested_action"] == "observe_only" for item in result["portfolio"][1:]))
 
     def test_build_from_screening_returns_proxy_health_while_async_validation_warms(self) -> None:
         screening, request_params, screener_service, stock_repo = _build_historical_strategy_fixture(
@@ -741,7 +773,7 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
             self.assertEqual(second["strategy_health"]["data_source"], "historical")
             self.assertFalse(second["strategy_health"]["is_warming"])
             self.assertEqual(second["strategy_health"]["status"], first["strategy_health"]["status"])
-            self.assertEqual(len(screener_service.screen_calls), initial_calls)
+            self.assertEqual(len(screener_service.screen_calls), initial_calls + 1)
 
     def test_build_from_screening_reuses_cached_historical_health_across_display_topn(self) -> None:
         screening, request_params, screener_service, stock_repo = _build_historical_strategy_fixture(
@@ -773,7 +805,7 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
             self.assertFalse(second["strategy_health"]["is_warming"])
             self.assertEqual(second["strategy_health"]["status"], first["strategy_health"]["status"])
             self.assertEqual(second["action"]["level"], first["action"]["level"])
-            self.assertEqual(len(screener_service.screen_calls), initial_calls)
+            self.assertEqual(len(screener_service.screen_calls), initial_calls + 1)
 
     def test_build_from_screening_surfaces_partial_historical_health_while_background_job_continues(self) -> None:
         screening, request_params, screener_service, stock_repo = _build_historical_strategy_fixture(
@@ -890,7 +922,7 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
             self.assertEqual(result["strategy_health"]["data_source"], "historical")
             self.assertEqual(result["strategy_health"]["validation_status"], "final")
             self.assertEqual(result["strategy_health"]["progress"]["valid_sample_count"], 60)
-            self.assertEqual(len(screener_service.screen_calls), 60)
+            self.assertEqual(len(screener_service.screen_calls), 61)
 
     def test_build_from_screening_uses_fetcher_fallback_when_repo_lacks_forward_bars(self) -> None:
         screening, request_params, screener_service, _ = _build_historical_strategy_fixture(
@@ -1091,6 +1123,250 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         self.assertTrue(intraday["watch_items"])
         self.assertTrue(intraday["closing_note"])
         self.assertEqual(len(intraday["focus_order"]), len(intraday["portfolio_items"]))
+
+    def test_build_market_environment_index_trend_prefers_ma5_and_slope_history(self) -> None:
+        index_frames = {
+            "000001.SH": pd.DataFrame(
+                {
+                    "trade_date": ["20260407", "20260408", "20260409", "20260410", "20260411"],
+                    "close": [3200.0, 3215.0, 3235.0, 3260.0, 3285.0],
+                }
+            ),
+            "399006.SZ": pd.DataFrame(
+                {
+                    "trade_date": ["20260407", "20260408", "20260409", "20260410", "20260411"],
+                    "close": [1890.0, 1905.0, 1922.0, 1938.0, 1950.0],
+                }
+            ),
+            "399303.SZ": pd.DataFrame(
+                {
+                    "trade_date": ["20260407", "20260408", "20260409", "20260410", "20260411"],
+                    "close": [5100.0, 5115.0, 5130.0, 5148.0, 5165.0],
+                }
+            ),
+        }
+        service = MomentumSecondaryDecisionService(
+            screener_service=_FakeGateScreenerService(
+                _FakeGateFetcher(
+                    index_frames=index_frames,
+                    index_snapshot=[
+                        {"code": "000001", "name": "上证指数", "change_pct": -0.8},
+                        {"code": "399006", "name": "创业板指", "change_pct": -0.5},
+                    ],
+                )
+            )
+        )
+
+        result = service._build_market_environment_index_trend()
+
+        self.assertEqual(result["level"], "strong")
+        self.assertIn("5 日线", result["summary"])
+        self.assertIn("上证指数", result["summary"])
+
+    def test_build_market_environment_sentiment_prefers_market_stats_when_available(self) -> None:
+        service = MomentumSecondaryDecisionService(
+            screener_service=_FakeGateScreenerService(
+                _FakeGateFetcher(
+                    market_stats={
+                        "up_count": 3250,
+                        "down_count": 1380,
+                        "flat_count": 220,
+                        "limit_up_count": 78,
+                        "limit_down_count": 5,
+                        "total_amount": 13650.0,
+                    }
+                )
+            )
+        )
+
+        result = service._build_market_environment_sentiment([], [])
+
+        self.assertEqual(result["level"], "strong")
+        self.assertIn("涨停 78 家", result["summary"])
+        self.assertIn("成交额 13650 亿元", result["summary"])
+
+    def test_build_intraday_from_decision_returns_main_only_consider_for_cautious_go(self) -> None:
+        stock_service = _FakeStockService(
+            quotes={
+                "600001.SH": {
+                    "current_price": 10.3,
+                    "open": 10.1,
+                    "change_percent": 2.1,
+                    "update_time": "2026-04-11T09:50:00",
+                }
+            }
+        )
+        service = MomentumSecondaryDecisionService(stock_service=stock_service)
+        decision = {
+            "trade_date": "2026-04-11",
+            "action": {
+                "level": "cautious_go",
+                "label": "谨慎出手",
+                "reason": "今天只能谨慎处理主仓。",
+            },
+            "portfolio": [
+                {
+                    "slot": "main",
+                    "slot_label": "主仓",
+                    "ts_code": "600001.SH",
+                    "name": "测试主仓",
+                    "theme": "机器人",
+                    "role": "龙头核心",
+                    "buy_point_status": "clear",
+                    "suggested_action": "ready",
+                    "entry_range_low": 10.0,
+                    "entry_range_high": 10.5,
+                },
+                {
+                    "slot": "secondary",
+                    "slot_label": "次仓",
+                    "ts_code": "600002.SH",
+                    "name": "测试次仓",
+                    "theme": "机器人",
+                    "role": "前排换手",
+                    "buy_point_status": "clear",
+                    "suggested_action": "observe_only",
+                    "entry_range_low": 18.0,
+                    "entry_range_high": 18.5,
+                },
+            ],
+        }
+
+        intraday = service.build_intraday_from_decision(
+            decision,
+            now=datetime(2026, 4, 11, 9, 50),
+        )
+
+        self.assertEqual(intraday["status"], "buy_ready")
+        self.assertEqual(intraday["final_recommendation"], "main_only_consider")
+        self.assertTrue(intraday["can_emit_buy_signal"])
+        self.assertIn("主仓", intraday["closing_note"])
+
+    def test_build_action_caps_to_cautious_when_main_buy_point_is_not_clear(self) -> None:
+        service = MomentumSecondaryDecisionService(screener_service=None)
+
+        result = service._build_action(
+            "standard",
+            market_environment={
+                "level": "strong",
+                "modules": [{"key": "profitability", "level": "strong", "core_level": "strong"}],
+            },
+            opportunity_quality={
+                "level": "strong",
+                "main_buy_point_clear": False,
+                "secondary_buy_point_clear": True,
+                "core_overextended_count": 0,
+                "portfolio_unresolved": False,
+                "modules": [
+                    {"key": "theme_clarity", "level": "strong"},
+                    {"key": "portfolio_quality", "level": "strong"},
+                ],
+            },
+            historical_validity={"level": "healthy"},
+            portfolio=[
+                {"slot": "main", "buy_point_status": "waiting", "risk_tags": [], "risk_score": 18.0},
+                {"slot": "secondary", "buy_point_status": "clear", "risk_tags": [], "risk_score": 20.0},
+            ],
+        )
+
+        self.assertEqual(result["level"], "cautious_go")
+
+    def test_build_action_drops_to_observe_when_both_core_items_are_overextended(self) -> None:
+        service = MomentumSecondaryDecisionService(screener_service=None)
+
+        result = service._build_action(
+            "aggressive",
+            market_environment={
+                "level": "strong",
+                "modules": [{"key": "profitability", "level": "strong", "core_level": "strong"}],
+            },
+            opportunity_quality={
+                "level": "strong",
+                "main_buy_point_clear": True,
+                "secondary_buy_point_clear": True,
+                "core_overextended_count": 2,
+                "portfolio_unresolved": False,
+                "modules": [
+                    {"key": "theme_clarity", "level": "strong"},
+                    {"key": "portfolio_quality", "level": "strong"},
+                ],
+            },
+            historical_validity={"level": "healthy"},
+            portfolio=[
+                {
+                    "slot": "main",
+                    "buy_point_status": "clear",
+                    "risk_tags": ["high_acceleration"],
+                    "risk_score": 38.0,
+                },
+                {
+                    "slot": "secondary",
+                    "buy_point_status": "clear",
+                    "risk_tags": ["high_acceleration"],
+                    "risk_score": 36.0,
+                },
+            ],
+        )
+
+        self.assertEqual(result["level"], "observe_only")
+
+    def test_build_action_forces_stand_aside_when_market_and_core_profitability_are_weak(self) -> None:
+        service = MomentumSecondaryDecisionService(screener_service=None)
+
+        result = service._build_action(
+            "standard",
+            market_environment={
+                "level": "weak",
+                "modules": [{"key": "profitability", "level": "weak", "core_level": "weak"}],
+            },
+            opportunity_quality={
+                "level": "strong",
+                "main_buy_point_clear": True,
+                "secondary_buy_point_clear": True,
+                "core_overextended_count": 0,
+                "portfolio_unresolved": False,
+                "modules": [
+                    {"key": "theme_clarity", "level": "strong"},
+                    {"key": "portfolio_quality", "level": "strong"},
+                ],
+            },
+            historical_validity={"level": "healthy"},
+            portfolio=[
+                {"slot": "main", "buy_point_status": "clear", "risk_tags": [], "risk_score": 18.0},
+                {"slot": "secondary", "buy_point_status": "clear", "risk_tags": [], "risk_score": 20.0},
+            ],
+        )
+
+        self.assertEqual(result["level"], "stand_aside")
+
+    def test_build_action_upgrades_to_strong_go_only_when_core_profitability_is_strong(self) -> None:
+        service = MomentumSecondaryDecisionService(screener_service=None)
+
+        result = service._build_action(
+            "standard",
+            market_environment={
+                "level": "strong",
+                "modules": [{"key": "profitability", "level": "strong", "core_level": "strong"}],
+            },
+            opportunity_quality={
+                "level": "strong",
+                "main_buy_point_clear": True,
+                "secondary_buy_point_clear": True,
+                "core_overextended_count": 0,
+                "portfolio_unresolved": False,
+                "modules": [
+                    {"key": "theme_clarity", "level": "strong"},
+                    {"key": "portfolio_quality", "level": "strong"},
+                ],
+            },
+            historical_validity={"level": "healthy"},
+            portfolio=[
+                {"slot": "main", "buy_point_status": "clear", "risk_tags": [], "risk_score": 18.0},
+                {"slot": "secondary", "buy_point_status": "clear", "risk_tags": [], "risk_score": 20.0},
+            ],
+        )
+
+        self.assertEqual(result["level"], "strong_go")
 
 
 if __name__ == "__main__":

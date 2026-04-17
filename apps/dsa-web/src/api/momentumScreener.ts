@@ -9,11 +9,6 @@ import type {
 
 type MomentumApiRequest = {
   top_n: number;
-  min_change_pct: number;
-  min_amount: number;
-  min_turnover: number;
-  exclude_st: boolean;
-  main_board_only: boolean;
   trade_date?: string;
   profile: 'standard' | 'aggressive';
 };
@@ -26,11 +21,6 @@ export const momentumScreenerApi = {
   async screen(payload: MomentumScreenerRequest): Promise<MomentumScreenerResponse> {
     const request: MomentumApiRequest = {
       top_n: payload.topN,
-      min_change_pct: payload.minChangePct,
-      min_amount: payload.minAmount,
-      min_turnover: payload.minTurnover,
-      exclude_st: payload.excludeSt,
-      main_board_only: payload.mainBoardOnly,
       trade_date: payload.tradeDate || undefined,
       profile: payload.profile,
     };
@@ -48,11 +38,6 @@ export const momentumScreenerApi = {
   ): Promise<MomentumScreenerDecisionResponse> {
     const request: MomentumApiRequest = {
       top_n: payload.topN,
-      min_change_pct: payload.minChangePct,
-      min_amount: payload.minAmount,
-      min_turnover: payload.minTurnover,
-      exclude_st: payload.excludeSt,
-      main_board_only: payload.mainBoardOnly,
       trade_date: payload.tradeDate || undefined,
       profile: payload.profile,
     };
@@ -70,11 +55,6 @@ export const momentumScreenerApi = {
   ): Promise<MomentumScreenerIntradayResponse> {
     const request: MomentumApiRequest = {
       top_n: payload.topN,
-      min_change_pct: payload.minChangePct,
-      min_amount: payload.minAmount,
-      min_turnover: payload.minTurnover,
-      exclude_st: payload.excludeSt,
-      main_board_only: payload.mainBoardOnly,
       trade_date: payload.tradeDate || undefined,
       profile: payload.profile,
     };

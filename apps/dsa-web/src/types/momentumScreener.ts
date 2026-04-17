@@ -2,11 +2,6 @@ export type MomentumProfile = 'standard' | 'aggressive';
 
 export interface MomentumScreenerRequest {
   topN: number;
-  minChangePct: number;
-  minAmount: number;
-  minTurnover: number;
-  excludeSt: boolean;
-  mainBoardOnly: boolean;
   tradeDate?: string;
   profile: MomentumProfile;
 }
@@ -21,6 +16,8 @@ export interface MomentumScreenerResult {
   rank: number;
   tsCode: string;
   name: string;
+  marketSegment: string;
+  marketSegmentLabel: string;
   pctChg: number;
   continuationScore: number;
   extensionScore: number;
@@ -43,6 +40,8 @@ export interface MomentumScreenerResponse {
   tradeDate: string;
   requestedTradeDate?: string | null;
   tradeDateNote?: string | null;
+  entryBaselineVersion: string;
+  marketScopeVersion: string;
   candidateCount: number;
   results: MomentumScreenerResult[];
 }
@@ -126,6 +125,39 @@ export interface MomentumDecisionEvidence {
   todayReasoning: string[];
 }
 
+export interface MomentumDecisionGateModule {
+  key: string;
+  label: string;
+  level: 'strong' | 'medium' | 'weak';
+  score: number;
+  summary: string;
+}
+
+export interface MomentumDecisionMarketEnvironment {
+  level: 'strong' | 'medium' | 'weak';
+  label: string;
+  score: number;
+  reason: string;
+  modules: MomentumDecisionGateModule[];
+}
+
+export interface MomentumDecisionOpportunityQuality {
+  level: 'strong' | 'medium' | 'weak';
+  label: string;
+  score: number;
+  reason: string;
+  modules: MomentumDecisionGateModule[];
+}
+
+export interface MomentumDecisionHistoricalValidity {
+  level: 'healthy' | 'general' | 'weak';
+  label: string;
+  score: number;
+  reason: string;
+  maxActionLevel: 'strong_go' | 'normal_go' | 'cautious_go';
+  recommendationCap: 'full' | 'limited';
+}
+
 export interface MomentumActionChecklistStep {
   phase: 'pre_open' | 'first_30m' | 'first_60m';
   phaseLabel: string;
@@ -137,6 +169,7 @@ export interface MomentumActionChecklistStep {
 
 export interface MomentumActionChecklist {
   enabled: boolean;
+  mode: 'full' | 'simplified' | 'disabled';
   reason: string;
   steps: MomentumActionChecklistStep[];
 }
@@ -196,6 +229,9 @@ export interface MomentumSecondaryDecision {
   profile: MomentumProfile;
   tradeDate: string;
   action: MomentumDecisionAction;
+  marketEnvironment: MomentumDecisionMarketEnvironment;
+  opportunityQuality: MomentumDecisionOpportunityQuality;
+  historicalValidity: MomentumDecisionHistoricalValidity;
   strategyHealth: MomentumStrategyHealth;
   themes: MomentumDecisionTheme[];
   portfolio: MomentumDecisionPortfolioSlot[];
@@ -227,7 +263,7 @@ export type MomentumIntradayItemStatus =
 
 export type MomentumIntradayConfidenceLevel = 'high' | 'medium' | 'low';
 
-export type MomentumIntradayFinalRecommendation = 'buy' | 'watch' | 'do_not_buy';
+export type MomentumIntradayFinalRecommendation = 'buy' | 'main_only_consider' | 'watch' | 'do_not_buy';
 
 export interface MomentumIntradayPortfolioItem {
   slot: MomentumDecisionSlot;

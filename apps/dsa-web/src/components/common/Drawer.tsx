@@ -13,6 +13,7 @@ interface DrawerProps {
   zIndex?: number;
   side?: 'left' | 'right';
   backdropClassName?: string;
+  contentClassName?: string;
 }
 
 /**
@@ -27,6 +28,7 @@ export const Drawer: React.FC<DrawerProps> = ({
   zIndex = 50,
   side = 'right',
   backdropClassName,
+  contentClassName,
 }) => {
   // Close the drawer when Escape is pressed.
   const handleKeyDown = useCallback(
@@ -103,7 +105,7 @@ export const Drawer: React.FC<DrawerProps> = ({
               </svg>
             </button>
           </div>
-          <div className="flex-1 overflow-y-auto p-6">
+          <div className={cn('flex-1 overflow-y-auto p-6', contentClassName)}>
             {children}
           </div>
         </div>

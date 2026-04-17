@@ -11,16 +11,34 @@
 4. GET /api/v1/stocks/{code}/history 历史行情接口
 """
 
+import asyncio
+import json
 import logging
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import StreamingResponse
 
-from api.deps import get_momentum_screener_service, get_momentum_secondary_decision_service
+from api.deps import (
+    get_momentum_backtest_service,
+    get_momentum_screener_ai_commentary_service,
+    get_momentum_screener_service,
+    get_momentum_secondary_decision_service,
+)
+from api.v1.schemas.momentum_ai import (
+    MomentumScreenerAIReviewRequest,
+    MomentumScreenerAISessionResponse,
+)
 from api.v1.schemas.stocks import (
     ExtractFromImageResponse,
     ExtractItem,
     KLineData,
+    MomentumBacktestCreateRequest,
+    MomentumBacktestDailyDetailResponse,
+    MomentumBacktestDailyListResponse,
+    MomentumBacktestIssueListResponse,
+    MomentumBacktestRunResponse,
+    MomentumBacktestSummaryResponse,
     MomentumScreenerRequest,
     MomentumScreenerResponse,
     MomentumSecondaryDecisionIntradayResponse,
@@ -29,6 +47,7 @@ from api.v1.schemas.stocks import (
     StockQuote,
 )
 from api.v1.schemas.common import ErrorResponse
+from src.config import get_config
 from src.services.image_stock_extractor import (
     ALLOWED_MIME,
     MAX_SIZE_BYTES,
@@ -39,9 +58,13 @@ from src.services.import_parser import (
     parse_import_from_bytes,
     parse_import_from_text,
 )
+from src.services.momentum_backtest_service import MomentumBacktestService
 from src.services.momentum_secondary_decision_service import MomentumSecondaryDecisionService
 from src.services.stock_service import StockService
 from src.services.momentum_screener_service import MomentumScreenerService
+
+if TYPE_CHECKING:
+    from src.services.momentum_screener_ai_commentary_service import MomentumScreenerAICommentaryService
 
 logger = logging.getLogger(__name__)
 
@@ -70,11 +93,6 @@ def screen_momentum_stocks(
     try:
         result = service.screen(
             top_n=payload.top_n,
-            min_change_pct=payload.min_change_pct,
-            min_amount=payload.min_amount,
-            min_turnover=payload.min_turnover,
-            exclude_st=payload.exclude_st,
-            main_board_only=payload.main_board_only,
             trade_date=payload.trade_date,
             profile=payload.profile,
         )
@@ -123,11 +141,6 @@ def build_momentum_secondary_decision(
     try:
         result = service.build(
             top_n=payload.top_n,
-            min_change_pct=payload.min_change_pct,
-            min_amount=payload.min_amount,
-            min_turnover=payload.min_turnover,
-            exclude_st=payload.exclude_st,
-            main_board_only=payload.main_board_only,
             trade_date=payload.trade_date,
             profile=payload.profile,
             wait_for_strategy_health=wait_for_strategy_health,
@@ -169,11 +182,6 @@ def build_momentum_intraday_signal(
     try:
         result = service.build_intraday(
             top_n=payload.top_n,
-            min_change_pct=payload.min_change_pct,
-            min_amount=payload.min_amount,
-            min_turnover=payload.min_turnover,
-            exclude_st=payload.exclude_st,
-            main_board_only=payload.main_board_only,
             trade_date=payload.trade_date,
             profile=payload.profile,
             wait_for_strategy_health=wait_for_strategy_health,
@@ -190,6 +198,320 @@ def build_momentum_intraday_signal(
             status_code=500,
             detail={"error": "internal_error", "message": f"盘中信号失败: {str(e)}"},
         )
+
+
+@router.post(
+    "/screener/momentum/backtests",
+    response_model=MomentumBacktestRunResponse,
+    responses={
+        200: {"description": "已创建并完成一轮同步回放的 V1 回测任务"},
+        400: {"description": "参数错误", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="创建 V1 强势筛选回测任务",
+    description="按交易日重放强势筛选 V1 生产链路，并冻结候选池、二次决策和 T+1/T+2 结果验证。",
+)
+def create_momentum_backtest_run(
+    payload: MomentumBacktestCreateRequest,
+    service: MomentumBacktestService = Depends(get_momentum_backtest_service),
+) -> MomentumBacktestRunResponse:
+    """Create one synchronous momentum screener V1 backtest run."""
+    try:
+        result = service.create_run(
+            start_trade_date=payload.start_trade_date,
+            end_trade_date=payload.end_trade_date,
+            profile=payload.profile,
+            top_n=payload.top_n,
+        )
+        return MomentumBacktestRunResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "bad_request", "message": str(e)},
+        )
+    except Exception as e:
+        logger.error("创建 V1 回测任务失败: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"创建回测任务失败: {str(e)}"},
+        )
+
+
+@router.get(
+    "/screener/momentum/backtests/{run_id}",
+    response_model=MomentumBacktestRunResponse,
+    responses={
+        200: {"description": "V1 回测任务状态"},
+        404: {"description": "回测任务不存在", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="查询 V1 回测任务状态",
+)
+def get_momentum_backtest_run(
+    run_id: str,
+    service: MomentumBacktestService = Depends(get_momentum_backtest_service),
+) -> MomentumBacktestRunResponse:
+    """Get one momentum screener V1 backtest run by run_id."""
+    try:
+        return MomentumBacktestRunResponse(**service.get_run(run_id))
+    except ValueError as e:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "not_found", "message": str(e)},
+        )
+    except Exception as e:
+        logger.error("查询 V1 回测任务失败: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"查询回测任务失败: {str(e)}"},
+        )
+
+
+@router.get(
+    "/screener/momentum/backtests/{run_id}/summary",
+    response_model=MomentumBacktestSummaryResponse,
+    responses={
+        200: {"description": "V1 回测区间摘要"},
+        404: {"description": "回测任务不存在", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="查询 V1 回测区间摘要",
+)
+def get_momentum_backtest_summary(
+    run_id: str,
+    service: MomentumBacktestService = Depends(get_momentum_backtest_service),
+) -> MomentumBacktestSummaryResponse:
+    """Get one momentum screener V1 backtest run summary."""
+    try:
+        return MomentumBacktestSummaryResponse(**service.get_summary(run_id))
+    except ValueError as e:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "not_found", "message": str(e)},
+        )
+    except Exception as e:
+        logger.error("查询 V1 回测摘要失败: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"查询回测摘要失败: {str(e)}"},
+        )
+
+
+@router.get(
+    "/screener/momentum/backtests/{run_id}/daily",
+    response_model=MomentumBacktestDailyListResponse,
+    responses={
+        200: {"description": "V1 回测单日摘要列表"},
+        404: {"description": "回测任务不存在", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="查询 V1 回测单日列表",
+)
+def list_momentum_backtest_daily(
+    run_id: str,
+    date_from: Optional[str] = Query(None, description="起始交易日过滤，格式 YYYY-MM-DD 或 YYYYMMDD"),
+    date_to: Optional[str] = Query(None, description="结束交易日过滤，格式 YYYY-MM-DD 或 YYYYMMDD"),
+    market_regime: Optional[str] = Query(None, description="市场分桶过滤，支持 strong/general/weak 或 bull/neutral/bear"),
+    action_level: Optional[str] = Query(None, description="总闸门级别过滤"),
+    slot: Optional[str] = Query(None, description="组合槽位过滤，支持 main/secondary/watch"),
+    theme_name: Optional[str] = Query(None, description="主线主题关键字过滤"),
+    page: int = Query(1, ge=1, description="页码，从 1 开始"),
+    page_size: int = Query(20, ge=1, le=200, description="每页数量"),
+    service: MomentumBacktestService = Depends(get_momentum_backtest_service),
+) -> MomentumBacktestDailyListResponse:
+    """List daily summaries for one momentum screener V1 backtest run."""
+    try:
+        return MomentumBacktestDailyListResponse(
+            **service.list_daily(
+                run_id,
+                date_from=date_from,
+                date_to=date_to,
+                market_regime=market_regime,
+                action_level=action_level,
+                slot=slot,
+                theme_name=theme_name,
+                page=page,
+                page_size=page_size,
+            )
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "not_found", "message": str(e)},
+        )
+    except Exception as e:
+        logger.error("查询 V1 回测单日列表失败: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"查询回测单日列表失败: {str(e)}"},
+        )
+
+
+@router.get(
+    "/screener/momentum/backtests/{run_id}/daily/{trade_date}",
+    response_model=MomentumBacktestDailyDetailResponse,
+    responses={
+        200: {"description": "V1 回测单日详情"},
+        404: {"description": "回测任务或交易日不存在", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="查询 V1 回测单日详情",
+)
+def get_momentum_backtest_daily_detail(
+    run_id: str,
+    trade_date: str,
+    service: MomentumBacktestService = Depends(get_momentum_backtest_service),
+) -> MomentumBacktestDailyDetailResponse:
+    """Get one momentum screener V1 backtest daily detail."""
+    try:
+        return MomentumBacktestDailyDetailResponse(**service.get_daily_detail(run_id, trade_date))
+    except ValueError as e:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "not_found", "message": str(e)},
+        )
+    except Exception as e:
+        logger.error("查询 V1 回测单日详情失败: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"查询回测单日详情失败: {str(e)}"},
+        )
+
+
+@router.get(
+    "/screener/momentum/backtests/{run_id}/issues",
+    response_model=MomentumBacktestIssueListResponse,
+    responses={
+        200: {"description": "V1 回测问题诊断"},
+        404: {"description": "回测任务不存在", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="查询 V1 回测问题诊断",
+)
+def get_momentum_backtest_issues(
+    run_id: str,
+    service: MomentumBacktestService = Depends(get_momentum_backtest_service),
+) -> MomentumBacktestIssueListResponse:
+    """List issue diagnostics for one momentum screener V1 backtest run."""
+    try:
+        return MomentumBacktestIssueListResponse(**service.get_issues(run_id))
+    except ValueError as e:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "not_found", "message": str(e)},
+        )
+    except Exception as e:
+        logger.error("查询 V1 回测问题诊断失败: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"查询回测问题诊断失败: {str(e)}"},
+        )
+
+
+@router.post(
+    "/screener/momentum/ai/session",
+    response_model=MomentumScreenerAISessionResponse,
+    responses={
+        200: {"description": "已存在的强势筛选 AI 会话"},
+        400: {"description": "参数错误", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="加载强势筛选 AI 会话",
+    description="按点评场景和筛选快照推导会话 ID，并返回当前已保存的 AI 点评历史。",
+)
+def load_momentum_ai_review_session(
+    payload: MomentumScreenerAIReviewRequest,
+    service: "MomentumScreenerAICommentaryService" = Depends(get_momentum_screener_ai_commentary_service),
+) -> MomentumScreenerAISessionResponse:
+    """Load one screener AI session by its logical review target."""
+    try:
+        return MomentumScreenerAISessionResponse(**service.load_session(payload))
+    except ValueError as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "bad_request", "message": str(e)},
+        )
+    except Exception as e:
+        logger.error("加载强势筛选 AI 会话失败: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"加载 AI 会话失败: {str(e)}"},
+        )
+
+
+@router.post(
+    "/screener/momentum/ai/stream",
+    summary="流式生成强势筛选 AI 点评",
+    description="基于当前筛选结果快照流式生成 AI 点评，支持 resume/rerun 语义与快捷追问。",
+)
+async def stream_momentum_ai_review(
+    payload: MomentumScreenerAIReviewRequest,
+    service: "MomentumScreenerAICommentaryService" = Depends(get_momentum_screener_ai_commentary_service),
+):
+    """Stream screener AI commentary over SSE."""
+    if not get_config().is_agent_available():
+        raise HTTPException(status_code=400, detail="Agent mode is not enabled")
+
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+
+    def progress_callback(event: dict) -> None:
+        asyncio.run_coroutine_threadsafe(queue.put(event), loop)
+
+    def run_sync() -> None:
+        try:
+            result = service.stream_review(payload, progress_callback=progress_callback)
+            asyncio.run_coroutine_threadsafe(
+                queue.put(
+                    {
+                        "type": "done",
+                        "success": result.get("success", True),
+                        "content": result.get("content", ""),
+                        "session_id": result.get("session_id"),
+                        "context_meta": result.get("context_meta"),
+                        "suggested_questions": result.get("suggested_questions", []),
+                    }
+                ),
+                loop,
+            )
+        except Exception as exc:
+            logger.error("强势筛选 AI 点评流式生成失败: %s", exc, exc_info=True)
+            asyncio.run_coroutine_threadsafe(
+                queue.put({"type": "error", "message": str(exc)}),
+                loop,
+            )
+
+    async def event_generator():
+        fut = loop.run_in_executor(None, run_sync)
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=300.0)
+                except asyncio.TimeoutError:
+                    yield "data: " + json.dumps({"type": "error", "message": "AI 点评超时"}, ensure_ascii=False) + "\n\n"
+                    break
+                yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
+                if event.get("type") in {"done", "error"}:
+                    break
+        finally:
+            try:
+                await asyncio.wait_for(fut, timeout=5.0)
+            except asyncio.CancelledError:
+                pass
+            except asyncio.TimeoutError:
+                logger.debug("momentum screener ai cleanup timed out")
+            except Exception as exc:
+                logger.warning("momentum screener ai cleanup error (ignored): %s", exc, exc_info=True)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @router.post(

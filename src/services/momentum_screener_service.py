@@ -22,6 +22,18 @@ logger = logging.getLogger(__name__)
 
 MOMENTUM_EOD_READY_COVERAGE_RATIO = 0.6
 MOMENTUM_MARKET_CLOSE_CUTOFF = "15:00"
+MOMENTUM_ENTRY_BASELINE_VERSION = "v1_5_3_3"
+MOMENTUM_MARKET_SCOPE_VERSION = "v1_a_share_main_chinext_star"
+MOMENTUM_DEFAULT_MIN_CHANGE_PCT = 5.0
+MOMENTUM_DEFAULT_MIN_AMOUNT = 3e8
+MOMENTUM_DEFAULT_MIN_TURNOVER = 3.0
+MOMENTUM_ALLOWED_MARKET_SEGMENTS = {"main_board", "chinext", "star"}
+MOMENTUM_MARKET_SEGMENT_LABELS = {
+    "main_board": "主板",
+    "chinext": "创业板",
+    "star": "科创板",
+    "other": "其他",
+}
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -119,11 +131,11 @@ class MomentumScreenerService:
         self,
         *,
         top_n: int = 10,
-        min_change_pct: float = 7.0,
-        min_amount: float = 3e8,
-        min_turnover: float = 3.0,
+        min_change_pct: float = MOMENTUM_DEFAULT_MIN_CHANGE_PCT,
+        min_amount: float = MOMENTUM_DEFAULT_MIN_AMOUNT,
+        min_turnover: float = MOMENTUM_DEFAULT_MIN_TURNOVER,
         exclude_st: bool = True,
-        main_board_only: bool = True,
+        main_board_only: bool = False,
         trade_date: Optional[str] = None,
         profile: str = "standard",
         use_sector_context: bool = True,
@@ -151,6 +163,8 @@ class MomentumScreenerService:
                 "trade_date": self._format_trade_date(resolved_trade_date),
                 "requested_trade_date": trade_date_resolution.get("requested_trade_date"),
                 "trade_date_note": trade_date_resolution.get("trade_date_note"),
+                "entry_baseline_version": MOMENTUM_ENTRY_BASELINE_VERSION,
+                "market_scope_version": MOMENTUM_MARKET_SCOPE_VERSION,
                 "candidate_count": 0,
                 "ranked_results": [],
                 "results": [],
@@ -191,6 +205,8 @@ class MomentumScreenerService:
             "trade_date": self._format_trade_date(resolved_trade_date),
             "requested_trade_date": trade_date_resolution.get("requested_trade_date"),
             "trade_date_note": trade_date_resolution.get("trade_date_note"),
+            "entry_baseline_version": MOMENTUM_ENTRY_BASELINE_VERSION,
+            "market_scope_version": MOMENTUM_MARKET_SCOPE_VERSION,
             "candidate_count": len(candidates),
             "ranked_results": results,
             "results": results[:top_n],
@@ -599,12 +615,17 @@ class MomentumScreenerService:
         merged["industry"] = merged["industry"].fillna("未分类")
         merged["sector_name"] = merged["industry"]
         merged["is_st"] = merged["name"].map(is_st_stock)
-        merged["is_main_board"] = merged["symbol"].map(self._is_main_board_symbol)
+        merged["market_segment"] = merged["symbol"].map(self._classify_market_segment)
+        merged["market_segment_label"] = merged["market_segment"].map(
+            lambda value: MOMENTUM_MARKET_SEGMENT_LABELS.get(_safe_str(value), MOMENTUM_MARKET_SEGMENT_LABELS["other"])
+        )
+        merged["is_main_board"] = merged["market_segment"] == "main_board"
 
         filtered = merged[
             (merged["pct_chg"] >= min_change_pct)
             & (merged["amount"] >= min_amount)
             & (merged["turnover_rate"] >= min_turnover)
+            & (merged["market_segment"].isin(MOMENTUM_ALLOWED_MARKET_SEGMENTS))
         ].copy()
 
         if exclude_st:
@@ -664,8 +685,18 @@ class MomentumScreenerService:
 
     @staticmethod
     def _is_main_board_symbol(symbol: str) -> bool:
+        return MomentumScreenerService._classify_market_segment(symbol) == "main_board"
+
+    @staticmethod
+    def _classify_market_segment(symbol: str) -> str:
         code = _safe_str(symbol)
-        return code.startswith(("600", "601", "603", "605", "000", "001", "002", "003"))
+        if code.startswith(("300", "301")):
+            return "chinext"
+        if code.startswith("688"):
+            return "star"
+        if code.startswith(("600", "601", "603", "605", "000", "001", "002", "003")):
+            return "main_board"
+        return "other"
 
     def _prepare_moneyflow(self, df: pd.DataFrame) -> pd.DataFrame:
         if df.empty:
@@ -840,6 +871,8 @@ class MomentumScreenerService:
             "min_turnover": round(_safe_float(min_turnover), 3),
             "exclude_st": bool(exclude_st),
             "main_board_only": bool(main_board_only),
+            "entry_baseline_version": MOMENTUM_ENTRY_BASELINE_VERSION,
+            "market_scope_version": MOMENTUM_MARKET_SCOPE_VERSION,
         }
         return "|".join(f"{key}={value}" for key, value in normalized.items())
 
@@ -1243,6 +1276,11 @@ class MomentumScreenerService:
         return {
             "ts_code": row["ts_code"],
             "name": row["name"],
+            "market_segment": _safe_str(row.get("market_segment"), "other"),
+            "market_segment_label": _safe_str(
+                row.get("market_segment_label"),
+                MOMENTUM_MARKET_SEGMENT_LABELS["other"],
+            ),
             "pct_chg": round(_safe_float(row.get("pct_chg")), 2),
             "continuation_score": round(continuation_score, 1),
             "extension_score": round(extension_score, 1),
@@ -1348,6 +1386,11 @@ class MomentumScreenerService:
         return {
             "ts_code": row["ts_code"],
             "name": row["name"],
+            "market_segment": _safe_str(row.get("market_segment"), "other"),
+            "market_segment_label": _safe_str(
+                row.get("market_segment_label"),
+                MOMENTUM_MARKET_SEGMENT_LABELS["other"],
+            ),
             "pct_chg": round(_safe_float(row.get("pct_chg")), 2),
             "continuation_score": round(continuation_score, 1),
             "extension_score": round(extension_score, 1),

@@ -4,6 +4,7 @@ import { Check, Minus, X } from 'lucide-react';
 import { backtestApi } from '../api/backtest';
 import type { ParsedApiError } from '../api/error';
 import { getParsedApiError } from '../api/error';
+import { MomentumBacktestPanel } from '../components/history/MomentumBacktestPanel';
 import { ApiErrorAlert, Card, Badge, EmptyState, Pagination, StatusDot, Tooltip } from '../components/common';
 import type {
   BacktestResultItem,
@@ -164,6 +165,8 @@ const BacktestPage: React.FC = () => {
     document.title = '策略回测 - DSA';
   }, []);
 
+  const [mode, setMode] = useState<'momentum' | 'classic'>('momentum');
+
   // Input state
   const [codeFilter, setCodeFilter] = useState('');
   const [analysisDateFrom, setAnalysisDateFrom] = useState('');
@@ -255,8 +258,11 @@ const BacktestPage: React.FC = () => {
     }
   }, []);
 
-  // Initial load — fetch performance first, then filter results by its window
+  // Initial load ??fetch performance first, then filter results by its window
   useEffect(() => {
+    if (mode !== 'classic') {
+      return;
+    }
     const init = async () => {
       // Get latest performance (unfiltered returns most recent summary)
       const overall = await backtestApi.getOverallPerformance();
@@ -269,7 +275,7 @@ const BacktestPage: React.FC = () => {
       fetchResults(1, undefined, windowDays, undefined, undefined);
     };
     init();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Run backtest
   const handleRun = async () => {
@@ -326,8 +332,47 @@ const BacktestPage: React.FC = () => {
     fetchResults(page, codeFilter.trim() || undefined, windowDays, analysisDateFrom, analysisDateTo);
   };
 
+  const modeSwitcher = (
+    <div className="mb-4 flex items-center gap-2">
+      <button
+        type="button"
+        onClick={() => setMode('momentum')}
+        className={`rounded-xl border px-4 py-2 text-sm transition-all ${
+          mode === 'momentum'
+            ? 'border-cyan/50 bg-cyan/10 text-cyan'
+            : 'border-border/60 bg-card/40 text-secondary-text hover:text-foreground'
+        }`}
+      >
+        V1 强势筛选回测
+      </button>
+      <button
+        type="button"
+        onClick={() => setMode('classic')}
+        className={`rounded-xl border px-4 py-2 text-sm transition-all ${
+          mode === 'classic'
+            ? 'border-cyan/50 bg-cyan/10 text-cyan'
+            : 'border-border/60 bg-card/40 text-secondary-text hover:text-foreground'
+        }`}
+      >
+        传统回测
+      </button>
+    </div>
+  );
+
+  if (mode === 'momentum') {
+    return (
+      <div className="min-h-full rounded-[1.5rem] bg-transparent p-3 sm:p-4">
+        {modeSwitcher}
+        <MomentumBacktestPanel />
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-full flex flex-col rounded-[1.5rem] bg-transparent">
+      <div className="px-3 pb-0 pt-3 sm:px-4">
+        {modeSwitcher}
+      </div>
       {/* Header */}
       <header className="flex-shrink-0 border-b border-white/5 px-3 py-3 sm:px-4">
         <div className="flex max-w-5xl flex-wrap items-center gap-2">

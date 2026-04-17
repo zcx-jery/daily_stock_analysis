@@ -1,6 +1,7 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+﻿import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import MomentumScreenerPage from '../MomentumScreenerPage';
+import { useMomentumScreenerAiStore } from '../../stores/momentumScreenerAiStore';
 import type {
   MomentumScreenerDecisionResponse,
   MomentumScreenerIntradayResponse,
@@ -12,6 +13,10 @@ const { mockScreen } = vi.hoisted(() => ({
   mockScreen: vi.fn(),
 }));
 
+const { mockScreenWithDecision } = vi.hoisted(() => ({
+  mockScreenWithDecision: vi.fn(),
+}));
+
 const { mockIntraday } = vi.hoisted(() => ({
   mockIntraday: vi.fn(),
 }));
@@ -20,10 +25,15 @@ const { mockGetSystemConfig } = vi.hoisted(() => ({
   mockGetSystemConfig: vi.fn(),
 }));
 
+const { mockLoadAiSession, mockStreamAiReview } = vi.hoisted(() => ({
+  mockLoadAiSession: vi.fn(),
+  mockStreamAiReview: vi.fn(),
+}));
+
 vi.mock('../../api/momentumScreener', () => ({
   momentumScreenerApi: {
     screen: mockScreen,
-    screenWithDecision: mockScreen,
+    screenWithDecision: mockScreenWithDecision,
     fetchIntradaySignal: mockIntraday,
   },
 }));
@@ -34,15 +44,56 @@ vi.mock('../../api/systemConfig', () => ({
   },
 }));
 
+vi.mock('../../api/momentumScreenerAi', () => ({
+  momentumScreenerAiApi: {
+    loadSession: mockLoadAiSession,
+    streamReview: mockStreamAiReview,
+  },
+}));
+
+vi.mock('../../components/markdown/MarkdownContent', () => ({
+  default: ({ content }: { content: string }) => <div>{content}</div>,
+}));
+
+function createAiStreamResponse() {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(
+        encoder.encode(
+          [
+            'data: {"type":"stage","stage":"rules","message":"先复述规则结论"}',
+            'data: {"type":"tool_start","tool":"market_snapshot","display_name":"行情快照"}',
+            'data: {"type":"done","success":true,"content":"规则结论：今天先观察，不要追高。","session_id":"screener_ai:test","context_meta":{"review_type":"candidate","review_type_label":"候选股点评","review_target":"Alpha Leader","trade_date":"2026-04-10","profile":"standard","rule_conclusion":"今天先观察，不要追高。","rule_guardrail":"AI 不替代规则总闸门。","market_data_as_of":"2026-04-10T15:00:00","tools_used":["行情快照"]},"suggested_questions":["这只票最大风险是什么？"]}',
+            '',
+          ].join('\n'),
+        ),
+      );
+      controller.close();
+    },
+  });
+
+  return new Response(body, {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/event-stream',
+    },
+  });
+}
+
 const standardResponse: MomentumScreenerResponse = {
   profile: 'standard' as const,
   tradeDate: '2026-04-10',
+  entryBaselineVersion: 'v1_5_3_3',
+  marketScopeVersion: 'v1_a_share_main_chinext_star',
   candidateCount: 3,
   results: [
     {
       rank: 1,
       tsCode: '600001.SH',
       name: 'Alpha Leader',
+      marketSegment: 'main_board',
+      marketSegmentLabel: '涓绘澘',
       pctChg: 9.8,
       continuationScore: 88,
       extensionScore: 70,
@@ -66,6 +117,8 @@ const standardResponse: MomentumScreenerResponse = {
       rank: 2,
       tsCode: '600002.SH',
       name: 'Low Risk Runner',
+      marketSegment: 'main_board',
+      marketSegmentLabel: '涓绘澘',
       pctChg: 8.2,
       continuationScore: 72,
       extensionScore: 66,
@@ -91,12 +144,16 @@ const standardResponse: MomentumScreenerResponse = {
 const aggressiveResponse: MomentumScreenerResponse = {
   profile: 'aggressive' as const,
   tradeDate: '2026-04-10',
+  entryBaselineVersion: 'v1_5_3_3',
+  marketScopeVersion: 'v1_a_share_main_chinext_star',
   candidateCount: 2,
   results: [
     {
       rank: 1,
       tsCode: '600003.SH',
       name: 'Breakout One',
+      marketSegment: 'main_board',
+      marketSegmentLabel: '涓绘澘',
       pctChg: 10.0,
       continuationScore: 91,
       extensionScore: 84,
@@ -130,25 +187,29 @@ const aggressiveResponse: MomentumScreenerResponse = {
 const mixedKeyResponse: MomentumScreenerResponse = {
   profile: 'aggressive' as const,
   tradeDate: '2026-04-10',
+  entryBaselineVersion: 'v1_5_3_3',
+  marketScopeVersion: 'v1_a_share_main_chinext_star',
   candidateCount: 1,
   results: [
     {
       rank: 1,
       tsCode: '002733.SZ',
-      name: '雄韬股份',
+      name: '闆勯煬鑲′唤',
+      marketSegment: 'main_board',
+      marketSegmentLabel: '涓绘澘',
       pctChg: 10.0,
       continuationScore: 72,
       extensionScore: 68.3,
       riskScore: 0,
       buyabilityScore: 66,
-      opportunityTag: '一致再加速',
+      opportunityTag: '分歧再一致',
       entryRangeLow: 16.8,
       entryRangeHigh: 17.2,
       finalScore: 69.8,
       rankScore: 69.8,
-      themes: ['电力设备'],
+      themes: ['鐢靛姏璁惧'],
       leaderLevel: 'leader',
-      topReasons: ['强势确认', '资金承接'],
+      topReasons: ['寮哄娍纭', '璧勯噾鎵挎帴'],
       riskTags: [],
       scoreBreakdown: {
         strengthConfirmation: {
@@ -227,10 +288,43 @@ function buildDecisionResponse(screening: MomentumScreenerResponse): MomentumScr
         reason: `${topThemeName} 主线已经比较清晰，当前默认组合里已有可继续跟踪的候选股。`,
         sourceProfile: screening.profile,
       },
+      marketEnvironment: {
+        level: 'strong' as const,
+        label: '强',
+        score: 78,
+        reason: '指数趋势、赚钱效应与主线扩散都偏强，当前环境适合继续跟踪强势股。',
+        modules: [
+          { key: 'index_trend', label: '强', level: 'strong' as const, score: 80, summary: '指数趋势维持向上。' },
+          { key: 'profitability', label: '强', level: 'strong' as const, score: 82, summary: '昨日强势股继续给出正反馈。' },
+          { key: 'sentiment', label: '中', level: 'medium' as const, score: 60, summary: '短线情绪有分化，但未明显转弱。' },
+          { key: 'theme_breadth', label: '强', level: 'strong' as const, score: 76, summary: '主线扩散度较好。' },
+        ],
+      },
+      opportunityQuality: {
+        level: 'strong' as const,
+        label: '强',
+        score: 74,
+        reason: '主线、默认组合和买点清晰度都支持继续跟踪，当日机会质量偏强。',
+        modules: [
+          { key: 'theme_clarity', label: '强', level: 'strong' as const, score: 80, summary: '至少有 1 条主线比较清晰。' },
+          { key: 'portfolio_quality', label: '强', level: 'strong' as const, score: 78, summary: '默认组合里有 2-3 只可跟踪对象。' },
+          { key: 'buy_point_clarity', label: '强', level: 'strong' as const, score: 76, summary: '主仓与次仓都保留了明确买点。' },
+          { key: 'role_structure', label: '中', level: 'medium' as const, score: 60, summary: '主仓 / 次仓 / 观察仓结构基本成立。' },
+          { key: 'risk_control', label: '中', level: 'medium' as const, score: 58, summary: '高位追涨风险需要继续控制。' },
+        ],
+      },
+      historicalValidity: {
+        level: 'healthy' as const,
+        label: '健康',
+        score: 80,
+        reason: '20/60 日历史验证当前仍保持在健康区间。',
+        maxActionLevel: 'strong_go' as const,
+        recommendationCap: 'full' as const,
+      },
       strategyHealth: {
         status: 'healthy' as const,
         label: '正常',
-        reason: '20 日可用性与 60 日结构可信度同时健康，允许维持完整强推荐。',
+        reason: '20 日可用性与 60 日结构可信度同时健康，允许维持完整推荐。',
         recommendationCap: 'full' as const,
         canFullRecommend: true,
         shortWindow: {
@@ -274,7 +368,7 @@ function buildDecisionResponse(screening: MomentumScreenerResponse): MomentumScr
           candidateCount: topThemeCandidates.length,
           clearBuyPointCount: Math.max(1, Math.min(2, topThemeCandidates.length)),
           leaderCount: topThemeCandidates.filter((item: MomentumScreenerResult) => item.leaderLevel === 'leader').length || 1,
-          summary: `${topThemeName} 当前聚集 ${topThemeCandidates.length || screening.results.length} 只强势候选。`,
+          summary: `${topThemeName} 当前聚集了 ${topThemeCandidates.length || screening.results.length} 只强势候选。`,
           representatives: topThemeCandidates.slice(0, 3).map((item: MomentumScreenerResult) => ({
             rank: item.rank,
             tsCode: item.tsCode,
@@ -325,7 +419,7 @@ function buildDecisionResponse(screening: MomentumScreenerResponse): MomentumScr
         executionPlan:
           item.entryRangeLow != null && item.entryRangeHigh != null
             ? `优先关注 ${item.entryRangeLow.toFixed(2)} - ${item.entryRangeHigh.toFixed(2)} 区间确认。`
-            : '优先等分时承接与主线回流确认，不建议直接追高。',
+            : '优先等待分时承接与主线回流确认，不建议直接追高。',
         entryHint:
           item.entryRangeLow != null && item.entryRangeHigh != null
             ? `优先关注 ${item.entryRangeLow.toFixed(2)} - ${item.entryRangeHigh.toFixed(2)} 区间确认。`
@@ -347,12 +441,13 @@ function buildDecisionResponse(screening: MomentumScreenerResponse): MomentumScr
       },
       actionChecklist: {
         enabled: true,
+        mode: 'full' as const,
         reason: '当前出手级别允许生成明日行动清单。',
         steps: [
           {
             phase: 'pre_open' as const,
             phaseLabel: '开盘前',
-            objective: '先确认默认组合今天是否还值得继续盯。',
+            objective: '先确认默认组合今天是否仍值得继续盯。',
             focusItems: portfolioSource.map(
               (item: MomentumScreenerResult, index: number) =>
                 `${index === 0 ? '主仓' : index === 1 ? '次仓' : '观察仓'}：${item.name}`,
@@ -378,7 +473,7 @@ function buildDecisionResponse(screening: MomentumScreenerResponse): MomentumScr
               (item: MomentumScreenerResult, index: number) =>
                 `${index === 0 ? '主仓' : index === 1 ? '次仓' : '观察仓'}：${item.name}`,
             ),
-            tasks: ['明确优先关注谁、次选谁、其余继续观察。'],
+            tasks: ['明确优先关注谁、次选谁，其余继续观察。'],
             expectedOutcome: '输出今天最终该不该买的结论。',
           },
         ],
@@ -440,12 +535,11 @@ function buildIntradayResponse(screening: MomentumScreenerResponse): MomentumScr
 async function clickRunButton() {
   fireEvent.click(screen.getByTestId('momentum-screener-run'));
   await waitFor(() => {
+    expect(mockScreenWithDecision).toHaveBeenCalled();
+  });
+  await waitFor(() => {
     expect(mockScreen).toHaveBeenCalled();
   });
-}
-
-function getProfileSelect() {
-  return document.getElementById('momentum-screener-profile') as HTMLSelectElement;
 }
 
 function getSortSelect() {
@@ -460,6 +554,20 @@ describe('MomentumScreenerPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     window.localStorage.clear();
+    useMomentumScreenerAiStore.getState().closePanel();
+    useMomentumScreenerAiStore.setState({
+      isOpen: false,
+      title: '',
+      target: null,
+      sessionId: '',
+      messages: [],
+      progressEvents: [],
+      loadingSession: false,
+      sending: false,
+      error: null,
+      abortController: null,
+    });
+    Element.prototype.scrollIntoView = vi.fn();
     vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:momentum-export');
     vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
@@ -473,7 +581,16 @@ describe('MomentumScreenerPage', () => {
       maskToken: '******',
       items: [],
     });
-    mockScreen.mockResolvedValue(buildDecisionResponse(standardResponse));
+    mockLoadAiSession.mockResolvedValue({
+      sessionId: 'screener_ai:test',
+      reviewType: 'candidate',
+      reviewTypeLabel: '候选股点评',
+      sessionTitle: '候选股 AI 点评 · Alpha Leader',
+      messages: [],
+    });
+    mockStreamAiReview.mockResolvedValue(createAiStreamResponse());
+    mockScreenWithDecision.mockResolvedValue(buildDecisionResponse(standardResponse));
+    mockScreen.mockResolvedValue(aggressiveResponse);
     mockIntraday.mockResolvedValue(buildIntradayResponse(standardResponse));
   });
 
@@ -484,9 +601,6 @@ describe('MomentumScreenerPage', () => {
       items: [
         { key: 'MOMENTUM_SCREENER_DEFAULT_PROFILE', value: 'aggressive' },
         { key: 'MOMENTUM_SCREENER_DEFAULT_TOP_N', value: '12' },
-        { key: 'MOMENTUM_SCREENER_DEFAULT_MIN_CHANGE_PCT', value: '8.5' },
-        { key: 'MOMENTUM_SCREENER_DEFAULT_MIN_AMOUNT_YI', value: '4.5' },
-        { key: 'MOMENTUM_SCREENER_DEFAULT_MIN_TURNOVER', value: '6' },
       ],
     });
 
@@ -497,11 +611,12 @@ describe('MomentumScreenerPage', () => {
       expect(screen.getByDisplayValue('12')).toBeInTheDocument();
     });
 
-    expect(getProfileSelect().value).toBe('aggressive');
-    expect(screen.getByDisplayValue('8.5')).toBeInTheDocument();
-    expect(screen.getByDisplayValue('4.5')).toBeInTheDocument();
-    expect(screen.getByDisplayValue('6')).toBeInTheDocument();
+    expect(screen.getByText('Standard 官方主引擎')).toBeInTheDocument();
+    expect(screen.getAllByText('Aggressive 进攻补充').length).toBeGreaterThan(0);
+    expect(screen.getByText('最小涨幅 5%')).toBeInTheDocument();
+    expect(screen.getByText('市场范围：主板 + 创业板 + 科创板')).toBeInTheDocument();
     expect(mockScreen).not.toHaveBeenCalled();
+    expect(mockScreenWithDecision).not.toHaveBeenCalled();
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
@@ -520,9 +635,6 @@ describe('MomentumScreenerPage', () => {
         form: {
           profile: 'aggressive',
           topN: '12',
-          minChangePct: '8',
-          minAmountYi: '5',
-          minTurnover: '4',
           tradeDate: '2026-04-09',
         },
         sortBy: 'buyability_score',
@@ -535,10 +647,10 @@ describe('MomentumScreenerPage', () => {
       expect(screen.getByDisplayValue('12')).toBeInTheDocument();
     });
 
-    expect(getProfileSelect().value).toBe('aggressive');
     expect(screen.getByDisplayValue('2026-04-09')).toBeInTheDocument();
     expect(mockGetSystemConfig).not.toHaveBeenCalled();
     expect(mockScreen).not.toHaveBeenCalled();
+    expect(mockScreenWithDecision).not.toHaveBeenCalled();
   });
 
   it('restores system defaults and reruns screening from the current page state', async () => {
@@ -548,9 +660,6 @@ describe('MomentumScreenerPage', () => {
         form: {
           profile: 'aggressive',
           topN: '12',
-          minChangePct: '8',
-          minAmountYi: '5',
-          minTurnover: '4',
           tradeDate: '2026-04-09',
         },
         sortBy: 'buyability_score',
@@ -563,9 +672,6 @@ describe('MomentumScreenerPage', () => {
       items: [
         { key: 'MOMENTUM_SCREENER_DEFAULT_PROFILE', value: 'standard' },
         { key: 'MOMENTUM_SCREENER_DEFAULT_TOP_N', value: '9' },
-        { key: 'MOMENTUM_SCREENER_DEFAULT_MIN_CHANGE_PCT', value: '6.5' },
-        { key: 'MOMENTUM_SCREENER_DEFAULT_MIN_AMOUNT_YI', value: '2.5' },
-        { key: 'MOMENTUM_SCREENER_DEFAULT_MIN_TURNOVER', value: '2' },
       ],
     });
 
@@ -578,23 +684,14 @@ describe('MomentumScreenerPage', () => {
     fireEvent.click(screen.getByTestId('momentum-screener-restore'));
 
     await waitFor(() => {
-      expect(mockScreen).toHaveBeenLastCalledWith({
+      expect(mockScreenWithDecision).toHaveBeenLastCalledWith({
         profile: 'standard',
         topN: 9,
-        minChangePct: 6.5,
-        minAmount: 2.5e8,
-        minTurnover: 2,
-        excludeSt: true,
-        mainBoardOnly: true,
         tradeDate: undefined,
       });
     });
 
-    expect(getProfileSelect().value).toBe('standard');
     expect(screen.getByDisplayValue('9')).toBeInTheDocument();
-    expect(screen.getByDisplayValue('6.5')).toBeInTheDocument();
-    expect(screen.getByDisplayValue('2.5')).toBeInTheDocument();
-    expect(screen.getByDisplayValue('2')).toBeInTheDocument();
   });
 
   it('re-sorts the list when switching sort mode', async () => {
@@ -612,39 +709,22 @@ describe('MomentumScreenerPage', () => {
     });
   });
 
-  it('opens drawer only after clicking a result row and allows closing it', async () => {
-    mockScreen.mockResolvedValue(buildDecisionResponse(aggressiveResponse));
-
+  it('opens drawer only after clicking an official result row and allows closing it', async () => {
     render(<MomentumScreenerPage />);
 
-    fireEvent.change(getProfileSelect(), { target: { value: 'aggressive' } });
     await clickRunButton();
 
-    await waitFor(() => {
-      expect(mockScreen).toHaveBeenLastCalledWith({
-        profile: 'aggressive',
-        topN: 10,
-        minChangePct: 7,
-        minAmount: 3e8,
-        minTurnover: 3,
-        excludeSt: true,
-        mainBoardOnly: true,
-        tradeDate: undefined,
-      });
-    });
-
-    expect(await screen.findByTestId('momentum-screener-row-600003.SH')).toBeInTheDocument();
+    expect(await screen.findByTestId('momentum-screener-row-600001.SH')).toBeInTheDocument();
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByTestId('momentum-screener-row-600003.SH'));
+    fireEvent.click(screen.getByTestId('momentum-screener-row-600001.SH'));
 
     const dialog = await screen.findByRole('dialog');
-    expect(within(dialog).getByText('Breakout One · 600003.SH')).toBeInTheDocument();
-    expect(within(dialog).getAllByText('Breakout Consensus').length).toBeGreaterThan(0);
-    expect(within(dialog).getByText('10.34 - 10.66')).toBeInTheDocument();
-    expect(within(dialog).getByText('Volume Track')).toBeInTheDocument();
+    expect(within(dialog).getByText('Alpha Leader · 600001.SH')).toBeInTheDocument();
+    expect(within(dialog).getByText('Standard 官方结果')).toBeInTheDocument();
+    expect(within(dialog).getByText('Strength Confirmed')).toBeInTheDocument();
 
-    fireEvent.click(within(dialog).getByRole('button'));
+    fireEvent.click(within(dialog).getByRole('button', { name: '关闭抽屉' }));
 
     await waitFor(() => {
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
@@ -678,7 +758,7 @@ describe('MomentumScreenerPage', () => {
     await screen.findByTestId('momentum-screener-row-600001.SH');
 
     const summaryCard = screen.getByTestId('momentum-screener-watchlist-summary');
-    expect(within(summaryCard).getByText('明日观察池摘要')).toBeInTheDocument();
+    expect(within(summaryCard).getByText('官方明日观察池摘要')).toBeInTheDocument();
     expect(within(summaryCard).getAllByText('Alpha Leader').length).toBeGreaterThan(0);
     expect(within(summaryCard).getAllByText('Low Risk Runner').length).toBeGreaterThan(0);
     expect(within(summaryCard).getByText('Power Equipment x2')).toBeInTheDocument();
@@ -697,34 +777,35 @@ describe('MomentumScreenerPage', () => {
     expect(copiedText).toContain('风险漂移');
   });
 
-  it('shows buyability-first guidance in the watchlist summary for aggressive mode', async () => {
-    mockScreen.mockResolvedValue(buildDecisionResponse(aggressiveResponse));
-
+  it('shows the aggressive supplement panel as a secondary view instead of replacing the official summary', async () => {
     render(<MomentumScreenerPage />);
 
-    fireEvent.change(getProfileSelect(), { target: { value: 'aggressive' } });
     await clickRunButton();
-    await screen.findByTestId('momentum-screener-row-600003.SH');
+    await screen.findByTestId('momentum-screener-row-600001.SH');
 
     const summaryCard = screen.getByTestId('momentum-screener-watchlist-summary');
-    expect(within(summaryCard).getByText('进攻首选')).toBeInTheDocument();
-    expect(within(summaryCard).getAllByText('Breakout One').length).toBeGreaterThan(0);
-    expect(within(summaryCard).getByText('可买分 77.0，优先配合承接和区间确认。')).toBeInTheDocument();
-    expect(within(summaryCard).getByText('Robotics x1')).toBeInTheDocument();
+    expect(within(summaryCard).getByText('官方优先观察')).toBeInTheDocument();
+    expect(within(summaryCard).getAllByText('Low Risk Runner').length).toBeGreaterThan(0);
+
+    expect(await screen.findByText('Aggressive 进攻补充视图')).toBeInTheDocument();
+    expect(screen.getAllByText('Breakout One').length).toBeGreaterThan(0);
+    expect(screen.getByText('Breakout Consensus')).toBeInTheDocument();
+    expect(screen.getByText('10.34 - 10.66')).toBeInTheDocument();
   });
 
-  it('translates mixed-case score breakdown keys into readable Chinese labels in the detail drawer', async () => {
-    mockScreen.mockResolvedValue(buildDecisionResponse(mixedKeyResponse));
+  it('translates mixed-case score breakdown keys into readable Chinese labels in the aggressive supplement detail drawer', async () => {
+    mockScreen.mockResolvedValue(mixedKeyResponse);
 
     render(<MomentumScreenerPage />);
 
-    fireEvent.change(getProfileSelect(), { target: { value: 'aggressive' } });
     await clickRunButton();
-    await screen.findByTestId('momentum-screener-row-002733.SZ');
+    await screen.findByTestId('momentum-screener-row-600001.SH');
 
-    fireEvent.click(screen.getByTestId('momentum-screener-row-002733.SZ'));
+    await screen.findByText('Aggressive 进攻补充视图');
+    fireEvent.click(screen.getAllByRole('button', { name: '查看详情' })[0]);
 
     const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('Aggressive 进攻补充')).toBeInTheDocument();
     expect(within(dialog).getAllByText('强势确认').length).toBeGreaterThan(0);
     expect(within(dialog).getAllByText('资金承接').length).toBeGreaterThan(0);
     expect(within(dialog).getByText('量价双轨')).toBeInTheDocument();
@@ -791,24 +872,19 @@ describe('MomentumScreenerPage', () => {
     expect(copiedText).toContain('Strength Confirmed');
   });
 
-  it('copies aggressive single stock detail with opportunity tag and entry range', async () => {
-    mockScreen.mockResolvedValue(buildDecisionResponse(aggressiveResponse));
-
+  it('opens aggressive supplement detail without replacing the official result list', async () => {
     render(<MomentumScreenerPage />);
 
-    fireEvent.change(getProfileSelect(), { target: { value: 'aggressive' } });
     await clickRunButton();
-    await screen.findByTestId('momentum-screener-row-600003.SH');
+    await screen.findByTestId('momentum-screener-row-600001.SH');
 
-    fireEvent.click(screen.getByTestId('momentum-screener-copy-600003.SH'));
+    await screen.findByText('Aggressive 进攻补充视图');
+    fireEvent.click(screen.getAllByRole('button', { name: '查看详情' })[0]);
 
-    await waitFor(() => {
-      expect(navigator.clipboard.writeText).toHaveBeenCalledTimes(1);
-    });
-
-    const copiedText = String((navigator.clipboard.writeText as ReturnType<typeof vi.fn>).mock.calls[0][0]);
-    expect(copiedText).toContain('Breakout Consensus');
-    expect(copiedText).toContain('10.34 - 10.66');
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('Aggressive 进攻补充')).toBeInTheDocument();
+    expect(within(dialog).getAllByText('Breakout Consensus').length).toBeGreaterThan(0);
+    expect(screen.getByTestId('momentum-screener-row-600001.SH')).toBeInTheDocument();
   });
 
   it('renders the secondary decision panel alongside the original screening results', async () => {
@@ -821,21 +897,26 @@ describe('MomentumScreenerPage', () => {
 
     const panel = screen.getByTestId('momentum-secondary-decision');
     expect(within(panel).getByTestId('momentum-secondary-action-level')).toHaveTextContent('可正常出手');
+    expect(within(panel).getByText('市场环境')).toBeInTheDocument();
+    expect(within(panel).getByText('当日机会质量')).toBeInTheDocument();
+    expect(within(panel).getByText('历史有效性')).toBeInTheDocument();
     expect(within(panel).getByText('策略健康')).toBeInTheDocument();
     expect(within(panel).getByText('20 日当前可用性')).toBeInTheDocument();
     expect(within(panel).getByText('默认 1-3 票组合')).toBeInTheDocument();
     expect(within(panel).getByText('明日行动清单')).toBeInTheDocument();
     expect(within(panel).getByText('开盘后 60 分钟内')).toBeInTheDocument();
     expect(within(panel).getAllByText('Alpha Leader').length).toBeGreaterThan(0);
+    expect(within(panel).getByText('Standard 官方主引擎')).toBeInTheDocument();
     expect(screen.getByTestId('momentum-screener-watchlist-summary')).toBeInTheDocument();
-    expect(screen.getByText('筛选结果')).toBeInTheDocument();
+    expect(screen.getByText('Standard 官方筛选结果')).toBeInTheDocument();
+    expect(screen.getByText('Aggressive 进攻补充视图')).toBeInTheDocument();
   });
 
   it('shows a visible secondary decision refresh button and warming guidance', async () => {
     const warmingResponse = buildDecisionResponse(standardResponse);
     warmingResponse.decision.strategyHealth.dataSource = 'proxy';
     warmingResponse.decision.strategyHealth.isWarming = true;
-    mockScreen.mockResolvedValue(warmingResponse);
+    mockScreenWithDecision.mockResolvedValue(warmingResponse);
 
     render(<MomentumScreenerPage />);
 
@@ -856,19 +937,14 @@ describe('MomentumScreenerPage', () => {
     await clickRunButton();
     await screen.findByTestId('momentum-screener-row-600001.SH');
 
-    mockScreen.mockClear();
+    mockScreenWithDecision.mockClear();
     fireEvent.click(screen.getByTestId('momentum-secondary-refresh'));
 
     await waitFor(() => {
-      expect(mockScreen).toHaveBeenCalledWith(
+      expect(mockScreenWithDecision).toHaveBeenCalledWith(
         {
           profile: 'standard',
           topN: 10,
-          minChangePct: 7,
-          minAmount: 3e8,
-          minTurnover: 3,
-          excludeSt: true,
-          mainBoardOnly: true,
           tradeDate: undefined,
         },
         { waitForStrategyHealth: true },
@@ -877,14 +953,13 @@ describe('MomentumScreenerPage', () => {
   });
 
   it('refreshes intraday signal only after manual action and renders do-not-chase guidance', async () => {
-    mockScreen.mockResolvedValue(buildDecisionResponse(aggressiveResponse));
-    mockIntraday.mockResolvedValue(buildIntradayResponse(aggressiveResponse));
+    mockScreenWithDecision.mockResolvedValue(buildDecisionResponse(standardResponse));
+    mockIntraday.mockResolvedValue(buildIntradayResponse(standardResponse));
 
     render(<MomentumScreenerPage />);
 
-    fireEvent.change(getProfileSelect(), { target: { value: 'aggressive' } });
     await clickRunButton();
-    await screen.findByTestId('momentum-screener-row-600003.SH');
+    await screen.findByTestId('momentum-screener-row-600001.SH');
 
     expect(mockIntraday).not.toHaveBeenCalled();
     expect(screen.getByText('盘中信号尚未刷新')).toBeInTheDocument();
@@ -893,13 +968,8 @@ describe('MomentumScreenerPage', () => {
 
     await waitFor(() => {
       expect(mockIntraday).toHaveBeenCalledWith({
-        profile: 'aggressive',
+        profile: 'standard',
         topN: 10,
-        minChangePct: 7,
-        minAmount: 3e8,
-        minTurnover: 3,
-        excludeSt: true,
-        mainBoardOnly: true,
         tradeDate: undefined,
       });
     });
@@ -911,6 +981,88 @@ describe('MomentumScreenerPage', () => {
     expect(within(panel).getByText('优先关注顺序')).toBeInTheDocument();
     expect(within(panel).getByText('今天结论是不建议买入；固定顺序仍按主仓、次仓、观察仓跟踪。')).toBeInTheDocument();
     expect(within(panel).getByText('等待价格回到更合理的确认区间。')).toBeInTheDocument();
+  });
+
+  it('opens candidate AI review drawer and auto-generates the first commentary', async () => {
+    render(<MomentumScreenerPage />);
+
+    await clickRunButton();
+    await screen.findByTestId('momentum-screener-row-600001.SH');
+
+    fireEvent.click(screen.getByTestId('momentum-screener-ai-600001.SH'));
+
+    const dialog = await screen.findByRole('dialog', { name: /候选股 AI 点评 .*Alpha Leader/ });
+
+    await waitFor(() => {
+      expect(mockLoadAiSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reviewType: 'candidate',
+          reviewKey: '600001.SH',
+        }),
+      );
+      expect(mockStreamAiReview).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reviewType: 'candidate',
+          reviewKey: '600001.SH',
+          refreshMode: 'rerun',
+        }),
+        expect.any(Object),
+      );
+    });
+
+    await waitFor(() => {
+      expect(within(dialog).getByText('规则结论')).toBeInTheDocument();
+    });
+    expect(within(dialog).getAllByText('AI 不替代规则总闸门。').length).toBeGreaterThan(0);
+    expect(within(dialog).getByTestId('momentum-ai-open-conversation')).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByTestId('momentum-ai-open-conversation'));
+
+    const conversationDialog = await screen.findByRole('dialog', {
+      name: /候选股 AI 点评 .*Alpha Leader 对话面板/,
+    });
+
+    expect(within(conversationDialog).getByText('AI CONVERSATION')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(conversationDialog.textContent).toContain('今天先观察，不要追高。');
+    });
+    expect(within(conversationDialog).getAllByText('这只票最大风险是什么？').length).toBeGreaterThan(0);
+  });
+
+  it('opens decision AI review drawer from the secondary decision panel', async () => {
+    render(<MomentumScreenerPage />);
+
+    await clickRunButton();
+    await screen.findByTestId('momentum-screener-row-600001.SH');
+
+    mockLoadAiSession.mockResolvedValueOnce({
+      sessionId: 'screener_ai:decision',
+      reviewType: 'decision',
+      reviewTypeLabel: '二次决策建议',
+      sessionTitle: '二次决策 AI 综合建议',
+      messages: [],
+    });
+
+    fireEvent.click(screen.getByTestId('momentum-secondary-ai-review'));
+
+    await screen.findByRole('dialog', { name: /二次决策 AI 综合建议/ });
+
+    await waitFor(() => {
+      expect(mockLoadAiSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reviewType: 'decision',
+          reviewKey: 'summary',
+        }),
+      );
+      expect(mockStreamAiReview).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reviewType: 'decision',
+          reviewKey: 'summary',
+          refreshMode: 'rerun',
+        }),
+        expect.any(Object),
+      );
+    });
   });
 
   it('exports a single stock detail as markdown from the result row', async () => {

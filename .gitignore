@@ -78,3 +78,9 @@ verify_*.py
 static/
 /apps/dsa-desktop/dist/
 /apps/dsa-desktop/node_modules/
+
+# Local debug / test artifacts
+.playwright-mcp/
+ai-drawer-state.png
+page-after-login.md
+momentum-v1-prod-runtime.tgz

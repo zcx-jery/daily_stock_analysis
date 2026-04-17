@@ -116,11 +116,11 @@ class MomentumScreenerRequest(BaseModel):
     """次日强势股筛选请求。"""
 
     top_n: int = Field(10, ge=1, le=100, description="返回前几只股票")
-    min_change_pct: float = Field(7.0, ge=0, le=20, description="今日涨幅阈值")
-    min_amount: float = Field(3e8, ge=0, description="最低成交额（元）")
-    min_turnover: float = Field(3.0, ge=0, le=100, description="最低换手率")
-    exclude_st: bool = Field(True, description="是否排除 ST")
-    main_board_only: bool = Field(True, description="是否仅保留主板")
+    min_change_pct: float = Field(5.0, ge=0, le=20, description="V1 生产链路固定使用的最小涨幅基线；请求值会被忽略")
+    min_amount: float = Field(3e8, ge=0, description="V1 生产链路固定使用的最小成交额基线；请求值会被忽略")
+    min_turnover: float = Field(3.0, ge=0, le=100, description="V1 生产链路固定使用的最小换手率基线；请求值会被忽略")
+    exclude_st: bool = Field(True, description="V1 生产链路固定排除 ST；请求值会被忽略")
+    main_board_only: bool = Field(False, description="V1 生产链路固定纳入主板、创业板、科创板；请求值会被忽略")
     trade_date: Optional[str] = Field(None, description="交易日，格式 YYYY-MM-DD 或 YYYYMMDD")
     profile: Literal["standard", "aggressive"] = Field("standard", description="评分画像")
 
@@ -139,6 +139,8 @@ class MomentumScreenerResult(BaseModel):
     rank: int = Field(..., description="当前排名")
     ts_code: str = Field(..., description="股票代码")
     name: str = Field(..., description="股票名称")
+    market_segment: str = Field(..., description="市场板块归属枚举")
+    market_segment_label: str = Field(..., description="市场板块归属文案")
     pct_chg: float = Field(..., description="今日涨幅")
     continuation_score: float = Field(..., description="次日延续分")
     extension_score: float = Field(..., description="上冲弹性分")
@@ -163,6 +165,8 @@ class MomentumScreenerResponse(BaseModel):
     trade_date: str = Field(..., description="实际用于筛选的交易日")
     requested_trade_date: Optional[str] = Field(None, description="用户请求的交易日；自动模式下为空")
     trade_date_note: Optional[str] = Field(None, description="交易日自动回退或数据未就绪时的提示文案")
+    entry_baseline_version: str = Field(..., description="候选池统一入口基线版本")
+    market_scope_version: str = Field(..., description="候选池市场范围版本")
     candidate_count: int = Field(..., description="候选池数量")
     results: List[MomentumScreenerResult] = Field(default_factory=list, description="筛选结果")
 
@@ -254,6 +258,50 @@ class MomentumDecisionEvidence(BaseModel):
     today_reasoning: List[str] = Field(default_factory=list, description="今日结论证据")
 
 
+class MomentumDecisionGateModule(BaseModel):
+    """总闸门单个子模块。"""
+
+    key: str = Field(..., description="子模块键")
+    label: str = Field(..., description="子模块强弱标签")
+    level: str = Field(..., description="子模块强弱枚举")
+    score: float = Field(..., description="子模块评分")
+    summary: str = Field(..., description="子模块摘要")
+
+
+class MomentumDecisionMarketEnvironment(BaseModel):
+    """市场环境层。"""
+
+    level: Literal["strong", "medium", "weak"] = Field(..., description="市场环境级别")
+    label: str = Field(..., description="市场环境级别文案")
+    score: float = Field(..., description="市场环境综合得分")
+    reason: str = Field(..., description="市场环境一句话总结")
+    modules: List[MomentumDecisionGateModule] = Field(default_factory=list, description="市场环境子模块")
+
+
+class MomentumDecisionOpportunityQuality(BaseModel):
+    """当日机会质量层。"""
+
+    level: Literal["strong", "medium", "weak"] = Field(..., description="机会质量级别")
+    label: str = Field(..., description="机会质量级别文案")
+    score: float = Field(..., description="机会质量综合得分")
+    reason: str = Field(..., description="机会质量一句话总结")
+    modules: List[MomentumDecisionGateModule] = Field(default_factory=list, description="机会质量子模块")
+
+
+class MomentumDecisionHistoricalValidity(BaseModel):
+    """历史有效性层。"""
+
+    level: Literal["healthy", "general", "weak"] = Field(..., description="历史有效性级别")
+    label: str = Field(..., description="历史有效性文案")
+    score: float = Field(..., description="历史有效性得分")
+    reason: str = Field(..., description="历史有效性一句话总结")
+    max_action_level: Literal["strong_go", "normal_go", "cautious_go"] = Field(
+        ...,
+        description="当前历史有效性允许的最高出手级别",
+    )
+    recommendation_cap: Literal["full", "limited"] = Field(..., description="当前推荐能力上限")
+
+
 class MomentumActionChecklistStep(BaseModel):
     """明日行动清单中的单个时间阶段。"""
 
@@ -269,6 +317,7 @@ class MomentumActionChecklist(BaseModel):
     """明日行动清单。"""
 
     enabled: bool = Field(..., description="当前是否展示行动清单")
+    mode: Literal["full", "simplified", "disabled"] = Field(..., description="行动清单模式")
     reason: str = Field(..., description="展示或不展示的原因")
     steps: List[MomentumActionChecklistStep] = Field(default_factory=list, description="按时间组织的行动步骤")
 
@@ -343,6 +392,9 @@ class MomentumSecondaryDecision(BaseModel):
     profile: Literal["standard", "aggressive"] = Field(..., description="候选引擎来源")
     trade_date: str = Field(..., description="交易日")
     action: MomentumDecisionAction = Field(..., description="今日出手级别")
+    market_environment: MomentumDecisionMarketEnvironment = Field(..., description="市场环境层")
+    opportunity_quality: MomentumDecisionOpportunityQuality = Field(..., description="当日机会质量层")
+    historical_validity: MomentumDecisionHistoricalValidity = Field(..., description="历史有效性层")
     strategy_health: MomentumStrategyHealth = Field(..., description="策略健康状态")
     themes: List[MomentumDecisionTheme] = Field(default_factory=list, description="主线识别结果")
     portfolio: List[MomentumDecisionPortfolioSlot] = Field(default_factory=list, description="默认 1-3 票组合")
@@ -422,7 +474,7 @@ class MomentumIntradaySignal(BaseModel):
     status_label: str = Field(..., description="盘中结论状态文案")
     reason: str = Field(..., description="当前盘中结论的一句话原因")
     watch_items: List[str] = Field(default_factory=list, description="当前需继续关注的事项")
-    final_recommendation: Literal["buy", "watch", "do_not_buy"] = Field(
+    final_recommendation: Literal["buy", "main_only_consider", "watch", "do_not_buy"] = Field(
         ...,
         description="盘中收口后的最终建议",
     )
@@ -442,3 +494,323 @@ class MomentumSecondaryDecisionIntradayResponse(BaseModel):
     screening: MomentumScreenerResponse = Field(..., description="原始筛选结果")
     decision: MomentumSecondaryDecision = Field(..., description="二次决策结果")
     intraday_signal: MomentumIntradaySignal = Field(..., description="盘中信号结果")
+
+
+class MomentumBacktestCreateRequest(BaseModel):
+    """V1 强势筛选回测任务创建请求。"""
+
+    start_trade_date: str = Field(..., description="回测起始交易日，格式 YYYY-MM-DD 或 YYYYMMDD")
+    end_trade_date: str = Field(..., description="回测结束交易日，格式 YYYY-MM-DD 或 YYYYMMDD")
+    profile: Literal["standard", "aggressive"] = Field("standard", description="回放使用的画像")
+    top_n: int = Field(30, ge=1, le=100, description="回放时保留的展示结果数量")
+
+
+class MomentumBacktestSummary(BaseModel):
+    """V1 回测区间摘要。"""
+
+    completed_trade_dates: int = Field(..., description="已成功完成回放的交易日数量")
+    action_breakdown: Dict[str, int] = Field(default_factory=dict, description="各今日出手级别分布")
+    market_environment_breakdown: Dict[str, int] = Field(default_factory=dict, description="市场环境分桶分布")
+    opportunity_quality_breakdown: Dict[str, int] = Field(default_factory=dict, description="机会质量分桶分布")
+    historical_validity_breakdown: Dict[str, int] = Field(default_factory=dict, description="历史有效性分桶分布")
+    avg_candidate_count: Optional[float] = Field(None, description="候选池数量均值")
+    avg_selected_count: Optional[float] = Field(None, description="默认组合入选数量均值")
+    avg_buy_ready_count: Optional[float] = Field(None, description="默认组合中 ready 数量均值")
+    candidate_top10_buy_trigger_rate: Optional[float] = Field(None, description="候选池 Top10 买点触发率(%)")
+    candidate_top10_positive_t2_rate: Optional[float] = Field(None, description="候选池 Top10 T+2 收盘正收益占比(%)")
+    candidate_top10_avg_t2_profit_window_pct: Optional[float] = Field(None, description="候选池 Top10 T+2 利润窗口均值(%)")
+    candidate_top10_avg_t2_max_drawdown_pct: Optional[float] = Field(None, description="候选池 Top10 T+2 最大回撤均值(%)")
+    decision_top3_buy_trigger_rate: Optional[float] = Field(None, description="二次决策 Top3 买点触发率(%)")
+    decision_top3_positive_t1_rate: Optional[float] = Field(None, description="二次决策 Top3 T+1 收盘正收益占比(%)")
+    decision_top3_positive_t2_rate: Optional[float] = Field(None, description="二次决策 Top3 T+2 收盘正收益占比(%)")
+    decision_top3_avg_t1_profit_window_pct: Optional[float] = Field(None, description="二次决策 Top3 T+1 利润窗口均值(%)")
+    decision_top3_avg_t2_profit_window_pct: Optional[float] = Field(None, description="二次决策 Top3 T+2 利润窗口均值(%)")
+    decision_top3_avg_t2_max_drawdown_pct: Optional[float] = Field(None, description="二次决策 Top3 T+2 最大回撤均值(%)")
+    benchmark_comparison: List["MomentumBacktestBenchmarkItem"] = Field(default_factory=list, description="官方 Top3 与各基准的对比结果")
+    layer_diagnostics: List["MomentumBacktestLayerDiagnostic"] = Field(default_factory=list, description="候选池/排序/执行/总闸门/环境适配五层诊断")
+    gate_module_breakdown: List["MomentumBacktestGateModuleBreakdownItem"] = Field(default_factory=list, description="总闸门细分模块的区间聚合诊断")
+    regime_breakdown: List["MomentumBacktestRegimeBreakdownItem"] = Field(default_factory=list, description="强/中/弱市场分桶指标")
+
+
+class MomentumBacktestBenchmarkItem(BaseModel):
+    """V1 回测单个比较基准摘要。"""
+
+    key: str = Field(..., description="基准键")
+    label: str = Field(..., description="基准名称")
+    sample_count: int = Field(..., description="样本数量")
+    trigger_rate_pct: Optional[float] = Field(None, description="买点触发率(%)")
+    positive_t2_rate_pct: Optional[float] = Field(None, description="T+2 收盘正收益率(%)")
+    avg_t2_profit_window_pct: Optional[float] = Field(None, description="T+2 平均利润窗口(%)")
+    avg_t2_max_drawdown_pct: Optional[float] = Field(None, description="T+2 平均最大回撤(%)")
+    alpha_vs_official_top3_pct: Optional[float] = Field(None, description="相对官方 Top3 的 T+2 利润窗口差值(%)")
+    alpha_vs_candidate_top10_pct: Optional[float] = Field(None, description="相对候选池 Top10 的 T+2 利润窗口差值(%)")
+
+
+class MomentumBacktestLayerDiagnostic(BaseModel):
+    """V1 回测单层诊断卡片。"""
+
+    key: str = Field(..., description="诊断层级键")
+    label: str = Field(..., description="诊断层级名称")
+    level: Literal["strong", "general", "weak"] = Field(..., description="层级当前状态")
+    score: float = Field(..., description="展示用层级评分")
+    summary: str = Field(..., description="该层的简要诊断结论")
+    metrics: Dict[str, Optional[float]] = Field(default_factory=dict, description="该层关键指标")
+
+
+class MomentumBacktestGateModuleBreakdownItem(BaseModel):
+    """V1 回测总闸门细分模块区间聚合。"""
+
+    key: str = Field(..., description="模块键")
+    label: str = Field(..., description="模块名称")
+    group_key: str = Field(..., description="所属分组键")
+    group_label: str = Field(..., description="所属分组名称")
+    sample_days: int = Field(..., description="纳入统计的交易日数量")
+    strong_days: int = Field(..., description="模块处于强状态的交易日数量")
+    medium_days: int = Field(..., description="模块处于中状态的交易日数量")
+    weak_days: int = Field(..., description="模块处于弱状态的交易日数量")
+    blocker_days: int = Field(..., description="模块成为弱项的交易日数量")
+    restricted_days: int = Field(..., description="模块为弱项且当天限制出手的交易日数量")
+    avg_score: Optional[float] = Field(None, description="模块平均分")
+    weak_day_candidate_positive_t2_rate_pct: Optional[float] = Field(None, description="模块为弱项时候选池 T+2 正收益率均值(%)")
+    weak_day_decision_positive_t2_rate_pct: Optional[float] = Field(None, description="模块为弱项时默认组合 T+2 正收益率均值(%)")
+    weak_day_candidate_avg_t2_profit_window_pct: Optional[float] = Field(None, description="模块为弱项时候选池 T+2 利润窗口均值(%)")
+    weak_day_decision_avg_t2_profit_window_pct: Optional[float] = Field(None, description="模块为弱项时默认组合 T+2 利润窗口均值(%)")
+    strong_day_decision_avg_t2_profit_window_pct: Optional[float] = Field(None, description="模块为强项时默认组合 T+2 利润窗口均值(%)")
+    summary: str = Field(..., description="模块区间诊断结论")
+
+
+class MomentumBacktestGateSnapshotModule(BaseModel):
+    """V1 回测单日总闸门模块快照。"""
+
+    key: str = Field(..., description="模块键")
+    label: str = Field(..., description="模块名称")
+    group_key: str = Field(..., description="所属分组键")
+    group_label: str = Field(..., description="所属分组名称")
+    level: str = Field(..., description="模块状态枚举")
+    level_label: str = Field(..., description="模块状态文案")
+    score: Optional[float] = Field(None, description="模块分数")
+    summary: str = Field(..., description="模块摘要")
+
+
+class MomentumBacktestGateSnapshotGroup(BaseModel):
+    """V1 回测单日总闸门分组快照。"""
+
+    key: str = Field(..., description="分组键")
+    label: str = Field(..., description="分组名称")
+    level: str = Field(..., description="分组状态枚举")
+    level_label: str = Field(..., description="分组状态文案")
+    score: Optional[float] = Field(None, description="分组分数")
+    reason: str = Field(..., description="分组判断理由")
+    modules: List[MomentumBacktestGateSnapshotModule] = Field(default_factory=list, description="分组下的细分模块")
+
+
+class MomentumBacktestRegimeBreakdownItem(BaseModel):
+    """V1 回测按市场分桶的摘要。"""
+
+    level: Literal["strong", "general", "weak"] = Field(..., description="市场分桶枚举")
+    label: str = Field(..., description="市场分桶名称")
+    trade_days: int = Field(..., description="该分桶交易日数量")
+    decision_positive_t2_rate_pct: Optional[float] = Field(None, description="官方组合 T+2 正收益率(%)")
+    decision_avg_t2_profit_window_pct: Optional[float] = Field(None, description="官方组合 T+2 平均利润窗口(%)")
+    decision_avg_t2_max_drawdown_pct: Optional[float] = Field(None, description="官方组合 T+2 平均最大回撤(%)")
+    missed_opportunity_rate_pct: Optional[float] = Field(None, description="该分桶下限制日的错杀率(%)")
+    allowed_trade_precision_pct: Optional[float] = Field(None, description="该分桶下放行准确率(%)")
+    stand_aside_rate_pct: Optional[float] = Field(None, description="该分桶下今日不做占比(%)")
+
+
+class MomentumBacktestRunResponse(BaseModel):
+    """V1 回测任务状态。"""
+
+    run_id: str = Field(..., description="回测任务 ID")
+    status: Literal["running", "completed", "failed"] = Field(..., description="回测任务状态")
+    profile: Literal["standard", "aggressive"] = Field(..., description="回放使用的画像")
+    engine_version: str = Field(..., description="回测引擎版本")
+    entry_baseline_version: str = Field(..., description="候选池入口基线版本")
+    market_scope_version: str = Field(..., description="候选池市场范围版本")
+    top_n: int = Field(..., description="回放时保留的展示结果数量")
+    start_trade_date: str = Field(..., description="回测起始交易日")
+    end_trade_date: str = Field(..., description="回测结束交易日")
+    total_trade_dates: int = Field(..., description="区间内交易日总数")
+    processed_trade_dates: int = Field(..., description="已处理交易日数量")
+    failed_trade_dates: int = Field(..., description="失败交易日数量")
+    summary: Optional[MomentumBacktestSummary] = Field(None, description="当前区间摘要")
+    error_message: Optional[str] = Field(None, description="任务错误信息")
+    created_at: Optional[str] = Field(None, description="创建时间")
+    updated_at: Optional[str] = Field(None, description="更新时间")
+
+
+class MomentumBacktestSummaryResponse(BaseModel):
+    """V1 回测区间摘要响应。"""
+
+    run_id: str = Field(..., description="回测任务 ID")
+    profile: Literal["standard", "aggressive"] = Field(..., description="回放使用的画像")
+    engine_version: str = Field(..., description="回测引擎版本")
+    summary: MomentumBacktestSummary = Field(..., description="区间摘要")
+
+
+class MomentumBacktestDailyItem(BaseModel):
+    """V1 回测单日摘要。"""
+
+    trade_date: str = Field(..., description="交易日")
+    action_level: str = Field(..., description="今日出手级别枚举")
+    action_label: str = Field(..., description="今日出手级别文案")
+    recommendation_cap: str = Field(..., description="当日推荐上限")
+    action_checklist_mode: str = Field(..., description="当日行动清单模式")
+    market_environment_level: str = Field(..., description="市场环境层级别")
+    opportunity_quality_level: str = Field(..., description="当日机会质量级别")
+    historical_validity_level: str = Field(..., description="历史有效性级别")
+    candidate_count: int = Field(..., description="候选池数量")
+    result_count: int = Field(..., description="完整排序集数量")
+    selected_count: int = Field(..., description="默认组合数量")
+    buy_ready_count: int = Field(..., description="默认组合中 ready 数量")
+    main_ts_code: Optional[str] = Field(None, description="主仓股票代码")
+    secondary_ts_code: Optional[str] = Field(None, description="次仓股票代码")
+    watch_ts_code: Optional[str] = Field(None, description="观察仓股票代码")
+
+
+class MomentumBacktestDailyListResponse(BaseModel):
+    """V1 回测单日列表响应。"""
+
+    run_id: str = Field(..., description="回测任务 ID")
+    total: int = Field(..., description="符合过滤条件的总记录数")
+    page: int = Field(..., description="当前页码")
+    page_size: int = Field(..., description="当前页大小")
+    has_more: bool = Field(..., description="是否还有更多结果")
+    items: List[MomentumBacktestDailyItem] = Field(default_factory=list, description="回测单日摘要列表")
+
+
+class MomentumBacktestOutcomeItem(BaseModel):
+    """V1 回测单条结果验证记录。"""
+
+    view_scope: str = Field(..., description="结果验证所属视图")
+    slot: Optional[str] = Field(None, description="默认组合槽位")
+    ts_code: str = Field(..., description="股票代码")
+    name: str = Field(..., description="股票名称")
+    buy_triggered: bool = Field(..., description="是否命中建议买点")
+    reference_entry_price: Optional[float] = Field(None, description="参考入场价")
+    trigger_price: Optional[float] = Field(None, description="实际触发价")
+    trigger_trade_date: Optional[str] = Field(None, description="实际触发交易日")
+    t1_trade_date: Optional[str] = Field(None, description="T+1 交易日")
+    t1_close_return_pct: Optional[float] = Field(None, description="T+1 收盘收益(%)")
+    t1_profit_window_pct: Optional[float] = Field(None, description="T+1 利润窗口(%)")
+    t1_max_drawdown_pct: Optional[float] = Field(None, description="T+1 最大回撤(%)")
+    t2_trade_date: Optional[str] = Field(None, description="T+2 交易日")
+    t2_close_return_pct: Optional[float] = Field(None, description="T+2 收盘收益(%)")
+    t2_profit_window_pct: Optional[float] = Field(None, description="T+2 利润窗口(%)")
+    t2_max_drawdown_pct: Optional[float] = Field(None, description="T+2 最大回撤(%)")
+    real_strength_label: Optional[str] = Field(None, description="真实后续强弱标签")
+
+
+class MomentumBacktestOutcomeMetrics(BaseModel):
+    """V1 回测视图级结果指标。"""
+
+    sample_count: int = Field(..., description="样本数量")
+    trigger_rate_pct: Optional[float] = Field(None, description="买点触发率(%)")
+    positive_t1_rate_pct: Optional[float] = Field(None, description="T+1 正收益率(%)")
+    positive_t2_rate_pct: Optional[float] = Field(None, description="T+2 正收益率(%)")
+    avg_t1_profit_window_pct: Optional[float] = Field(None, description="T+1 平均利润窗口(%)")
+    avg_t2_profit_window_pct: Optional[float] = Field(None, description="T+2 平均利润窗口(%)")
+    avg_t2_max_drawdown_pct: Optional[float] = Field(None, description="T+2 平均最大回撤(%)")
+    best_t2_profit_window_pct: Optional[float] = Field(None, description="最佳 T+2 利润窗口(%)")
+
+
+class MomentumBacktestOutcomeGroup(BaseModel):
+    """V1 回测某个视图的结果验证分组。"""
+
+    metrics: MomentumBacktestOutcomeMetrics = Field(..., description="该视图聚合指标")
+    items: List[MomentumBacktestOutcomeItem] = Field(default_factory=list, description="该视图逐票结果")
+
+
+class MomentumBacktestCandidateDetailItem(BaseModel):
+    """V1 回测候选池 Top10 单项详情。"""
+
+    rank: int = Field(..., description="候选池排名")
+    ts_code: str = Field(..., description="股票代码")
+    name: str = Field(..., description="股票名称")
+    theme: Optional[str] = Field(None, description="所属主线")
+    role: Optional[str] = Field(None, description="角色标签")
+    market_segment: Optional[str] = Field(None, description="市场板块枚举")
+    rank_score: Optional[float] = Field(None, description="排序分")
+    final_score: Optional[float] = Field(None, description="最终总分")
+    continuation_score: Optional[float] = Field(None, description="延续分")
+    extension_score: Optional[float] = Field(None, description="弹性分")
+    risk_score: Optional[float] = Field(None, description="风险分")
+    buyability_score: Optional[float] = Field(None, description="可买性分")
+    outcome: Optional[MomentumBacktestOutcomeItem] = Field(None, description="该候选股的真实结果")
+
+
+class MomentumBacktestDecisionDetailItem(BaseModel):
+    """V1 回测默认组合单项详情。"""
+
+    slot: str = Field(..., description="默认组合槽位")
+    rank: Optional[int] = Field(None, description="原始排序排名")
+    ts_code: str = Field(..., description="股票代码")
+    name: str = Field(..., description="股票名称")
+    theme: Optional[str] = Field(None, description="所属主线")
+    role: Optional[str] = Field(None, description="角色标签")
+    decision_score: Optional[float] = Field(None, description="组合优先级分")
+    rank_score: Optional[float] = Field(None, description="排序分")
+    risk_score: Optional[float] = Field(None, description="风险分")
+    buy_point_status: Optional[str] = Field(None, description="买点状态")
+    suggested_action: Optional[str] = Field(None, description="静态建议动作")
+    entry_range_low: Optional[float] = Field(None, description="建议买入区间下沿")
+    entry_range_high: Optional[float] = Field(None, description="建议买入区间上沿")
+    opportunity_tag: Optional[str] = Field(None, description="机会标签")
+    outcome: Optional[MomentumBacktestOutcomeItem] = Field(None, description="该组合票的真实结果")
+
+
+class MomentumBacktestIssueItem(BaseModel):
+    """V1 回测问题诊断项。"""
+
+    issue_key: str = Field(..., description="问题类型键")
+    severity: Literal["critical", "warning", "info"] = Field(..., description="问题严重程度")
+    title: str = Field(..., description="问题标题")
+    summary: str = Field(..., description="问题描述")
+    affected_codes: List[str] = Field(default_factory=list, description="受影响股票代码")
+    metrics: Dict[str, Optional[float]] = Field(default_factory=dict, description="该问题对应的关键指标")
+
+
+class MomentumBacktestDailyDiagnosis(BaseModel):
+    """V1 回测单日问题诊断。"""
+
+    summary_lines: List[str] = Field(default_factory=list, description="单日诊断摘要")
+    candidate_metrics: MomentumBacktestOutcomeMetrics = Field(..., description="候选池结果指标")
+    decision_metrics: MomentumBacktestOutcomeMetrics = Field(..., description="默认组合结果指标")
+    gate_snapshot: List[MomentumBacktestGateSnapshotGroup] = Field(default_factory=list, description="当日总闸门三层快照")
+    gate_blockers: List[MomentumBacktestGateSnapshotModule] = Field(default_factory=list, description="当日拖后腿的总闸门模块")
+    issues: List[MomentumBacktestIssueItem] = Field(default_factory=list, description="单日诊断问题列表")
+
+
+class MomentumBacktestDailyDetailResponse(BaseModel):
+    """V1 回测单日详情。"""
+
+    run_id: str = Field(..., description="回测任务 ID")
+    trade_date: str = Field(..., description="交易日")
+    daily_context: MomentumBacktestDailyItem = Field(..., description="当日回放上下文")
+    candidate_top10: List[MomentumBacktestCandidateDetailItem] = Field(default_factory=list, description="候选池 Top10 详情")
+    decision_top3: List[MomentumBacktestDecisionDetailItem] = Field(default_factory=list, description="默认组合详情")
+    slot_view: List[MomentumBacktestDecisionDetailItem] = Field(default_factory=list, description="按槽位排序的默认组合视图")
+    outcomes: Dict[str, MomentumBacktestOutcomeGroup] = Field(default_factory=dict, description="候选池与默认组合的结果验证分组")
+    diagnosis: MomentumBacktestDailyDiagnosis = Field(..., description="单日问题诊断")
+
+
+class MomentumBacktestIssueListItem(MomentumBacktestIssueItem):
+    """V1 回测区间问题列表项。"""
+
+    trade_date: str = Field(..., description="问题发生交易日")
+    action_level: str = Field(..., description="当日出手级别枚举")
+    action_label: str = Field(..., description="当日出手级别文案")
+
+
+class MomentumBacktestIssueListResponse(BaseModel):
+    """V1 回测问题清单响应。"""
+
+    run_id: str = Field(..., description="回测任务 ID")
+    total_issues: int = Field(..., description="问题总数")
+    severity_breakdown: Dict[str, int] = Field(default_factory=dict, description="按严重度聚合的问题数量")
+    issue_key_breakdown: Dict[str, int] = Field(default_factory=dict, description="按问题类型聚合的问题数量")
+    items: List[MomentumBacktestIssueListItem] = Field(default_factory=list, description="区间问题列表")
+
+
+MomentumBacktestSummary.model_rebuild()
+

@@ -396,6 +396,175 @@ class BacktestSummary(Base):
     )
 
 
+class MomentumBacktestRun(Base):
+    """V1 momentum screener backtest run metadata."""
+
+    __tablename__ = 'momentum_backtest_runs'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String(64), nullable=False, unique=True, index=True)
+    status = Column(String(16), nullable=False, default='running', index=True)
+    profile = Column(String(16), nullable=False, default='standard', index=True)
+    engine_version = Column(String(32), nullable=False, default='v1')
+    entry_baseline_version = Column(String(32), nullable=False)
+    market_scope_version = Column(String(64), nullable=False)
+    top_n = Column(Integer, nullable=False, default=30)
+    start_trade_date = Column(Date, nullable=False, index=True)
+    end_trade_date = Column(Date, nullable=False, index=True)
+    total_trade_dates = Column(Integer, nullable=False, default=0)
+    processed_trade_dates = Column(Integer, nullable=False, default=0)
+    failed_trade_dates = Column(Integer, nullable=False, default=0)
+    summary_json = Column(Text)
+    error_message = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
+
+    __table_args__ = (
+        Index('ix_momentum_backtest_runs_profile_created', 'profile', 'created_at'),
+    )
+
+
+class MomentumBacktestDailySummary(Base):
+    """Frozen day-level backtest decision summary."""
+
+    __tablename__ = 'momentum_backtest_daily_summaries'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String(64), ForeignKey('momentum_backtest_runs.run_id'), nullable=False, index=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    action_level = Column(String(24), nullable=False, index=True)
+    action_label = Column(String(32), nullable=False)
+    recommendation_cap = Column(String(16), nullable=False)
+    action_checklist_mode = Column(String(16), nullable=False, default='disabled')
+    market_environment_level = Column(String(16), nullable=False)
+    opportunity_quality_level = Column(String(16), nullable=False)
+    historical_validity_level = Column(String(16), nullable=False)
+    candidate_count = Column(Integer, nullable=False, default=0)
+    result_count = Column(Integer, nullable=False, default=0)
+    selected_count = Column(Integer, nullable=False, default=0)
+    buy_ready_count = Column(Integer, nullable=False, default=0)
+    main_ts_code = Column(String(16), index=True)
+    secondary_ts_code = Column(String(16), index=True)
+    watch_ts_code = Column(String(16), index=True)
+    screening_payload_json = Column(Text)
+    decision_payload_json = Column(Text)
+    diagnosis_json = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        UniqueConstraint('run_id', 'trade_date', name='uix_momentum_backtest_daily_summary_run_date'),
+        Index('ix_momentum_backtest_daily_summary_run_action', 'run_id', 'action_level'),
+    )
+
+
+class MomentumBacktestCandidateRecord(Base):
+    """Frozen candidate-top10 records for one replayed trade date."""
+
+    __tablename__ = 'momentum_backtest_candidate_records'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String(64), ForeignKey('momentum_backtest_runs.run_id'), nullable=False, index=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    view_scope = Column(String(24), nullable=False, default='candidate_top10')
+    rank = Column(Integer, nullable=False)
+    ts_code = Column(String(16), nullable=False, index=True)
+    name = Column(String(64), nullable=False)
+    theme = Column(String(64))
+    role = Column(String(32))
+    market_segment = Column(String(24))
+    rank_score = Column(Float)
+    final_score = Column(Float)
+    continuation_score = Column(Float)
+    extension_score = Column(Float)
+    risk_score = Column(Float)
+    buyability_score = Column(Float)
+    candidate_payload_json = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            'run_id',
+            'trade_date',
+            'view_scope',
+            'ts_code',
+            name='uix_momentum_backtest_candidate_run_date_scope_code',
+        ),
+        Index('ix_momentum_backtest_candidate_run_date_rank', 'run_id', 'trade_date', 'rank'),
+    )
+
+
+class MomentumBacktestDecisionRecord(Base):
+    """Frozen decision-top3 / slot view records for one replayed trade date."""
+
+    __tablename__ = 'momentum_backtest_decision_records'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String(64), ForeignKey('momentum_backtest_runs.run_id'), nullable=False, index=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    slot = Column(String(16), nullable=False)
+    rank = Column(Integer)
+    ts_code = Column(String(16), nullable=False, index=True)
+    name = Column(String(64), nullable=False)
+    theme = Column(String(64))
+    role = Column(String(32))
+    decision_score = Column(Float)
+    rank_score = Column(Float)
+    risk_score = Column(Float)
+    buy_point_status = Column(String(16))
+    suggested_action = Column(String(24))
+    entry_range_low = Column(Float)
+    entry_range_high = Column(Float)
+    opportunity_tag = Column(String(64))
+    decision_payload_json = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    __table_args__ = (
+        UniqueConstraint('run_id', 'trade_date', 'slot', name='uix_momentum_backtest_decision_run_date_slot'),
+        Index('ix_momentum_backtest_decision_run_date_rank', 'run_id', 'trade_date', 'rank'),
+    )
+
+
+class MomentumBacktestOutcomeRecord(Base):
+    """Forward outcome validation for candidate/decision records."""
+
+    __tablename__ = 'momentum_backtest_outcome_records'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String(64), ForeignKey('momentum_backtest_runs.run_id'), nullable=False, index=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    view_scope = Column(String(24), nullable=False)
+    slot = Column(String(16))
+    ts_code = Column(String(16), nullable=False, index=True)
+    name = Column(String(64), nullable=False)
+    buy_triggered = Column(Boolean, nullable=False, default=False)
+    reference_entry_price = Column(Float)
+    trigger_price = Column(Float)
+    trigger_trade_date = Column(Date, index=True)
+    t1_trade_date = Column(Date, index=True)
+    t1_close_return_pct = Column(Float)
+    t1_profit_window_pct = Column(Float)
+    t1_max_drawdown_pct = Column(Float)
+    t2_trade_date = Column(Date, index=True)
+    t2_close_return_pct = Column(Float)
+    t2_profit_window_pct = Column(Float)
+    t2_max_drawdown_pct = Column(Float)
+    real_strength_label = Column(String(24))
+    outcome_payload_json = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            'run_id',
+            'trade_date',
+            'view_scope',
+            'ts_code',
+            name='uix_momentum_backtest_outcome_run_date_scope_code',
+        ),
+        Index('ix_momentum_backtest_outcome_run_date_scope', 'run_id', 'trade_date', 'view_scope'),
+    )
+
+
 class PortfolioAccount(Base):
     """Portfolio account metadata."""
 
