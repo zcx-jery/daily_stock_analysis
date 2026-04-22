@@ -439,3 +439,7 @@ A: Each run takes about 2-5 minutes, 22 workdays per month = 44-110 minutes, wel
 ---
 
 **Wishing you a smooth deployment!**
+
+## Backtest Memory Note
+
+Momentum Screener V1 backtests and long-running secondary-decision jobs can push the Web/API process well beyond the default footprint. In the test environment, `stock-server` repeatedly hit `exitCode=137` under a `512M` cgroup limit, so keep the `server` container at `1G` or higher when backtest jobs are executed from the Web service.

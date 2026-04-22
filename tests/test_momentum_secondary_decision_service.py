@@ -558,6 +558,150 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         self.assertEqual(result["themes"][0]["candidate_count"], 3)
         self.assertEqual(result["excluded_candidates"], [])
 
+    def test_build_from_screening_allows_forward_alpha_to_challenge_clear_leader(self) -> None:
+        service = MomentumSecondaryDecisionService(screener_service=None)
+        screening = {
+            "profile": "standard",
+            "trade_date": "2026-04-10",
+            "candidate_count": 2,
+            "results": [
+                {
+                    "rank": 1,
+                    "ts_code": "600101.SH",
+                    "name": "稳态龙头",
+                    "pct_chg": 7.2,
+                    "continuation_score": 84.0,
+                    "extension_score": 70.0,
+                    "risk_score": 18.0,
+                    "buyability_score": None,
+                    "entry_range_low": 10.1,
+                    "entry_range_high": 10.4,
+                    "final_score": 84.0,
+                    "rank_score": 83.0,
+                    "themes": ["机器人"],
+                    "leader_level": "龙头",
+                    "top_reasons": ["强势确认"],
+                    "risk_tags": [],
+                    "score_breakdown": {},
+                },
+                {
+                    "rank": 8,
+                    "ts_code": "600108.SH",
+                    "name": "高弹性前排",
+                    "pct_chg": 8.6,
+                    "continuation_score": 96.0,
+                    "extension_score": 90.0,
+                    "risk_score": 35.0,
+                    "buyability_score": None,
+                    "entry_range_low": None,
+                    "entry_range_high": None,
+                    "final_score": 82.0,
+                    "rank_score": 80.0,
+                    "themes": ["机器人"],
+                    "leader_level": "前排",
+                    "top_reasons": ["弹性更强"],
+                    "risk_tags": [],
+                    "score_breakdown": {},
+                },
+            ],
+        }
+
+        result = service.build_from_screening(screening)
+
+        self.assertEqual(result["portfolio"][0]["ts_code"], "600108.SH")
+        self.assertEqual(result["portfolio"][0]["buy_point_status"], "waiting")
+        self.assertGreater(
+            result["portfolio"][0]["forward_alpha_score"],
+            result["portfolio"][1]["forward_alpha_score"],
+        )
+        diagnostic = next(
+            item for item in result["candidate_diagnostics"] if item["ts_code"] == "600108.SH"
+        )
+        self.assertEqual(diagnostic["selected_slot"], "main")
+
+    def test_build_from_screening_keeps_secondary_on_mainline_when_cross_theme_is_too_weak(self) -> None:
+        service = MomentumSecondaryDecisionService(screener_service=None)
+        screening = {
+            "profile": "standard",
+            "trade_date": "2026-04-10",
+            "candidate_count": 4,
+            "results": [
+                {
+                    "rank": 1,
+                    "ts_code": "600201.SH",
+                    "name": "主线前排",
+                    "pct_chg": 7.0,
+                    "continuation_score": 92.0,
+                    "extension_score": 86.0,
+                    "risk_score": 0.0,
+                    "buyability_score": None,
+                    "final_score": 88.0,
+                    "rank_score": 86.0,
+                    "themes": ["电力设备"],
+                    "leader_level": "front",
+                    "top_reasons": ["主线强"],
+                    "risk_tags": [],
+                    "score_breakdown": {},
+                },
+                {
+                    "rank": 2,
+                    "ts_code": "600202.SH",
+                    "name": "主线龙头",
+                    "pct_chg": 6.8,
+                    "continuation_score": 89.0,
+                    "extension_score": 85.0,
+                    "risk_score": 0.0,
+                    "buyability_score": None,
+                    "final_score": 87.0,
+                    "rank_score": 85.0,
+                    "themes": ["电力设备"],
+                    "leader_level": "leader",
+                    "top_reasons": ["主线确认"],
+                    "risk_tags": [],
+                    "score_breakdown": {},
+                },
+                {
+                    "rank": 3,
+                    "ts_code": "600203.SH",
+                    "name": "次线前排",
+                    "pct_chg": 6.5,
+                    "continuation_score": 80.0,
+                    "extension_score": 82.0,
+                    "risk_score": 0.0,
+                    "buyability_score": None,
+                    "final_score": 78.0,
+                    "rank_score": 76.0,
+                    "themes": ["电子"],
+                    "leader_level": "front",
+                    "top_reasons": ["次线跟随"],
+                    "risk_tags": [],
+                    "score_breakdown": {},
+                },
+                {
+                    "rank": 4,
+                    "ts_code": "600204.SH",
+                    "name": "次线龙头",
+                    "pct_chg": 6.3,
+                    "continuation_score": 79.0,
+                    "extension_score": 80.0,
+                    "risk_score": 0.0,
+                    "buyability_score": None,
+                    "final_score": 77.0,
+                    "rank_score": 75.0,
+                    "themes": ["电子"],
+                    "leader_level": "leader",
+                    "top_reasons": ["次线确认"],
+                    "risk_tags": [],
+                    "score_breakdown": {},
+                },
+            ],
+        }
+
+        result = service.build_from_screening(screening)
+
+        self.assertEqual(result["portfolio"][0]["ts_code"], "600201.SH")
+        self.assertEqual(result["portfolio"][1]["ts_code"], "600202.SH")
+
     def test_build_from_screening_uses_real_historical_validation_for_strategy_health(self) -> None:
         screening, request_params, screener_service, stock_repo = _build_historical_strategy_fixture(
             short_successes=14,
@@ -656,6 +800,61 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
             self.assertTrue(result["strategy_health"]["blockers"])
             self.assertIn(result["portfolio"][0]["suggested_action"], {"ready", "wait_for_trigger"})
             self.assertTrue(all(item["suggested_action"] == "observe_only" for item in result["portfolio"][1:]))
+
+    def test_build_from_screening_cached_only_mode_skips_historical_replay(self) -> None:
+        screening, request_params, screener_service, stock_repo = _build_historical_strategy_fixture(
+            short_successes=14,
+            long_successes=38,
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = MomentumSecondaryDecisionService(
+                screener_service=screener_service,
+                stock_repo=stock_repo,
+                strategy_health_async=False,
+                strategy_health_cache_dir=Path(temp_dir),
+            )
+
+            result = service.build_from_screening(
+                screening,
+                request_params=request_params,
+                strategy_health_mode="cached_only",
+            )
+
+            self.assertEqual(result["strategy_health"]["data_source"], "proxy")
+            self.assertEqual(result["strategy_health"]["validation_status"], "proxy")
+            self.assertEqual(len(screener_service.screen_calls), 1)
+
+    def test_build_from_screening_cached_only_mode_reuses_cached_historical_health(self) -> None:
+        screening, request_params, screener_service, stock_repo = _build_historical_strategy_fixture(
+            short_successes=14,
+            long_successes=38,
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            first_service = MomentumSecondaryDecisionService(
+                screener_service=screener_service,
+                stock_repo=stock_repo,
+                strategy_health_async=False,
+                strategy_health_cache_dir=Path(temp_dir),
+            )
+            first = first_service.build_from_screening(screening, request_params=request_params)
+            initial_calls = len(screener_service.screen_calls)
+
+            second_service = MomentumSecondaryDecisionService(
+                screener_service=screener_service,
+                stock_repo=stock_repo,
+                strategy_health_async=False,
+                strategy_health_cache_dir=Path(temp_dir),
+            )
+            second = second_service.build_from_screening(
+                screening,
+                request_params=request_params,
+                strategy_health_mode="cached_only",
+            )
+
+            self.assertEqual(second["strategy_health"]["data_source"], "historical")
+            self.assertEqual(second["strategy_health"]["validation_status"], "final")
+            self.assertEqual(second["strategy_health"]["status"], first["strategy_health"]["status"])
+            self.assertEqual(len(screener_service.screen_calls), initial_calls + 1)
 
     def test_build_from_screening_returns_proxy_health_while_async_validation_warms(self) -> None:
         screening, request_params, screener_service, stock_repo = _build_historical_strategy_fixture(
@@ -1241,6 +1440,62 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         self.assertEqual(intraday["final_recommendation"], "main_only_consider")
         self.assertTrue(intraday["can_emit_buy_signal"])
         self.assertIn("主仓", intraday["closing_note"])
+
+    def test_build_opportunity_buy_point_clarity_relaxes_when_two_slots_are_clear(self) -> None:
+        result = MomentumSecondaryDecisionService._build_opportunity_buy_point_clarity(
+            [
+                {"slot": "main", "buy_point_status": "waiting"},
+                {"slot": "secondary", "buy_point_status": "clear"},
+                {"slot": "watch", "buy_point_status": "clear"},
+            ]
+        )
+
+        self.assertEqual(result["level"], "medium")
+        self.assertEqual(result["score"], 60.0)
+
+    def test_build_opportunity_quality_stays_medium_when_main_waits_but_two_slots_are_clear(self) -> None:
+        service = MomentumSecondaryDecisionService(screener_service=None)
+
+        result = service._build_opportunity_quality(
+            candidates=[],
+            themes=[
+                {"name": "Theme A", "score": 83.0},
+                {"name": "Theme B", "score": 79.0},
+            ],
+            portfolio=[
+                {
+                    "slot": "main",
+                    "buy_point_status": "waiting",
+                    "suggested_action": "wait_for_trigger",
+                    "risk_score": 18.0,
+                    "entry_range_low": 10.0,
+                    "entry_range_high": 10.5,
+                    "risk_tags": [],
+                },
+                {
+                    "slot": "secondary",
+                    "buy_point_status": "clear",
+                    "suggested_action": "ready",
+                    "risk_score": 22.0,
+                    "entry_range_low": 12.0,
+                    "entry_range_high": 12.4,
+                    "risk_tags": [],
+                },
+                {
+                    "slot": "watch",
+                    "buy_point_status": "clear",
+                    "suggested_action": "ready",
+                    "risk_score": 20.0,
+                    "entry_range_low": 8.0,
+                    "entry_range_high": 8.3,
+                    "risk_tags": [],
+                },
+            ],
+        )
+
+        self.assertEqual(result["level"], "medium")
+        buy_point_clarity = next(module for module in result["modules"] if module["key"] == "buy_point_clarity")
+        self.assertEqual(buy_point_clarity["level"], "medium")
 
     def test_build_action_caps_to_cautious_when_main_buy_point_is_not_clear(self) -> None:
         service = MomentumSecondaryDecisionService(screener_service=None)

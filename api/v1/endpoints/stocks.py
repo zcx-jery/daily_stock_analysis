@@ -34,9 +34,12 @@ from api.v1.schemas.stocks import (
     ExtractItem,
     KLineData,
     MomentumBacktestCreateRequest,
+    MomentumBacktestCreateResponse,
     MomentumBacktestDailyDetailResponse,
     MomentumBacktestDailyListResponse,
+    MomentumBacktestDeleteResponse,
     MomentumBacktestIssueListResponse,
+    MomentumBacktestRunListResponse,
     MomentumBacktestRunResponse,
     MomentumBacktestSummaryResponse,
     MomentumScreenerRequest,
@@ -202,9 +205,9 @@ def build_momentum_intraday_signal(
 
 @router.post(
     "/screener/momentum/backtests",
-    response_model=MomentumBacktestRunResponse,
+    response_model=MomentumBacktestCreateResponse,
     responses={
-        200: {"description": "已创建并完成一轮同步回放的 V1 回测任务"},
+        200: {"description": "已创建或定位到 V1 回测任务"},
         400: {"description": "参数错误", "model": ErrorResponse},
         500: {"description": "服务器错误", "model": ErrorResponse},
     },
@@ -214,16 +217,30 @@ def build_momentum_intraday_signal(
 def create_momentum_backtest_run(
     payload: MomentumBacktestCreateRequest,
     service: MomentumBacktestService = Depends(get_momentum_backtest_service),
-) -> MomentumBacktestRunResponse:
+) -> MomentumBacktestCreateResponse:
     """Create one synchronous momentum screener V1 backtest run."""
     try:
-        result = service.create_run(
-            start_trade_date=payload.start_trade_date,
-            end_trade_date=payload.end_trade_date,
-            profile=payload.profile,
-            top_n=payload.top_n,
-        )
-        return MomentumBacktestRunResponse(**result)
+        creator = getattr(service, "create_run_async", None)
+        if callable(creator):
+            result = creator(
+                start_trade_date=payload.start_trade_date,
+                end_trade_date=payload.end_trade_date,
+                profile=payload.profile,
+                top_n=payload.top_n,
+            )
+        else:
+            run = service.create_run(
+                start_trade_date=payload.start_trade_date,
+                end_trade_date=payload.end_trade_date,
+                profile=payload.profile,
+                top_n=payload.top_n,
+            )
+            result = {
+                "created_new": True,
+                "message": "已创建回测任务，正在后台计算",
+                "run": run,
+            }
+        return MomentumBacktestCreateResponse(**result)
     except ValueError as e:
         raise HTTPException(
             status_code=400,
@@ -234,6 +251,103 @@ def create_momentum_backtest_run(
         raise HTTPException(
             status_code=500,
             detail={"error": "internal_error", "message": f"创建回测任务失败: {str(e)}"},
+        )
+
+
+@router.get(
+    "/screener/momentum/backtests",
+    response_model=MomentumBacktestRunListResponse,
+    responses={
+        200: {"description": "最近的 V1 回测任务列表"},
+        400: {"description": "参数错误", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="查询最近的 V1 回测任务",
+)
+def list_momentum_backtest_runs(
+    limit: int = Query(20, ge=1, le=50, description="返回最近历史任务数量"),
+    profile: Optional[str] = Query(None, description="按 standard/aggressive 过滤"),
+    service: MomentumBacktestService = Depends(get_momentum_backtest_service),
+) -> MomentumBacktestRunListResponse:
+    """List recent momentum screener V1 backtest runs."""
+    try:
+        return MomentumBacktestRunListResponse(**service.list_runs(limit=limit, profile=profile))
+    except ValueError as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "bad_request", "message": str(e)},
+        )
+    except Exception as e:
+        logger.error("查询 V1 回测任务列表失败: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"查询回测任务列表失败: {str(e)}"},
+        )
+
+
+@router.post(
+    "/screener/momentum/backtests/{run_id}/cancel",
+    response_model=MomentumBacktestRunResponse,
+    responses={
+        200: {"description": "V1 回测任务已取消"},
+        404: {"description": "回测任务不存在", "model": ErrorResponse},
+        409: {"description": "当前任务状态不支持取消", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="取消 V1 回测任务",
+)
+def cancel_momentum_backtest_run(
+    run_id: str,
+    service: MomentumBacktestService = Depends(get_momentum_backtest_service),
+) -> MomentumBacktestRunResponse:
+    """Cancel one running momentum screener V1 backtest run."""
+    try:
+        return MomentumBacktestRunResponse(**service.cancel_run(run_id))
+    except ValueError as e:
+        message = str(e)
+        status_code = 404 if "not found" in message.casefold() else 409
+        raise HTTPException(
+            status_code=status_code,
+            detail={"error": "bad_request", "message": message},
+        )
+    except Exception as e:
+        logger.error("取消 V1 回测任务失败: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"取消回测任务失败: {str(e)}"},
+        )
+
+
+@router.delete(
+    "/screener/momentum/backtests/{run_id}",
+    response_model=MomentumBacktestDeleteResponse,
+    responses={
+        200: {"description": "V1 回测任务已删除"},
+        404: {"description": "回测任务不存在", "model": ErrorResponse},
+        409: {"description": "当前任务状态不支持删除", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="删除 V1 回测任务",
+)
+def delete_momentum_backtest_run(
+    run_id: str,
+    service: MomentumBacktestService = Depends(get_momentum_backtest_service),
+) -> MomentumBacktestDeleteResponse:
+    """Delete one persisted momentum screener V1 backtest run."""
+    try:
+        return MomentumBacktestDeleteResponse(**service.delete_run(run_id))
+    except ValueError as e:
+        message = str(e)
+        status_code = 404 if "not found" in message.casefold() else 409
+        raise HTTPException(
+            status_code=status_code,
+            detail={"error": "bad_request", "message": message},
+        )
+    except Exception as e:
+        logger.error("删除 V1 回测任务失败: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"删除回测任务失败: {str(e)}"},
         )
 
 

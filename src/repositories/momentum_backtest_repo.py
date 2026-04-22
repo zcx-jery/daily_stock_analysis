@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Sequence
 
-from sqlalchemy import and_, delete, desc, select
+from sqlalchemy import and_, delete, desc, func, select
 
 from src.storage import (
     DatabaseManager,
@@ -38,6 +38,104 @@ class MomentumBacktestRepository:
                 .limit(1)
             ).scalar_one_or_none()
 
+    def list_runs(
+        self,
+        *,
+        limit: int = 10,
+        profile: Optional[str] = None,
+        statuses: Optional[Sequence[str]] = None,
+        ascending: bool = False,
+    ) -> List[MomentumBacktestRun]:
+        with self.db.get_session() as session:
+            query = select(MomentumBacktestRun)
+            if profile:
+                query = query.where(MomentumBacktestRun.profile == profile)
+            if statuses:
+                query = query.where(MomentumBacktestRun.status.in_(list(statuses)))
+            order_by = (
+                (MomentumBacktestRun.created_at.asc(), MomentumBacktestRun.id.asc())
+                if ascending
+                else (desc(MomentumBacktestRun.created_at), desc(MomentumBacktestRun.id))
+            )
+            rows = session.execute(
+                query.order_by(*order_by).limit(limit)
+            ).scalars().all()
+            return list(rows)
+
+    def count_runs(
+        self,
+        *,
+        profile: Optional[str] = None,
+        statuses: Optional[Sequence[str]] = None,
+    ) -> int:
+        with self.db.get_session() as session:
+            query = select(func.count()).select_from(MomentumBacktestRun)
+            if profile:
+                query = query.where(MomentumBacktestRun.profile == profile)
+            if statuses:
+                query = query.where(MomentumBacktestRun.status.in_(list(statuses)))
+            return int(session.execute(query).scalar_one() or 0)
+
+    def get_first_run_by_statuses(
+        self,
+        statuses: Sequence[str],
+        *,
+        profile: Optional[str] = None,
+        ascending: bool = True,
+    ) -> Optional[MomentumBacktestRun]:
+        with self.db.get_session() as session:
+            query = select(MomentumBacktestRun).where(MomentumBacktestRun.status.in_(list(statuses)))
+            if profile:
+                query = query.where(MomentumBacktestRun.profile == profile)
+            order_by = (
+                (MomentumBacktestRun.created_at.asc(), MomentumBacktestRun.id.asc())
+                if ascending
+                else (MomentumBacktestRun.created_at.desc(), MomentumBacktestRun.id.desc())
+            )
+            return session.execute(query.order_by(*order_by).limit(1)).scalar_one_or_none()
+
+    def find_run_by_params(
+        self,
+        *,
+        start_trade_date: date,
+        end_trade_date: date,
+        profile: str,
+        top_n: int,
+    ) -> Optional[MomentumBacktestRun]:
+        with self.db.get_session() as session:
+            return session.execute(
+                select(MomentumBacktestRun)
+                .where(
+                    and_(
+                        MomentumBacktestRun.start_trade_date == start_trade_date,
+                        MomentumBacktestRun.end_trade_date == end_trade_date,
+                        MomentumBacktestRun.profile == profile,
+                        MomentumBacktestRun.top_n == top_n,
+                    )
+                )
+                .order_by(desc(MomentumBacktestRun.created_at), desc(MomentumBacktestRun.id))
+                .limit(1)
+            ).scalar_one_or_none()
+
+    def reset_running_runs_to_queued(self) -> int:
+        with self.db.get_session() as session:
+            rows = session.execute(
+                select(MomentumBacktestRun).where(MomentumBacktestRun.status == "running")
+            ).scalars().all()
+            count = 0
+            for row in rows:
+                row.status = "queued"
+                row.current_stage_key = "queued"
+                row.current_stage_label = "等待后台调度"
+                row.cancel_requested = False
+                row.started_at = None
+                row.finished_at = None
+                row.updated_at = datetime.now()
+                count += 1
+            if count:
+                session.commit()
+            return count
+
     def update_run(self, run_id: str, **fields) -> Optional[MomentumBacktestRun]:
         with self.db.get_session() as session:
             run = session.execute(
@@ -53,6 +151,31 @@ class MomentumBacktestRepository:
             session.commit()
             session.refresh(run)
             return run
+
+    def delete_run(self, run_id: str) -> bool:
+        with self.db.get_session() as session:
+            run = session.execute(
+                select(MomentumBacktestRun)
+                .where(MomentumBacktestRun.run_id == run_id)
+                .limit(1)
+            ).scalar_one_or_none()
+            if run is None:
+                return False
+            session.execute(
+                delete(MomentumBacktestOutcomeRecord).where(MomentumBacktestOutcomeRecord.run_id == run_id)
+            )
+            session.execute(
+                delete(MomentumBacktestDecisionRecord).where(MomentumBacktestDecisionRecord.run_id == run_id)
+            )
+            session.execute(
+                delete(MomentumBacktestCandidateRecord).where(MomentumBacktestCandidateRecord.run_id == run_id)
+            )
+            session.execute(
+                delete(MomentumBacktestDailySummary).where(MomentumBacktestDailySummary.run_id == run_id)
+            )
+            session.delete(run)
+            session.commit()
+            return True
 
     def replace_daily_summary(self, summary: MomentumBacktestDailySummary) -> None:
         with self.db.get_session() as session:

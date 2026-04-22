@@ -20,7 +20,7 @@ sys.modules.setdefault("multipart", multipart_module)
 sys.modules.setdefault("multipart.multipart", multipart_submodule)
 
 from api.app import create_app
-from api.deps import get_momentum_backtest_service
+from api.deps import get_momentum_backtest_service, get_momentum_secondary_decision_service
 import src.auth as auth
 from src.services.momentum_screener_service import MomentumScreenerService
 from src.services.momentum_secondary_decision_service import MomentumSecondaryDecisionService
@@ -149,6 +149,13 @@ class _FakeMomentumBacktestService:
             "total_trade_dates": 3,
             "processed_trade_dates": 3,
             "failed_trade_dates": 0,
+            "current_trade_date": "2026-04-10",
+            "current_stage_key": "completed",
+            "current_stage_label": "任务已完成",
+            "heartbeat_at": "2026-04-17T10:01:00",
+            "started_at": "2026-04-17T10:00:00",
+            "finished_at": "2026-04-17T10:01:00",
+            "cancel_requested": False,
             "summary": {
                 "completed_trade_dates": 3,
                 "action_breakdown": {"normal_go": 2, "cautious_go": 1},
@@ -230,14 +237,105 @@ class _FakeMomentumBacktestService:
             "created_at": "2026-04-17T10:00:00",
             "updated_at": "2026-04-17T10:01:00",
         }
+        self.running_run = {
+            **self.run,
+            "run_id": "momentum_bt_running",
+            "status": "running",
+            "processed_trade_dates": 1,
+            "summary": None,
+            "current_trade_date": "2026-04-08",
+            "current_stage_key": "candidate_pool",
+            "current_stage_label": "候选池计算中",
+            "heartbeat_at": "2026-04-17T09:05:00",
+            "started_at": "2026-04-17T09:00:00",
+            "finished_at": None,
+            "created_at": "2026-04-17T09:00:00",
+            "updated_at": "2026-04-17T09:05:00",
+        }
+        self.queued_run = {
+            **self.run,
+            "run_id": "momentum_bt_queued",
+            "status": "queued",
+            "processed_trade_dates": 0,
+            "summary": None,
+            "current_trade_date": None,
+            "current_stage_key": "queued",
+            "current_stage_label": "等待后台调度",
+            "heartbeat_at": "2026-04-17T09:06:00",
+            "started_at": None,
+            "finished_at": None,
+            "created_at": "2026-04-17T09:06:00",
+            "updated_at": "2026-04-17T09:06:00",
+        }
+        self.cancelled_run = {
+            **self.run,
+            "run_id": "momentum_bt_cancelled",
+            "status": "cancelled",
+            "processed_trade_dates": 1,
+            "summary": self.run["summary"],
+            "current_trade_date": "2026-04-09",
+            "current_stage_key": "cancelled",
+            "current_stage_label": "任务已取消",
+            "heartbeat_at": "2026-04-17T08:05:00",
+            "started_at": "2026-04-17T08:00:00",
+            "finished_at": "2026-04-17T08:05:00",
+            "created_at": "2026-04-17T08:00:00",
+            "updated_at": "2026-04-17T08:05:00",
+        }
 
-    def create_run(self, **kwargs):
-        return self.run
+    def create_run_async(self, **kwargs):
+        return {
+            "created_new": True,
+            "message": "已创建回测任务，正在后台计算",
+            "run": self.running_run,
+        }
+
+    def list_runs(self, *, limit=10, profile=None):
+        return {
+            "current_running": self.running_run,
+            "queued": {
+                "total": 1,
+                "items": [self.queued_run],
+            },
+            "history": {
+                "total": 2,
+                "limit": limit,
+                "items": [self.run, self.cancelled_run][:limit],
+            },
+            "refreshed_at": "2026-04-17T10:02:00",
+        }
 
     def get_run(self, run_id):
-        if run_id != self.run["run_id"]:
-            raise ValueError(f"Backtest run not found: {run_id}")
-        return self.run
+        if run_id == self.run["run_id"]:
+            return self.run
+        if run_id == self.running_run["run_id"]:
+            return self.running_run
+        if run_id == self.queued_run["run_id"]:
+            return self.queued_run
+        if run_id == self.cancelled_run["run_id"]:
+            return self.cancelled_run
+        raise ValueError(f"Backtest run not found: {run_id}")
+
+    def cancel_run(self, run_id):
+        if run_id != self.running_run["run_id"]:
+            raise ValueError("Only running tasks can be cancelled")
+        self.running_run = {
+            **self.running_run,
+            "status": "cancelled",
+            "current_stage_key": "cancelled",
+            "current_stage_label": "任务已取消",
+            "cancel_requested": False,
+        }
+        return self.running_run
+
+    def delete_run(self, run_id):
+        if run_id == self.running_run["run_id"]:
+            raise ValueError("Running tasks must be cancelled before deletion")
+        return {
+            "run_id": run_id,
+            "deleted": True,
+            "message": "任务已删除",
+        }
 
     def get_summary(self, run_id):
         if run_id != self.run["run_id"]:
@@ -1058,6 +1156,51 @@ def test_momentum_secondary_decision_endpoint_can_wait_for_strategy_health(clien
 
 
 
+def test_backtest_dependency_does_not_override_interactive_secondary_decision_service():
+    created_decision_services = []
+
+    class _FakeDecisionService:
+        def __init__(
+            self,
+            screener_service=None,
+            stock_service=None,
+            strategy_health_async=False,
+            strategy_health_async_delay_seconds=0.0,
+            **kwargs,
+        ):
+            self.screener_service = screener_service
+            self.stock_service = stock_service
+            self.strategy_health_async = strategy_health_async
+            self.strategy_health_async_delay_seconds = strategy_health_async_delay_seconds
+            created_decision_services.append(self)
+
+    class _FakeBacktestService:
+        def __init__(self, screener_service=None, decision_service=None, repository=None):
+            self.screener_service = screener_service
+            self.decision_service = decision_service
+            self.repository = repository
+
+    request = types.SimpleNamespace(app=types.SimpleNamespace(state=types.SimpleNamespace()))
+
+    with (
+        patch("api.deps.MomentumScreenerService", side_effect=lambda: types.SimpleNamespace(name="screener")),
+        patch("api.deps.StockService", side_effect=lambda: types.SimpleNamespace(name="stock")),
+        patch("api.deps.MomentumSecondaryDecisionService", _FakeDecisionService),
+        patch("api.deps.MomentumBacktestService", _FakeBacktestService),
+    ):
+        backtest_service = get_momentum_backtest_service(request)
+
+        assert backtest_service.decision_service.strategy_health_async is False
+        assert not hasattr(request.app.state, "momentum_secondary_decision_service")
+
+        interactive_service = get_momentum_secondary_decision_service(request)
+
+    assert interactive_service.strategy_health_async is True
+    assert getattr(request.app.state, "momentum_secondary_decision_service") is interactive_service
+    assert backtest_service.decision_service is not interactive_service
+    assert len(created_decision_services) == 2
+
+
 def test_momentum_intraday_signal_endpoint_returns_response(client):
     fake_result = {
         "screening": _build_fake_screening_result(profile="aggressive"),
@@ -1129,9 +1272,63 @@ def test_momentum_backtest_create_endpoint_returns_run(client):
 
     assert response.status_code == 200
     data = response.json()
+    assert data["created_new"] is True
+    assert data["message"] == "已创建回测任务，正在后台计算"
+    assert data["run"]["run_id"] == "momentum_bt_running"
+    assert data["run"]["status"] == "running"
+    assert data["run"]["current_stage_key"] == "candidate_pool"
+
+
+def test_momentum_backtest_list_endpoint_returns_recent_runs(client):
+    app = client.app
+    app.dependency_overrides[get_momentum_backtest_service] = lambda: _FakeMomentumBacktestService()
+    try:
+        response = client.get(
+            "/api/v1/stocks/screener/momentum/backtests",
+            params={"limit": 2, "profile": "standard"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_momentum_backtest_service, None)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["current_running"]["run_id"] == "momentum_bt_running"
+    assert data["queued"]["total"] == 1
+    assert data["queued"]["items"][0]["run_id"] == "momentum_bt_queued"
+    assert data["history"]["limit"] == 2
+    assert len(data["history"]["items"]) == 2
+    assert data["history"]["items"][0]["run_id"] == "momentum_bt_test_001"
+    assert data["history"]["items"][1]["status"] == "cancelled"
+
+
+def test_momentum_backtest_cancel_endpoint_returns_updated_run(client):
+    app = client.app
+    app.dependency_overrides[get_momentum_backtest_service] = lambda: _FakeMomentumBacktestService()
+    try:
+        response = client.post("/api/v1/stocks/screener/momentum/backtests/momentum_bt_running/cancel")
+    finally:
+        app.dependency_overrides.pop(get_momentum_backtest_service, None)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["run_id"] == "momentum_bt_running"
+    assert data["status"] == "cancelled"
+    assert data["current_stage_key"] == "cancelled"
+
+
+def test_momentum_backtest_delete_endpoint_returns_success(client):
+    app = client.app
+    app.dependency_overrides[get_momentum_backtest_service] = lambda: _FakeMomentumBacktestService()
+    try:
+        response = client.delete("/api/v1/stocks/screener/momentum/backtests/momentum_bt_test_001")
+    finally:
+        app.dependency_overrides.pop(get_momentum_backtest_service, None)
+
+    assert response.status_code == 200
+    data = response.json()
     assert data["run_id"] == "momentum_bt_test_001"
-    assert data["status"] == "completed"
-    assert data["summary"]["completed_trade_dates"] == 3
+    assert data["deleted"] is True
+    assert data["message"] == "任务已删除"
 
 
 def test_momentum_backtest_summary_endpoint_returns_summary(client):

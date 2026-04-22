@@ -42,6 +42,7 @@ from sqlalchemy import (
     desc,
     event,
     func,
+    inspect,
 )
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import (
@@ -414,6 +415,13 @@ class MomentumBacktestRun(Base):
     total_trade_dates = Column(Integer, nullable=False, default=0)
     processed_trade_dates = Column(Integer, nullable=False, default=0)
     failed_trade_dates = Column(Integer, nullable=False, default=0)
+    current_trade_date = Column(Date, index=True)
+    current_stage_key = Column(String(32))
+    current_stage_label = Column(String(64))
+    heartbeat_at = Column(DateTime, index=True)
+    started_at = Column(DateTime, index=True)
+    finished_at = Column(DateTime, index=True)
+    cancel_requested = Column(Boolean, nullable=False, default=False, index=True)
     summary_json = Column(Text)
     error_message = Column(Text)
     created_at = Column(DateTime, default=datetime.now, index=True)
@@ -860,6 +868,7 @@ class DatabaseManager:
         
         # 创建所有表
         Base.metadata.create_all(self._engine)
+        self._ensure_momentum_backtest_schema()
 
         self._initialized = True
         logger.info(f"数据库初始化完成: {db_url}")
@@ -920,6 +929,34 @@ class DatabaseManager:
     def _is_file_sqlite_database(self) -> bool:
         database = (self._engine.url.database or "").strip()
         return bool(database) and database.lower() != ":memory:"
+
+    def _ensure_momentum_backtest_schema(self) -> None:
+        """为已有 SQLite 数据库补齐回测任务中心新增列。"""
+        if not self._is_sqlite_engine:
+            return
+        inspector = inspect(self._engine)
+        if 'momentum_backtest_runs' not in inspector.get_table_names():
+            return
+        existing_columns = {column['name'] for column in inspector.get_columns('momentum_backtest_runs')}
+        required_columns = {
+            'current_trade_date': "ALTER TABLE momentum_backtest_runs ADD COLUMN current_trade_date DATE",
+            'current_stage_key': "ALTER TABLE momentum_backtest_runs ADD COLUMN current_stage_key VARCHAR(32)",
+            'current_stage_label': "ALTER TABLE momentum_backtest_runs ADD COLUMN current_stage_label VARCHAR(64)",
+            'heartbeat_at': "ALTER TABLE momentum_backtest_runs ADD COLUMN heartbeat_at DATETIME",
+            'started_at': "ALTER TABLE momentum_backtest_runs ADD COLUMN started_at DATETIME",
+            'finished_at': "ALTER TABLE momentum_backtest_runs ADD COLUMN finished_at DATETIME",
+            'cancel_requested': "ALTER TABLE momentum_backtest_runs ADD COLUMN cancel_requested BOOLEAN NOT NULL DEFAULT 0",
+        }
+        missing_columns = [
+            statement
+            for column_name, statement in required_columns.items()
+            if column_name not in existing_columns
+        ]
+        if not missing_columns:
+            return
+        with self._engine.begin() as connection:
+            for statement in missing_columns:
+                connection.exec_driver_sql(statement)
 
     def _run_write_transaction(
         self,

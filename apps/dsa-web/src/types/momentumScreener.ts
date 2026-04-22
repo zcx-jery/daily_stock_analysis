@@ -97,6 +97,9 @@ export interface MomentumDecisionPortfolioSlot {
   score: number;
   rankScore: number;
   riskScore: number;
+  ruleBaseScore?: number | null;
+  decisionScore?: number | null;
+  forwardAlphaScore?: number | null;
   buyPointStatus: MomentumBuyPointStatus;
   buyPointLabel: string;
   suggestedAction: MomentumSuggestedAction;
@@ -108,6 +111,7 @@ export interface MomentumDecisionPortfolioSlot {
   entryRangeLow?: number | null;
   entryRangeHigh?: number | null;
   opportunityTag?: string | null;
+  riskTags?: string[];
 }
 
 export interface MomentumDecisionExcludedCandidate {
@@ -118,6 +122,32 @@ export interface MomentumDecisionExcludedCandidate {
   role: string;
   reason: string;
   rankScore: number;
+}
+
+export interface MomentumDecisionCandidateDiagnostic {
+  rank: number;
+  tsCode: string;
+  name: string;
+  theme: string;
+  themeScore: number;
+  roleKey: string;
+  role: string;
+  buyPointStatus: MomentumBuyPointStatus;
+  buyPointLabel: string;
+  rankScore: number;
+  continuationScore: number;
+  extensionScore: number;
+  extensionSignalScore: number;
+  buyabilityScore?: number | null;
+  riskScore: number;
+  ruleBaseScore: number;
+  explainAdjustmentScore: number;
+  decisionScore: number;
+  forwardAlphaScore: number;
+  forwardAlphaAdjustment: number;
+  portfolioPriority: number;
+  selectedSlot?: MomentumDecisionSlot | null;
+  isSelected: boolean;
 }
 
 export interface MomentumDecisionEvidence {
@@ -235,6 +265,7 @@ export interface MomentumSecondaryDecision {
   strategyHealth: MomentumStrategyHealth;
   themes: MomentumDecisionTheme[];
   portfolio: MomentumDecisionPortfolioSlot[];
+  candidateDiagnostics?: MomentumDecisionCandidateDiagnostic[];
   excludedCandidates: MomentumDecisionExcludedCandidate[];
   evidence: MomentumDecisionEvidence;
   actionChecklist: MomentumActionChecklist;

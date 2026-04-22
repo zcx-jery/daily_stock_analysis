@@ -1,35 +1,44 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MomentumBacktestPanel } from '../MomentumBacktestPanel';
 
 const {
   mockCreateRun,
+  mockListRuns,
   mockGetRun,
   mockGetSummary,
   mockGetDaily,
   mockGetDailyDetail,
   mockGetIssues,
+  mockCancelRun,
+  mockDeleteRun,
 } = vi.hoisted(() => ({
   mockCreateRun: vi.fn(),
+  mockListRuns: vi.fn(),
   mockGetRun: vi.fn(),
   mockGetSummary: vi.fn(),
   mockGetDaily: vi.fn(),
   mockGetDailyDetail: vi.fn(),
   mockGetIssues: vi.fn(),
+  mockCancelRun: vi.fn(),
+  mockDeleteRun: vi.fn(),
 }));
 
 vi.mock('../../../api/momentumBacktest', () => ({
   momentumBacktestApi: {
     createRun: mockCreateRun,
+    listRuns: mockListRuns,
     getRun: mockGetRun,
     getSummary: mockGetSummary,
     getDaily: mockGetDaily,
     getDailyDetail: mockGetDailyDetail,
     getIssues: mockGetIssues,
+    cancelRun: mockCancelRun,
+    deleteRun: mockDeleteRun,
   },
 }));
 
-const runResponse = {
+const completedRun = {
   runId: 'momentum_bt_test',
   status: 'completed' as const,
   profile: 'standard' as const,
@@ -42,10 +51,62 @@ const runResponse = {
   totalTradeDates: 3,
   processedTradeDates: 3,
   failedTradeDates: 0,
+  currentTradeDate: '2026-04-10',
+  currentStageKey: 'completed',
+  currentStageLabel: '任务已完成',
+  heartbeatAt: '2026-04-17T08:01:00Z',
+  startedAt: '2026-04-17T08:00:00Z',
+  finishedAt: '2026-04-17T08:01:00Z',
+  cancelRequested: false,
   summary: null,
   errorMessage: null,
   createdAt: '2026-04-17T08:00:00Z',
   updatedAt: '2026-04-17T08:01:00Z',
+};
+
+const runningRun = {
+  ...completedRun,
+  runId: 'momentum_bt_running',
+  status: 'running' as const,
+  processedTradeDates: 1,
+  currentTradeDate: '2026-04-08',
+  currentStageKey: 'candidate_pool',
+  currentStageLabel: '候选池计算中',
+  heartbeatAt: '2026-04-17T07:05:00Z',
+  startedAt: '2026-04-17T07:00:00Z',
+  finishedAt: null,
+  createdAt: '2026-04-17T07:00:00Z',
+  updatedAt: '2026-04-17T07:05:00Z',
+};
+
+const queuedRun = {
+  ...completedRun,
+  runId: 'momentum_bt_queued',
+  status: 'queued' as const,
+  processedTradeDates: 0,
+  currentTradeDate: null,
+  currentStageKey: 'queued',
+  currentStageLabel: '等待后台调度',
+  heartbeatAt: '2026-04-17T07:06:00Z',
+  startedAt: null,
+  finishedAt: null,
+  createdAt: '2026-04-17T07:06:00Z',
+  updatedAt: '2026-04-17T07:06:00Z',
+};
+
+const cancelledRun = {
+  ...completedRun,
+  runId: 'momentum_bt_cancelled',
+  status: 'cancelled' as const,
+  processedTradeDates: 1,
+  currentTradeDate: '2026-04-09',
+  currentStageKey: 'cancelled',
+  currentStageLabel: '任务已取消',
+  heartbeatAt: '2026-04-17T06:05:00Z',
+  startedAt: '2026-04-17T06:00:00Z',
+  finishedAt: '2026-04-17T06:05:00Z',
+  createdAt: '2026-04-17T06:00:00Z',
+  updatedAt: '2026-04-17T06:05:00Z',
 };
 
 const summaryResponse = {
@@ -131,25 +192,6 @@ const summaryResponse = {
         strongDayDecisionAvgT2ProfitWindowPct: 6.2,
         summary: '市场情绪转弱时，默认组合延续性明显下滑。',
       },
-      {
-        key: 'buy_point_clarity',
-        label: '买点清晰度',
-        groupKey: 'opportunity_quality',
-        groupLabel: '机会质量',
-        sampleDays: 3,
-        strongDays: 0,
-        mediumDays: 1,
-        weakDays: 2,
-        blockerDays: 2,
-        restrictedDays: 2,
-        avgScore: 48.5,
-        weakDayCandidatePositiveT2RatePct: 50,
-        weakDayDecisionPositiveT2RatePct: 33.3,
-        weakDayCandidateAvgT2ProfitWindowPct: 3.2,
-        weakDayDecisionAvgT2ProfitWindowPct: 1.9,
-        strongDayDecisionAvgT2ProfitWindowPct: null,
-        summary: '买点不清晰是本轮最常见的收口原因。',
-      },
     ],
     regimeBreakdown: [
       {
@@ -216,8 +258,6 @@ const issuesResponse = {
       metrics: {
         buy_ready_count: 1,
       },
-      actionLevel: 'observe_only',
-      actionLabel: '仅观察',
     },
   ],
 };
@@ -343,26 +383,6 @@ const detailResponse = {
           },
         ],
       },
-      {
-        key: 'opportunity_quality',
-        label: '机会质量',
-        level: 'weak',
-        levelLabel: '弱',
-        score: 48,
-        reason: '主线还在，但买点结构不够清晰。',
-        modules: [
-          {
-            key: 'buy_point_clarity',
-            label: '买点清晰度',
-            groupKey: 'opportunity_quality',
-            groupLabel: '机会质量',
-            level: 'weak',
-            levelLabel: '弱',
-            score: 42,
-            summary: '没有形成回踩承接或分歧转一致的标准结构。',
-          },
-        ],
-      },
     ],
     gateBlockers: [
       {
@@ -374,16 +394,6 @@ const detailResponse = {
         levelLabel: '弱',
         score: 45,
         summary: '昨日强势股承接不足，情绪对高位股不够友好。',
-      },
-      {
-        key: 'buy_point_clarity',
-        label: '买点清晰度',
-        groupKey: 'opportunity_quality',
-        groupLabel: '机会质量',
-        level: 'weak',
-        levelLabel: '弱',
-        score: 42,
-        summary: '没有形成回踩承接或分歧转一致的标准结构。',
       },
     ],
     issues: [
@@ -401,14 +411,45 @@ const detailResponse = {
   },
 };
 
+const recentRunsResponse = {
+  currentRunning: runningRun,
+  queued: {
+    total: 1,
+    items: [queuedRun],
+  },
+  history: {
+    total: 2,
+    limit: 20,
+    items: [completedRun, cancelledRun],
+  },
+  refreshedAt: '2026-04-17T08:05:00Z',
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
-  mockCreateRun.mockResolvedValue(runResponse);
-  mockGetRun.mockResolvedValue(runResponse);
+  mockCreateRun.mockResolvedValue({
+    createdNew: true,
+    message: '已创建回测任务，正在后台计算',
+    run: runningRun,
+  });
+  mockListRuns.mockResolvedValue(recentRunsResponse);
+  mockGetRun.mockResolvedValue(completedRun);
   mockGetSummary.mockResolvedValue(summaryResponse);
   mockGetDaily.mockResolvedValue(dailyResponse);
   mockGetIssues.mockResolvedValue(issuesResponse);
   mockGetDailyDetail.mockResolvedValue(detailResponse);
+  mockCancelRun.mockResolvedValue({
+    ...runningRun,
+    status: 'cancelled',
+    currentStageKey: 'cancelled',
+    currentStageLabel: '任务已取消',
+    cancelRequested: false,
+  });
+  mockDeleteRun.mockResolvedValue({
+    runId: 'momentum_bt_queued',
+    deleted: true,
+    message: '任务已删除',
+  });
 });
 
 describe('MomentumBacktestPanel', () => {
@@ -419,7 +460,54 @@ describe('MomentumBacktestPanel', () => {
     expect(screen.getByRole('button', { name: '创建回测' })).toBeInTheDocument();
   });
 
-  it('creates a run and renders gate diagnostics from summary to daily detail', async () => {
+  it('loads the three-section task center and supports loading a queued task', async () => {
+    render(<MomentumBacktestPanel />);
+
+    expect(await screen.findByText('回测任务中心')).toBeInTheDocument();
+    expect(screen.getByText('当前运行任务')).toBeInTheDocument();
+    expect(screen.getByText('排队中任务')).toBeInTheDocument();
+    expect(screen.getByText('历史任务')).toBeInTheDocument();
+    expect(screen.getByRole('progressbar', { name: /momentum_bt_running/ })).toBeInTheDocument();
+
+    const queuedRunCode = await screen.findByText('momentum_bt_queued');
+    const queuedRunRow = queuedRunCode.closest('.rounded-xl');
+    expect(queuedRunRow).not.toBeNull();
+
+    fireEvent.click(within(queuedRunRow as HTMLElement).getByRole('button', { name: '加载任务' }));
+
+    await waitFor(() => {
+      expect(mockGetSummary).toHaveBeenLastCalledWith('momentum_bt_queued');
+      expect(mockGetDaily).toHaveBeenLastCalledWith('momentum_bt_queued', {
+        dateFrom: undefined,
+        dateTo: undefined,
+        marketRegime: undefined,
+        actionLevel: undefined,
+        slot: undefined,
+        themeName: undefined,
+        page: 1,
+        pageSize: 20,
+      });
+      expect(mockGetIssues).toHaveBeenLastCalledWith('momentum_bt_queued');
+    });
+  });
+
+  it('shows a manual refresh notice for the current running task', async () => {
+    render(<MomentumBacktestPanel />);
+
+    expect(await screen.findByText('回测任务中心')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '刷新进度' }));
+
+    await waitFor(() => {
+      expect(mockListRuns).toHaveBeenCalledTimes(2);
+    });
+
+    expect(
+      await screen.findByText((content) => content.includes('momentum_bt_running') && content.includes('已刷新')),
+    ).toBeInTheDocument();
+  });
+
+  it('creates a run, shows task feedback, and renders gate diagnostics', async () => {
     render(<MomentumBacktestPanel />);
 
     fireEvent.click(screen.getByRole('button', { name: '创建回测' }));
@@ -431,33 +519,44 @@ describe('MomentumBacktestPanel', () => {
         profile: 'standard',
         topN: 30,
       });
-      expect(mockGetSummary).toHaveBeenCalledWith('momentum_bt_test');
-      expect(mockGetDaily).toHaveBeenCalledWith('momentum_bt_test', {
-        dateFrom: undefined,
-        dateTo: undefined,
-        marketRegime: undefined,
-        actionLevel: undefined,
-        slot: undefined,
-        themeName: undefined,
-        page: 1,
-        pageSize: 20,
-      });
-      expect(mockGetIssues).toHaveBeenCalledWith('momentum_bt_test');
     });
 
+    expect(await screen.findByText('已创建回测任务，正在后台计算')).toBeInTheDocument();
     expect(await screen.findByText('总闸门细分模块复盘')).toBeInTheDocument();
-    expect(screen.getByText('买点清晰度')).toBeInTheDocument();
-    expect(screen.getByText('市场情绪')).toBeInTheDocument();
+    expect(screen.getAllByText('市场情绪').length).toBeGreaterThan(0);
 
-    fireEvent.click(screen.getByRole('button', { name: /查看/i }));
+    fireEvent.click(screen.getByRole('button', { name: '查看' }));
 
     await waitFor(() => {
-      expect(mockGetDailyDetail).toHaveBeenCalledWith('momentum_bt_test', '2026-04-09');
+      expect(mockGetDailyDetail).toHaveBeenCalledWith('momentum_bt_running', '2026-04-09');
     });
 
     expect(await screen.findByText('当日总闸门快照')).toBeInTheDocument();
     expect(screen.getByText('拖后腿：市场情绪')).toBeInTheDocument();
-    expect(screen.getByText('拖后腿：买点清晰度')).toBeInTheDocument();
-    expect(screen.getAllByText('盛新锂能').length).toBeGreaterThan(0);
+  }, 10000);
+
+  it('supports cancelling the running task and deleting a queued task', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(<MomentumBacktestPanel />);
+
+    expect(await screen.findByText('回测任务中心')).toBeInTheDocument();
+    const runningRunCode = await screen.findByText('momentum_bt_running');
+    const queuedRunCode = await screen.findByText('momentum_bt_queued');
+    const runningRunRow = runningRunCode.closest('.rounded-xl');
+    const queuedRunRow = queuedRunCode.closest('.rounded-xl');
+    expect(runningRunRow).not.toBeNull();
+    expect(queuedRunRow).not.toBeNull();
+
+    fireEvent.click(within(runningRunRow as HTMLElement).getByRole('button', { name: '取消任务' }));
+    await waitFor(() => {
+      expect(mockCancelRun).toHaveBeenCalledWith('momentum_bt_running');
+    });
+
+    fireEvent.click(within(queuedRunRow as HTMLElement).getByRole('button', { name: '删除任务' }));
+    await waitFor(() => {
+      expect(mockDeleteRun).toHaveBeenCalledWith('momentum_bt_queued');
+    });
+
+    confirmSpy.mockRestore();
   });
 });

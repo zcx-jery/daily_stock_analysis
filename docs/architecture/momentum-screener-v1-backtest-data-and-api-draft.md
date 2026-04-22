@@ -478,6 +478,8 @@ V1 原则：
 ### `candidate_top10`
 
 - 当日完整排序集 Top10
+- 每只候选保留 `decision_diagnostics`，用于追溯二次决策为什么选/没选它
+- `decision_diagnostics` 当前至少包含：规则底座分、解释修正分、`extension_signal_score`、`forward_alpha_score`、最终组合优先级、是否入选与入选槽位
 
 ### `decision_top3`
 
@@ -551,3 +553,74 @@ V1 落地时建议加 5 条约束：
 如果只记这份文档的一句话，可以直接记：
 
 **V1 回测系统要先落一套“run 级 + 日级 + 候选池级 + 决策级 + 结果级”的统一数据结构，并围绕摘要、日级回放、单日详情和问题清单四类接口提供查询能力。**
+
+## 18. 任务中心新增字段与接口（2026-04-17 补充）
+
+为支持串行队列、刷新进度、取消/删除和服务重启恢复，`momentum_backtest_runs` 需新增以下字段：
+
+- `current_trade_date`
+- `current_stage_key`
+- `current_stage_label`
+- `heartbeat_at`
+- `started_at`
+- `finished_at`
+- `cancel_requested`
+
+这些字段用于页面直接判断：
+
+- 当前任务是否在排队还是在执行
+- 当前卡在哪个交易日、哪个阶段
+- 最近一次心跳是否仍在推进
+- 是否已经收到取消请求
+
+## 19. 任务列表接口升级
+
+原 `GET /api/v1/stocks/screener/momentum/backtests` 从“扁平最近列表”升级为三段式任务中心响应：
+
+- `current_running`
+- `queued`
+- `history`
+- `refreshed_at`
+
+其中：
+
+- `queued.items` 按 FIFO 顺序返回
+- `history.items` 默认只返回最近 `20` 条
+- `history.total` 仍返回完整历史总数
+
+## 20. 创建任务接口升级
+
+`POST /api/v1/stocks/screener/momentum/backtests`
+
+响应从单个 `run` 扩展为：
+
+- `created_new`
+- `message`
+- `run`
+
+这样前端可以明确区分：
+
+- 本次是新建任务
+- 还是复用了同参旧任务
+
+## 21. 新增任务操作接口
+
+### 21.1 取消任务
+
+- `POST /api/v1/stocks/screener/momentum/backtests/{run_id}/cancel`
+
+约束：
+
+- 仅 `running` 状态可取消
+- 取消后保留已完成部分结果
+- 最终状态写为 `cancelled`
+
+### 21.2 删除任务
+
+- `DELETE /api/v1/stocks/screener/momentum/backtests/{run_id}`
+
+约束：
+
+- `running` 状态不可直接删除，必须先取消
+- `queued / completed / failed / cancelled` 允许删除
+- 删除为硬删除，级联清理 run 关联冻结结果

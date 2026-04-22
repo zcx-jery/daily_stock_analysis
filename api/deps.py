@@ -114,13 +114,13 @@ def get_momentum_backtest_service(request: Request) -> MomentumBacktestService:
         if screener_service is None:
             screener_service = MomentumScreenerService()
             request.app.state.momentum_screener_service = screener_service
-        decision_service = getattr(request.app.state, "momentum_secondary_decision_service", None)
-        if decision_service is None:
-            decision_service = MomentumSecondaryDecisionService(
-                screener_service=screener_service,
-                strategy_health_async=False,
-            )
-            request.app.state.momentum_secondary_decision_service = decision_service
+        # Backtest needs a dedicated secondary-decision service so its
+        # synchronous historical validation mode does not leak into the
+        # interactive screener page's shared async/warming instance.
+        decision_service = MomentumSecondaryDecisionService(
+            screener_service=screener_service,
+            strategy_health_async=False,
+        )
         service = MomentumBacktestService(
             screener_service=screener_service,
             decision_service=decision_service,

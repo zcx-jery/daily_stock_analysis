@@ -2,9 +2,12 @@ import apiClient from './index';
 import { toCamelCase } from './utils';
 import type {
   MomentumBacktestCreateRequest,
+  MomentumBacktestCreateResponse,
   MomentumBacktestDailyDetailResponse,
   MomentumBacktestDailyListResponse,
+  MomentumBacktestDeleteResponse,
   MomentumBacktestIssueListResponse,
+  MomentumBacktestRunListResponse,
   MomentumBacktestRunResponse,
   MomentumBacktestSummaryResponse,
 } from '../types/momentumBacktest';
@@ -20,15 +23,30 @@ export interface MomentumBacktestDailyQuery {
   pageSize?: number;
 }
 
+export interface MomentumBacktestRunListQuery {
+  limit?: number;
+  profile?: 'standard' | 'aggressive';
+}
+
 export const momentumBacktestApi = {
-  createRun: async (payload: MomentumBacktestCreateRequest): Promise<MomentumBacktestRunResponse> => {
+  createRun: async (payload: MomentumBacktestCreateRequest): Promise<MomentumBacktestCreateResponse> => {
     const response = await apiClient.post<Record<string, unknown>>('/api/v1/stocks/screener/momentum/backtests', {
       start_trade_date: payload.startTradeDate,
       end_trade_date: payload.endTradeDate,
       profile: payload.profile ?? 'standard',
       top_n: payload.topN ?? 30,
     });
-    return toCamelCase<MomentumBacktestRunResponse>(response.data);
+    return toCamelCase<MomentumBacktestCreateResponse>(response.data);
+  },
+
+  listRuns: async (query: MomentumBacktestRunListQuery = {}): Promise<MomentumBacktestRunListResponse> => {
+    const response = await apiClient.get<Record<string, unknown>>('/api/v1/stocks/screener/momentum/backtests', {
+      params: {
+        limit: query.limit,
+        profile: query.profile,
+      },
+    });
+    return toCamelCase<MomentumBacktestRunListResponse>(response.data);
   },
 
   getRun: async (runId: string): Promise<MomentumBacktestRunResponse> => {
@@ -36,6 +54,20 @@ export const momentumBacktestApi = {
       `/api/v1/stocks/screener/momentum/backtests/${encodeURIComponent(runId)}`,
     );
     return toCamelCase<MomentumBacktestRunResponse>(response.data);
+  },
+
+  cancelRun: async (runId: string): Promise<MomentumBacktestRunResponse> => {
+    const response = await apiClient.post<Record<string, unknown>>(
+      `/api/v1/stocks/screener/momentum/backtests/${encodeURIComponent(runId)}/cancel`,
+    );
+    return toCamelCase<MomentumBacktestRunResponse>(response.data);
+  },
+
+  deleteRun: async (runId: string): Promise<MomentumBacktestDeleteResponse> => {
+    const response = await apiClient.delete<Record<string, unknown>>(
+      `/api/v1/stocks/screener/momentum/backtests/${encodeURIComponent(runId)}`,
+    );
+    return toCamelCase<MomentumBacktestDeleteResponse>(response.data);
   },
 
   getSummary: async (runId: string): Promise<MomentumBacktestSummaryResponse> => {

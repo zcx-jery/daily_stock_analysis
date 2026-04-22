@@ -748,33 +748,17 @@ describe('MomentumScreenerPage', () => {
     expect(copiedText).toContain('Low Risk Runner');
   });
 
-  it('builds a watchlist summary from screening results and copies it', async () => {
+  it('does not render the legacy watchlist summary card', async () => {
     render(<MomentumScreenerPage />);
 
-    expect(screen.getByText('暂无观察池摘要')).toBeInTheDocument();
-    expect(screen.getByTestId('momentum-screener-copy-watchlist-summary')).toBeDisabled();
+    expect(screen.queryByText('暂无观察池摘要')).not.toBeInTheDocument();
 
     await clickRunButton();
     await screen.findByTestId('momentum-screener-row-600001.SH');
 
-    const summaryCard = screen.getByTestId('momentum-screener-watchlist-summary');
-    expect(within(summaryCard).getByText('官方明日观察池摘要')).toBeInTheDocument();
-    expect(within(summaryCard).getAllByText('Alpha Leader').length).toBeGreaterThan(0);
-    expect(within(summaryCard).getAllByText('Low Risk Runner').length).toBeGreaterThan(0);
-    expect(within(summaryCard).getByText('Power Equipment x2')).toBeInTheDocument();
-    expect(within(summaryCard).getByText('风险漂移')).toBeInTheDocument();
-
-    fireEvent.click(screen.getByTestId('momentum-screener-copy-watchlist-summary'));
-
-    await waitFor(() => {
-      expect(navigator.clipboard.writeText).toHaveBeenCalledTimes(1);
-    });
-
-    const copiedText = String((navigator.clipboard.writeText as ReturnType<typeof vi.fn>).mock.calls[0][0]);
-    expect(copiedText).toContain('明日观察池摘要');
-    expect(copiedText).toContain('Alpha Leader');
-    expect(copiedText).toContain('Power Equipment x2');
-    expect(copiedText).toContain('风险漂移');
+    expect(screen.queryByTestId('momentum-screener-watchlist-summary')).not.toBeInTheDocument();
+    expect(screen.queryByText('官方明日观察池摘要')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('momentum-screener-copy-watchlist-summary')).not.toBeInTheDocument();
   });
 
   it('shows the aggressive supplement panel as a secondary view instead of replacing the official summary', async () => {
@@ -782,10 +766,6 @@ describe('MomentumScreenerPage', () => {
 
     await clickRunButton();
     await screen.findByTestId('momentum-screener-row-600001.SH');
-
-    const summaryCard = screen.getByTestId('momentum-screener-watchlist-summary');
-    expect(within(summaryCard).getByText('官方优先观察')).toBeInTheDocument();
-    expect(within(summaryCard).getAllByText('Low Risk Runner').length).toBeGreaterThan(0);
 
     expect(await screen.findByText('Aggressive 进攻补充视图')).toBeInTheDocument();
     expect(screen.getAllByText('Breakout One').length).toBeGreaterThan(0);
@@ -907,7 +887,7 @@ describe('MomentumScreenerPage', () => {
     expect(within(panel).getByText('开盘后 60 分钟内')).toBeInTheDocument();
     expect(within(panel).getAllByText('Alpha Leader').length).toBeGreaterThan(0);
     expect(within(panel).getByText('Standard 官方主引擎')).toBeInTheDocument();
-    expect(screen.getByTestId('momentum-screener-watchlist-summary')).toBeInTheDocument();
+    expect(screen.queryByTestId('momentum-screener-watchlist-summary')).not.toBeInTheDocument();
     expect(screen.getByText('Standard 官方筛选结果')).toBeInTheDocument();
     expect(screen.getByText('Aggressive 进攻补充视图')).toBeInTheDocument();
   });

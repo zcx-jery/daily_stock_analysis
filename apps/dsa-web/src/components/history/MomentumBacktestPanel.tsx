@@ -1,6 +1,6 @@
 import type React from 'react';
-import { useState } from 'react';
-import { AlertTriangle, ChevronLeft, ChevronRight, Loader2, Search } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { AlertTriangle, ChevronLeft, ChevronRight, Loader2, RefreshCw, Search, Trash2, XCircle } from 'lucide-react';
 import { momentumBacktestApi } from '../../api/momentumBacktest';
 import type { MomentumBacktestDailyQuery } from '../../api/momentumBacktest';
 import { getParsedApiError } from '../../api/error';
@@ -14,6 +14,7 @@ import type {
   MomentumBacktestGateSnapshotModule,
   MomentumBacktestIssueListResponse,
   MomentumBacktestLayerDiagnostic,
+  MomentumBacktestRunListResponse,
   MomentumBacktestRegimeBreakdownItem,
   MomentumBacktestRunResponse,
   MomentumBacktestSummary,
@@ -44,6 +45,45 @@ const DEFAULT_DAILY_FILTERS: DailyFilters = {
   themeName: '',
 };
 
+const EMPTY_TASK_CENTER: MomentumBacktestRunListResponse = {
+  currentRunning: null,
+  queued: {
+    total: 0,
+    items: [],
+  },
+  history: {
+    total: 0,
+    limit: 20,
+    items: [],
+  },
+  refreshedAt: null,
+};
+
+const EMPTY_SUMMARY: MomentumBacktestSummary = {
+  completedTradeDates: 0,
+  actionBreakdown: {},
+  marketEnvironmentBreakdown: {},
+  opportunityQualityBreakdown: {},
+  historicalValidityBreakdown: {},
+  avgCandidateCount: null,
+  avgSelectedCount: null,
+  avgBuyReadyCount: null,
+  candidateTop10BuyTriggerRate: null,
+  candidateTop10PositiveT2Rate: null,
+  candidateTop10AvgT2ProfitWindowPct: null,
+  candidateTop10AvgT2MaxDrawdownPct: null,
+  decisionTop3BuyTriggerRate: null,
+  decisionTop3PositiveT1Rate: null,
+  decisionTop3PositiveT2Rate: null,
+  decisionTop3AvgT1ProfitWindowPct: null,
+  decisionTop3AvgT2ProfitWindowPct: null,
+  decisionTop3AvgT2MaxDrawdownPct: null,
+  benchmarkComparison: [],
+  layerDiagnostics: [],
+  gateModuleBreakdown: [],
+  regimeBreakdown: [],
+};
+
 function pct(value?: number | null): string {
   if (value == null) return '--';
   return `${value.toFixed(2)}%`;
@@ -58,6 +98,12 @@ function signedPct(value?: number | null): string {
   if (value == null) return '--';
   const prefix = value > 0 ? '+' : '';
   return `${prefix}${value.toFixed(2)}%`;
+}
+
+function formatDateTime(value?: string | null): string {
+  if (!value) return '--';
+  const normalized = value.replace('T', ' ');
+  return normalized.length >= 16 ? normalized.slice(0, 16) : normalized;
 }
 
 function actionBadge(level?: string | null) {
@@ -98,6 +144,23 @@ function profileBadge(profile?: string | null) {
       return <Badge variant="warning">Aggressive 补充</Badge>;
     default:
       return <Badge variant="default">{profile ?? '--'}</Badge>;
+  }
+}
+
+function runStatusBadge(status?: string | null) {
+  switch (status) {
+    case 'queued':
+      return <Badge variant="default">排队中</Badge>;
+    case 'running':
+      return <Badge variant="warning" glow>后台计算中</Badge>;
+    case 'completed':
+      return <Badge variant="success">已完成</Badge>;
+    case 'cancelled':
+      return <Badge variant="default">已取消</Badge>;
+    case 'failed':
+      return <Badge variant="danger">已失败</Badge>;
+    default:
+      return <Badge variant="default">{status ?? '--'}</Badge>;
   }
 }
 
@@ -153,6 +216,139 @@ function gateBadge(level?: string | null, label?: string | null) {
     default:
       return <Badge variant="default">{label ?? level ?? '--'}</Badge>;
   }
+}
+
+function formatRunStage(run?: MomentumBacktestRunResponse | null): string {
+  if (!run?.currentStageLabel) {
+    return '--';
+  }
+  if (run.currentTradeDate) {
+    return `${run.currentTradeDate} ${run.currentStageLabel}`;
+  }
+  return run.currentStageLabel;
+}
+
+function runProgressPct(run?: MomentumBacktestRunResponse | null): number {
+  const total = Math.max(Number(run?.totalTradeDates ?? 0), 0);
+  const processed = Math.max(Number(run?.processedTradeDates ?? 0), 0);
+  if (total <= 0) return 0;
+  return Math.max(0, Math.min(100, Math.round((processed / total) * 100)));
+}
+
+function runRemainingTradeDates(run?: MomentumBacktestRunResponse | null): number | null {
+  const total = Number(run?.totalTradeDates ?? 0);
+  const processed = Number(run?.processedTradeDates ?? 0);
+  if (total <= 0) return null;
+  return Math.max(total - processed, 0);
+}
+
+function runProgressBadge(run?: MomentumBacktestRunResponse | null): React.ReactNode {
+  const remaining = runRemainingTradeDates(run);
+  if (run?.status === 'completed') {
+    return <Badge variant="success">已完成</Badge>;
+  }
+  if (run?.status === 'cancelled') {
+    return <Badge variant="default">已取消</Badge>;
+  }
+  if (run?.status === 'failed') {
+    return <Badge variant="danger">已失败</Badge>;
+  }
+  if (run?.status === 'queued') {
+    return <Badge variant="default">等待执行</Badge>;
+  }
+  if (remaining == null) {
+    return <Badge variant="warning">运行中</Badge>;
+  }
+  return <Badge variant="warning">剩余 {remaining} 天</Badge>;
+}
+
+function progressBarTone(status?: string | null): string {
+  switch (status) {
+    case 'completed':
+      return 'from-emerald-400 via-emerald-500 to-cyan-400';
+    case 'failed':
+      return 'from-rose-500 via-rose-500 to-orange-400';
+    case 'cancelled':
+      return 'from-slate-400 via-slate-500 to-slate-400';
+    case 'queued':
+      return 'from-slate-500 via-cyan-500 to-slate-500';
+    default:
+      return 'from-cyan-400 via-sky-500 to-emerald-400';
+  }
+}
+
+function buildRefreshNotice(
+  run: MomentumBacktestRunResponse | null | undefined,
+  refreshedAt?: string | null,
+): string {
+  const refreshedLabel = formatDateTime(refreshedAt ?? run?.heartbeatAt ?? run?.updatedAt);
+  if (!run) {
+    return `已刷新任务中心，最近更新时间 ${refreshedLabel}。`;
+  }
+
+  const progress = `${run.processedTradeDates} / ${run.totalTradeDates}`;
+  const stage = run.currentStageLabel ?? '--';
+
+  switch (run.status) {
+    case 'running':
+      return `已刷新：${run.runId} 正在执行，进度 ${progress}，当前处理 ${run.currentTradeDate ?? '--'}，阶段 ${stage}，最近心跳 ${refreshedLabel}。`;
+    case 'queued':
+      return `已刷新：${run.runId} 仍在排队中，当前阶段 ${stage}，最近更新时间 ${refreshedLabel}。`;
+    case 'completed':
+      return `已刷新：${run.runId} 已完成，最终进度 ${progress}，完成时间 ${formatDateTime(run.finishedAt ?? refreshedAt ?? run.updatedAt)}。`;
+    case 'cancelled':
+      return `已刷新：${run.runId} 已取消，保留已完成 ${progress} 的结果快照。`;
+    case 'failed':
+      return `已刷新：${run.runId} 已失败，阶段停留在 ${stage}。`;
+    default:
+      return `已刷新：${run.runId} 当前进度 ${progress}，阶段 ${stage}。`;
+  }
+}
+
+function RunProgressPanel({
+  run,
+  title = '当前进度',
+}: {
+  run: MomentumBacktestRunResponse;
+  title?: string;
+}) {
+  const progressPctValue = runProgressPct(run);
+  const visualWidth = run.status === 'queued' ? Math.max(progressPctValue, 6) : progressPctValue;
+
+  return (
+    <div className="rounded-xl border border-info/20 bg-info/6 px-4 py-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="text-xs uppercase tracking-[0.18em] text-info/80">{title}</div>
+          <div className="mt-1 text-sm font-semibold text-foreground">
+            {run.processedTradeDates} / {run.totalTradeDates} 个交易日
+            <span className="ml-2 text-xs font-normal text-muted-text">{progressPctValue}%</span>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {runProgressBadge(run)}
+        </div>
+      </div>
+      <div
+        className="mt-3 h-2 overflow-hidden rounded-full bg-background/70"
+        role="progressbar"
+        aria-label={`回测进度 ${run.runId}`}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={progressPctValue}
+      >
+        <div
+          className={`h-full rounded-full bg-gradient-to-r ${progressBarTone(run.status)} transition-all duration-500`}
+          style={{ width: `${visualWidth}%` }}
+        />
+      </div>
+      <div className="mt-3 grid gap-2 text-xs text-muted-text md:grid-cols-3">
+        <span>当前交易日 {run.currentTradeDate ?? '--'}</span>
+        <span>当前阶段 {run.currentStageLabel ?? '--'}</span>
+        <span>最近心跳 {formatDateTime(run.heartbeatAt ?? run.updatedAt)}</span>
+      </div>
+    </div>
+  );
 }
 
 function buildDailyQuery(filters: DailyFilters, page: number, pageSize: number): MomentumBacktestDailyQuery {
@@ -305,6 +501,7 @@ export const MomentumBacktestPanel: React.FC = () => {
   const [profile, setProfile] = useState<'standard' | 'aggressive'>('standard');
   const [topN, setTopN] = useState('30');
   const [runIdInput, setRunIdInput] = useState('');
+  const [taskCenter, setTaskCenter] = useState<MomentumBacktestRunListResponse>(EMPTY_TASK_CENTER);
   const [dailyFilters, setDailyFilters] = useState<DailyFilters>(DEFAULT_DAILY_FILTERS);
   const [dailyPage, setDailyPage] = useState(1);
   const [run, setRun] = useState<MomentumBacktestRunResponse | null>(null);
@@ -316,11 +513,33 @@ export const MomentumBacktestPanel: React.FC = () => {
   const [issues, setIssues] = useState<MomentumBacktestIssueListResponse | null>(null);
   const [selectedDetail, setSelectedDetail] = useState<MomentumBacktestDailyDetailResponse | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isLoadingRecentRuns, setIsLoadingRecentRuns] = useState(false);
+  const [isRefreshingProgress, setIsRefreshingProgress] = useState(false);
   const [isLoadingRun, setIsLoadingRun] = useState(false);
+  const [loadingRunId, setLoadingRunId] = useState<string | null>(null);
   const [isLoadingDaily, setIsLoadingDaily] = useState(false);
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
+  const [mutatingRunId, setMutatingRunId] = useState<string | null>(null);
   const [panelError, setPanelError] = useState<ParsedApiError | null>(null);
   const [detailError, setDetailError] = useState<ParsedApiError | null>(null);
+  const [recentRunsError, setRecentRunsError] = useState<string | null>(null);
+  const [taskNotice, setTaskNotice] = useState<string | null>(null);
+
+  const loadRecentRuns = async (): Promise<MomentumBacktestRunListResponse> => {
+    setIsLoadingRecentRuns(true);
+    setRecentRunsError(null);
+    try {
+      const response = await momentumBacktestApi.listRuns({ limit: 20 });
+      setTaskCenter(response);
+      return response;
+    } catch (error) {
+      const parsed = getParsedApiError(error);
+      setRecentRunsError(parsed.message);
+      throw error;
+    } finally {
+      setIsLoadingRecentRuns(false);
+    }
+  };
 
   const loadDailySlice = async (runId: string, nextFilters: DailyFilters, nextPage = 1, pageSize = dailyPageSize) => {
     setIsLoadingDaily(true);
@@ -340,7 +559,7 @@ export const MomentumBacktestPanel: React.FC = () => {
     runId: string,
     nextFilters: DailyFilters = DEFAULT_DAILY_FILTERS,
     runPayload?: MomentumBacktestRunResponse,
-  ) => {
+  ): Promise<MomentumBacktestRunResponse> => {
     const [resolvedRun, summaryResponse, dailyResponse, issuesResponse] = await Promise.all([
       runPayload ? Promise.resolve(runPayload) : momentumBacktestApi.getRun(runId),
       momentumBacktestApi.getSummary(runId),
@@ -357,11 +576,13 @@ export const MomentumBacktestPanel: React.FC = () => {
     setIssues(issuesResponse);
     setRunIdInput(runId);
     setDailyFilters(nextFilters);
+    return resolvedRun;
   };
 
   const handleCreateRun = async () => {
     setIsSubmitting(true);
     setPanelError(null);
+    setTaskNotice(null);
     try {
       const created = await momentumBacktestApi.createRun({
         startTradeDate,
@@ -369,7 +590,9 @@ export const MomentumBacktestPanel: React.FC = () => {
         profile,
         topN: Number(topN) || 30,
       });
-      await loadRunArtifacts(created.runId, DEFAULT_DAILY_FILTERS, created);
+      setTaskNotice(created.message);
+      await loadRunArtifacts(created.run.runId, DEFAULT_DAILY_FILTERS, created.run);
+      await loadRecentRuns();
     } catch (error) {
       setPanelError(getParsedApiError(error));
     } finally {
@@ -377,8 +600,8 @@ export const MomentumBacktestPanel: React.FC = () => {
     }
   };
 
-  const handleLoadRun = async () => {
-    const runId = runIdInput.trim();
+  const handleLoadRun = async (targetRunId?: string, runPayload?: MomentumBacktestRunResponse) => {
+    const runId = (targetRunId ?? runIdInput).trim();
     if (!runId) {
       setPanelError({
         title: '缺少回测任务 ID',
@@ -389,13 +612,16 @@ export const MomentumBacktestPanel: React.FC = () => {
       return;
     }
     setIsLoadingRun(true);
+    setLoadingRunId(runId);
     setPanelError(null);
+    setTaskNotice(null);
     try {
-      await loadRunArtifacts(runId, dailyFilters);
+      await loadRunArtifacts(runId, dailyFilters, runPayload);
     } catch (error) {
       setPanelError(getParsedApiError(error));
     } finally {
       setIsLoadingRun(false);
+      setLoadingRunId(null);
     }
   };
 
@@ -446,6 +672,143 @@ export const MomentumBacktestPanel: React.FC = () => {
       setIsLoadingDetail(false);
     }
   };
+
+  const handleRefreshProgress = async () => {
+    setIsRefreshingProgress(true);
+    setPanelError(null);
+    try {
+      const refreshedTaskCenter = await loadRecentRuns();
+      let focusRun =
+        refreshedTaskCenter.currentRunning
+        ?? (run?.runId
+          ? refreshedTaskCenter.history.items.find((item) => item.runId === run.runId)
+            ?? refreshedTaskCenter.queued.items.find((item) => item.runId === run.runId)
+            ?? null
+          : null);
+      if (run?.runId) {
+        focusRun = await loadRunArtifacts(run.runId, dailyFilters);
+      }
+      setTaskNotice(buildRefreshNotice(focusRun, refreshedTaskCenter.refreshedAt));
+    } catch (error) {
+      setPanelError(getParsedApiError(error));
+    } finally {
+      setIsRefreshingProgress(false);
+    }
+  };
+
+  const handleCancelRun = async (targetRunId: string) => {
+    setMutatingRunId(targetRunId);
+    setPanelError(null);
+    setTaskNotice(null);
+    try {
+      const updated = await momentumBacktestApi.cancelRun(targetRunId);
+      setTaskNotice('任务已取消，已保留已完成部分');
+      await loadRecentRuns();
+      if (run?.runId === targetRunId) {
+        await loadRunArtifacts(targetRunId, dailyFilters, updated);
+      }
+    } catch (error) {
+      setPanelError(getParsedApiError(error));
+    } finally {
+      setMutatingRunId(null);
+    }
+  };
+
+  const handleDeleteRun = async (targetRunId: string) => {
+    const confirmed = window.confirm('确认彻底删除这条回测任务及其已冻结结果吗？删除后不可恢复。');
+    if (!confirmed) {
+      return;
+    }
+    setMutatingRunId(targetRunId);
+    setPanelError(null);
+    setTaskNotice(null);
+    try {
+      const result = await momentumBacktestApi.deleteRun(targetRunId);
+      setTaskNotice(result.message);
+      if (run?.runId === targetRunId) {
+        setRun(null);
+        setSummary(null);
+        setDailyItems([]);
+        setDailyTotal(0);
+        setDailyHasMore(false);
+        setIssues(null);
+        setSelectedDetail(null);
+        setRunIdInput('');
+      }
+      await loadRecentRuns();
+    } catch (error) {
+      setPanelError(getParsedApiError(error));
+    } finally {
+      setMutatingRunId(null);
+    }
+  };
+
+  useEffect(() => {
+    const timer = window.setTimeout(async () => {
+      setIsLoadingRecentRuns(true);
+      setRecentRunsError(null);
+      try {
+        const response = await momentumBacktestApi.listRuns({ limit: 20 });
+        setTaskCenter(response);
+      } catch (error) {
+        const parsed = getParsedApiError(error);
+        setRecentRunsError(parsed.message);
+      } finally {
+        setIsLoadingRecentRuns(false);
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!run?.runId || run.status !== 'running') {
+      return;
+    }
+    const nextFilters = {
+      dateFrom: dailyFilters.dateFrom,
+      dateTo: dailyFilters.dateTo,
+      marketRegime: dailyFilters.marketRegime,
+      actionLevel: dailyFilters.actionLevel,
+      slot: dailyFilters.slot,
+      themeName: dailyFilters.themeName,
+    };
+    const timer = window.setTimeout(async () => {
+      try {
+        const [resolvedRun, summaryResponse, dailyResponse, issuesResponse, recentRunsResponse] = await Promise.all([
+          momentumBacktestApi.getRun(run.runId),
+          momentumBacktestApi.getSummary(run.runId),
+          momentumBacktestApi.getDaily(run.runId, buildDailyQuery(nextFilters, 1, dailyPageSize)),
+          momentumBacktestApi.getIssues(run.runId),
+          momentumBacktestApi.listRuns({ limit: 20 }),
+        ]);
+        setRun(resolvedRun);
+        setSummary(summaryResponse.summary);
+        setDailyItems(dailyResponse.items);
+        setDailyTotal(dailyResponse.total);
+        setDailyPage(dailyResponse.page);
+        setDailyPageSize(dailyResponse.pageSize);
+        setDailyHasMore(dailyResponse.hasMore);
+        setIssues(issuesResponse);
+        setTaskCenter(recentRunsResponse);
+      } catch {
+        // Keep the last visible snapshot and let manual refresh/load recover.
+      }
+    }, 4000);
+    return () => window.clearTimeout(timer);
+  }, [
+    run?.runId,
+    run?.status,
+    run?.processedTradeDates,
+    dailyFilters.dateFrom,
+    dailyFilters.dateTo,
+    dailyFilters.marketRegime,
+    dailyFilters.actionLevel,
+    dailyFilters.slot,
+    dailyFilters.themeName,
+    dailyPageSize,
+  ]);
+
+  const summaryView = summary ?? EMPTY_SUMMARY;
 
   return (
     <div className="space-y-4">
@@ -501,18 +864,223 @@ export const MomentumBacktestPanel: React.FC = () => {
               />
             </div>
             <div className="flex items-end">
-              <button type="button" className="btn-secondary w-full gap-2" onClick={handleLoadRun} disabled={isLoadingRun}>
+              <button type="button" className="btn-secondary w-full gap-2" onClick={() => void handleLoadRun()} disabled={isLoadingRun}>
                 {isLoadingRun ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
                 加载任务
               </button>
             </div>
           </div>
+          <div className="rounded-2xl border border-border/60 bg-card/40 p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="text-sm font-medium text-foreground">回测任务中心</div>
+                <div className="mt-1 text-xs text-muted-text">
+                  任务会持久化到服务器。这里按“当前运行 / 排队中 / 历史任务”三段展示，并支持刷新、取消、删除和继续加载。
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-text">
+                  <span>最近刷新时间 {formatDateTime(taskCenter.refreshedAt)}</span>
+                  {isRefreshingProgress ? <Badge variant="info">正在刷新后台进度</Badge> : null}
+                </div>
+              </div>
+              <button
+                type="button"
+                className="btn-secondary gap-2"
+                onClick={() => void handleRefreshProgress()}
+                disabled={isLoadingRecentRuns || isRefreshingProgress}
+              >
+                {isLoadingRecentRuns || isRefreshingProgress ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                {isLoadingRecentRuns || isRefreshingProgress ? '刷新中...' : '刷新进度'}
+              </button>
+            </div>
+            {recentRunsError ? (
+              <div className="mt-4 rounded-xl border border-warning/30 bg-warning/8 px-4 py-3 text-sm text-warning">
+                回测任务列表加载失败：{recentRunsError}
+              </div>
+            ) : (
+              <div className="mt-4 space-y-4">
+                <div className="rounded-xl border border-border/60 bg-background/30 px-4 py-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium text-foreground">当前运行任务</div>
+                      <div className="mt-1 text-xs text-muted-text">同一时间只允许 1 个任务后台计算；服务重启后会自动回到排队状态。</div>
+                    </div>
+                    {taskCenter.currentRunning ? <Badge variant="warning">正在执行</Badge> : <Badge variant="default">空闲</Badge>}
+                  </div>
+                  {!taskCenter.currentRunning ? (
+                    <div className="mt-3 rounded-xl border border-dashed border-border/60 px-4 py-5 text-sm text-muted-text">
+                      当前没有正在运行的回测任务。
+                    </div>
+                  ) : (
+                    <div className="mt-3 rounded-xl border border-border/60 bg-card/60 px-4 py-4">
+                      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <code className="rounded bg-background/60 px-2 py-1 text-xs text-foreground">{taskCenter.currentRunning.runId}</code>
+                            {runStatusBadge(taskCenter.currentRunning.status)}
+                            {profileBadge(taskCenter.currentRunning.profile)}
+                            {run?.runId === taskCenter.currentRunning.runId ? <Badge variant="success">当前查看</Badge> : null}
+                          </div>
+                          <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-text">
+                            <span>区间 {taskCenter.currentRunning.startTradeDate} → {taskCenter.currentRunning.endTradeDate}</span>
+                            <span>进度 {taskCenter.currentRunning.processedTradeDates} / {taskCenter.currentRunning.totalTradeDates}</span>
+                            <span>阶段 {formatRunStage(taskCenter.currentRunning)}</span>
+                            <span>最近更新时间 {formatDateTime(taskCenter.currentRunning.heartbeatAt ?? taskCenter.currentRunning.updatedAt)}</span>
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            className="btn-secondary gap-2"
+                            onClick={() => void handleLoadRun(taskCenter.currentRunning?.runId, taskCenter.currentRunning ?? undefined)}
+                            disabled={isLoadingRun}
+                          >
+                            {isLoadingRun && loadingRunId === taskCenter.currentRunning.runId ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                            加载任务
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-secondary gap-2"
+                            onClick={() => void handleCancelRun(taskCenter.currentRunning!.runId)}
+                            disabled={mutatingRunId === taskCenter.currentRunning.runId}
+                          >
+                            {mutatingRunId === taskCenter.currentRunning.runId ? <Loader2 className="h-4 w-4 animate-spin" /> : <XCircle className="h-4 w-4" />}
+                            取消任务
+                          </button>
+                        </div>
+                      </div>
+                      <div className="mt-4">
+                        <RunProgressPanel run={taskCenter.currentRunning} title="后台执行进度" />
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-xl border border-border/60 bg-background/30 px-4 py-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium text-foreground">排队中任务</div>
+                      <div className="mt-1 text-xs text-muted-text">按 FIFO 顺序串行执行；相同参数任务会直接复用，不会重复创建。</div>
+                    </div>
+                    <Badge variant="default">共 {taskCenter.queued.total} 条</Badge>
+                  </div>
+                  {taskCenter.queued.items.length === 0 ? (
+                    <div className="mt-3 rounded-xl border border-dashed border-border/60 px-4 py-5 text-sm text-muted-text">
+                      当前没有排队中的任务。
+                    </div>
+                  ) : (
+                    <div className="mt-3 space-y-3">
+                      {taskCenter.queued.items.map((item, index) => (
+                        <div key={item.runId} className="flex flex-col gap-3 rounded-xl border border-border/60 bg-card/60 px-4 py-4 lg:flex-row lg:items-center lg:justify-between">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <code className="rounded bg-background/60 px-2 py-1 text-xs text-foreground">{item.runId}</code>
+                              {runStatusBadge(item.status)}
+                              {profileBadge(item.profile)}
+                              <Badge variant="default">队列 #{index + 1}</Badge>
+                              {run?.runId === item.runId ? <Badge variant="success">当前查看</Badge> : null}
+                            </div>
+                            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-text">
+                              <span>区间 {item.startTradeDate} → {item.endTradeDate}</span>
+                              <span>阶段 {formatRunStage(item)}</span>
+                              <span>最近更新时间 {formatDateTime(item.heartbeatAt ?? item.updatedAt)}</span>
+                              <span>创建于 {formatDateTime(item.createdAt)}</span>
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              className="btn-secondary gap-2"
+                              onClick={() => void handleLoadRun(item.runId, item)}
+                              disabled={isLoadingRun}
+                            >
+                              {isLoadingRun && loadingRunId === item.runId ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                              加载任务
+                            </button>
+                            <button
+                              type="button"
+                              className="btn-secondary gap-2"
+                              onClick={() => void handleDeleteRun(item.runId)}
+                              disabled={mutatingRunId === item.runId}
+                            >
+                              {mutatingRunId === item.runId ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                              删除任务
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-xl border border-border/60 bg-background/30 px-4 py-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium text-foreground">历史任务</div>
+                      <div className="mt-1 text-xs text-muted-text">默认只展示最近 {taskCenter.history.limit ?? 20} 条历史任务，包含已完成 / 已失败 / 已取消。</div>
+                    </div>
+                    <Badge variant="default">共 {taskCenter.history.total} 条</Badge>
+                  </div>
+                  {taskCenter.history.items.length === 0 ? (
+                    <div className="mt-3 rounded-xl border border-dashed border-border/60 px-4 py-5 text-sm text-muted-text">
+                      当前还没有可回看历史任务。
+                    </div>
+                  ) : (
+                    <div className="mt-3 space-y-3">
+                      {taskCenter.history.items.map((item) => (
+                        <div key={item.runId} className="flex flex-col gap-3 rounded-xl border border-border/60 bg-card/60 px-4 py-4 lg:flex-row lg:items-center lg:justify-between">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <code className="rounded bg-background/60 px-2 py-1 text-xs text-foreground">{item.runId}</code>
+                              {runStatusBadge(item.status)}
+                              {profileBadge(item.profile)}
+                              {run?.runId === item.runId ? <Badge variant="success">当前查看</Badge> : null}
+                            </div>
+                            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-text">
+                              <span>区间 {item.startTradeDate} → {item.endTradeDate}</span>
+                              <span>进度 {item.processedTradeDates} / {item.totalTradeDates}</span>
+                              <span>阶段 {formatRunStage(item)}</span>
+                              <span>最近更新时间 {formatDateTime(item.finishedAt ?? item.updatedAt)}</span>
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              className="btn-secondary gap-2"
+                              onClick={() => void handleLoadRun(item.runId, item)}
+                              disabled={isLoadingRun}
+                            >
+                              {isLoadingRun && loadingRunId === item.runId ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                              加载任务
+                            </button>
+                            <button
+                              type="button"
+                              className="btn-secondary gap-2"
+                              onClick={() => void handleDeleteRun(item.runId)}
+                              disabled={mutatingRunId === item.runId}
+                            >
+                              {mutatingRunId === item.runId ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                              删除任务
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </Card>
 
       {panelError ? <ApiErrorAlert error={panelError} /> : null}
+      {taskNotice ? (
+        <div className="rounded-xl border border-info/30 bg-info/8 px-4 py-3 text-sm text-info">
+          {taskNotice}
+        </div>
+      ) : null}
 
-      {!run || !summary ? (
+      {!run ? (
         <EmptyState
           title="还没有 V1 回测结果"
           description="先创建一个强势筛选回测 run，或加载已有 run_id，再查看区间摘要、问题清单和单日详情。"
@@ -528,6 +1096,7 @@ export const MomentumBacktestPanel: React.FC = () => {
                   <h3 className="mt-1 text-lg font-semibold text-foreground">{run.runId}</h3>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
+                  {runStatusBadge(run.status)}
                   {profileBadge(run.profile)}
                   <Badge variant="default">{run.engineVersion}</Badge>
                   <Badge variant="default">{run.entryBaselineVersion}</Badge>
@@ -537,13 +1106,21 @@ export const MomentumBacktestPanel: React.FC = () => {
               <div className="grid gap-3 md:grid-cols-4">
                 <DetailMetric label="回测区间" value={`${run.startTradeDate} → ${run.endTradeDate}`} />
                 <DetailMetric label="已处理交易日" value={`${run.processedTradeDates} / ${run.totalTradeDates}`} />
-                <DetailMetric label="触发率 / T+2 正收益率" value={issueTitle(summary)} />
-                <DetailMetric label="T+2 平均回撤" value={pct(summary.decisionTop3AvgT2MaxDrawdownPct)} />
+                <DetailMetric label="触发率 / T+2 正收益率" value={issueTitle(summaryView)} />
+                <DetailMetric label="T+2 平均回撤" value={pct(summaryView.decisionTop3AvgT2MaxDrawdownPct)} />
               </div>
+              <RunProgressPanel run={run} title="当前任务快照" />
+              {run.status === 'running' || run.status === 'queued' ? (
+                <div className="rounded-xl border border-info/30 bg-info/8 px-4 py-3 text-sm text-info">
+                  {run.status === 'queued'
+                    ? '回测任务正在队列中等待执行。点击上方“刷新进度”可以看到它是否已经开始跑。'
+                    : '回测任务已转入后台计算，页面会每 4 秒自动刷新一次进度。你也可以点击上方“刷新进度”手动确认它是否还在继续推进。'}
+                </div>
+              ) : null}
               <div className="grid gap-3 md:grid-cols-4">
-                <DetailMetric label="候选池均值" value={num(summary.avgCandidateCount)} />
-                <DetailMetric label="默认组合均值" value={num(summary.avgSelectedCount)} />
-                <DetailMetric label="Ready 数量均值" value={num(summary.avgBuyReadyCount)} />
+                <DetailMetric label="候选池均值" value={num(summaryView.avgCandidateCount)} />
+                <DetailMetric label="默认组合均值" value={num(summaryView.avgSelectedCount)} />
+                <DetailMetric label="Ready 数量均值" value={num(summaryView.avgBuyReadyCount)} />
                 <DetailMetric label="问题总数" value={String(issues?.totalIssues ?? 0)} />
               </div>
               {run.errorMessage ? (
@@ -552,7 +1129,7 @@ export const MomentumBacktestPanel: React.FC = () => {
                 </div>
               ) : null}
               <div className="flex flex-wrap gap-2">
-                {Object.entries(summary.actionBreakdown).map(([key, count]) => (
+                {Object.entries(summaryView.actionBreakdown).map(([key, count]) => (
                   <Badge key={key} variant="default">{key}: {count}</Badge>
                 ))}
               </div>
@@ -604,11 +1181,11 @@ export const MomentumBacktestPanel: React.FC = () => {
               </div>
               <div className="text-sm text-secondary-text">用官方 Top3 对比候选池 Top10、原始排序、主线龙头和空仓基准</div>
             </div>
-            <div className="grid gap-4 xl:grid-cols-3">
-              {summary.benchmarkComparison.map((item) => (
-                <BenchmarkCard key={item.key} item={item} />
-              ))}
-            </div>
+              <div className="grid gap-4 xl:grid-cols-3">
+                {summaryView.benchmarkComparison.map((item) => (
+                  <BenchmarkCard key={item.key} item={item} />
+                ))}
+              </div>
           </Card>
 
           <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
@@ -618,7 +1195,7 @@ export const MomentumBacktestPanel: React.FC = () => {
                 <h3 className="mt-1 text-lg font-semibold text-foreground">分层诊断区</h3>
               </div>
               <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-1">
-                {summary.layerDiagnostics.map((item) => (
+                {summaryView.layerDiagnostics.map((item) => (
                   <LayerCard key={item.key} item={item} />
                 ))}
               </div>
@@ -630,7 +1207,7 @@ export const MomentumBacktestPanel: React.FC = () => {
                 <h3 className="mt-1 text-lg font-semibold text-foreground">市场分桶区</h3>
               </div>
               <div className="space-y-4">
-                {summary.regimeBreakdown.map((item) => (
+                {summaryView.regimeBreakdown.map((item) => (
                   <RegimeCard key={item.level} item={item} />
                 ))}
               </div>
@@ -646,7 +1223,7 @@ export const MomentumBacktestPanel: React.FC = () => {
               <div className="text-sm text-secondary-text">按模块统计哪些地方最常拖后腿，以及这些弱项日的真实结果表现。</div>
             </div>
             <div className="grid gap-4 xl:grid-cols-3">
-              {summary.gateModuleBreakdown.map((item) => (
+              {summaryView.gateModuleBreakdown.map((item) => (
                 <GateModuleBreakdownCard key={item.key} item={item} />
               ))}
             </div>

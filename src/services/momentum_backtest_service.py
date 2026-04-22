@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 import logging
@@ -57,6 +58,24 @@ GATE_MODULE_LABELS = {
     "historical_validity": "历史有效性",
 }
 RESTRICTED_ACTION_LEVELS = {"observe_only", "stand_aside"}
+ACTIVE_RUN_STATUSES = {"queued", "running"}
+TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled"}
+RUN_STAGE_LABELS = {
+    "queued": "等待后台调度",
+    "preparing": "准备回测任务",
+    "candidate_pool": "候选池计算中",
+    "secondary_decision": "二次决策回放中",
+    "outcome_validation": "T+1/T+2 结果验证中",
+    "summary_build": "区间汇总生成中",
+    "cancel_requested": "取消请求处理中",
+    "cancelled": "任务已取消",
+    "completed": "任务已完成",
+    "failed": "任务执行失败",
+}
+
+
+class _MomentumBacktestCancelled(RuntimeError):
+    """Raised when a backtest run is cancelled by the user."""
 
 
 @dataclass
@@ -83,6 +102,19 @@ class MomentumBacktestService:
             screener_service=self.screener_service,
         )
         self.repository = repository or MomentumBacktestRepository()
+        self.stage_heartbeat_interval_seconds = 5.0
+        self._run_lock = threading.Lock()
+        self._shutdown_event = threading.Event()
+        self._worker_wake_event = threading.Event()
+        self._worker_thread = threading.Thread(
+            target=self._worker_loop,
+            name="momentum-backtest-queue",
+            daemon=True,
+        )
+        requeued_count = self.repository.reset_running_runs_to_queued()
+        if requeued_count:
+            logger.info("Recovered %s running backtest run(s) back into the queue", requeued_count)
+        self._worker_thread.start()
 
     def create_run(
         self,
@@ -92,6 +124,67 @@ class MomentumBacktestService:
         profile: str = "standard",
         top_n: int = 30,
     ) -> Dict[str, Any]:
+        run, trade_dates, _meta = self._create_or_reuse_run(
+            start_trade_date=start_trade_date,
+            end_trade_date=end_trade_date,
+            profile=profile,
+            top_n=top_n,
+            allow_reuse=False,
+            prefer_running=False,
+        )
+        self.repository.update_run(
+            run.run_id,
+            status="running",
+            current_stage_key="preparing",
+            current_stage_label=RUN_STAGE_LABELS["preparing"],
+            heartbeat_at=datetime.now(),
+            started_at=datetime.now(),
+            finished_at=None,
+            cancel_requested=False,
+            error_message=None,
+        )
+        self._execute_run(
+            run_id=run.run_id,
+            trade_dates=trade_dates,
+            profile=profile,
+            top_n=top_n,
+        )
+        return self.get_run(run.run_id)
+
+    def create_run_async(
+        self,
+        *,
+        start_trade_date: str,
+        end_trade_date: str,
+        profile: str = "standard",
+        top_n: int = 30,
+    ) -> Dict[str, Any]:
+        run, _trade_dates, meta = self._create_or_reuse_run(
+            start_trade_date=start_trade_date,
+            end_trade_date=end_trade_date,
+            profile=profile,
+            top_n=top_n,
+            allow_reuse=True,
+            prefer_running=True,
+        )
+        self._worker_wake_event.set()
+        serialized = self._serialize_run(run)
+        return {
+            "created_new": meta["created_new"],
+            "message": meta["message"],
+            "run": serialized,
+        }
+
+    def _create_or_reuse_run(
+        self,
+        *,
+        start_trade_date: str,
+        end_trade_date: str,
+        profile: str,
+        top_n: int,
+        allow_reuse: bool,
+        prefer_running: bool,
+    ) -> Tuple[MomentumBacktestRun, List[date], Dict[str, Any]]:
         if profile not in {"standard", "aggressive"}:
             raise ValueError("Only profile=standard or profile=aggressive is supported")
 
@@ -104,29 +197,236 @@ class MomentumBacktestService:
         if not trade_dates:
             raise ValueError("No trade dates were found in the requested range")
 
-        run_id = f"momentum_bt_{uuid4().hex[:16]}"
-        run = MomentumBacktestRun(
-            run_id=run_id,
-            status="running",
-            profile=profile,
-            engine_version=MOMENTUM_BACKTEST_ENGINE_VERSION,
-            entry_baseline_version=MOMENTUM_ENTRY_BASELINE_VERSION,
-            market_scope_version=MOMENTUM_MARKET_SCOPE_VERSION,
-            top_n=top_n,
-            start_trade_date=start_dt,
-            end_trade_date=end_dt,
-            total_trade_dates=len(trade_dates),
-            processed_trade_dates=0,
-            failed_trade_dates=0,
-        )
-        self.repository.create_run(run)
+        with self._run_lock:
+            if allow_reuse:
+                existing = self.repository.find_run_by_params(
+                    start_trade_date=start_dt,
+                    end_trade_date=end_dt,
+                    profile=profile,
+                    top_n=top_n,
+                )
+                if existing is not None:
+                    return (
+                        existing,
+                        trade_dates,
+                        {
+                            "created_new": False,
+                            "message": "已存在相同参数任务，已为你定位到该任务",
+                        },
+                    )
 
-        processed_count = 0
-        failed_count = 0
+            has_running = self.repository.get_first_run_by_statuses(("running",)) is not None
+            has_queued = self.repository.get_first_run_by_statuses(("queued",), ascending=True) is not None
+            now = datetime.now()
+            initial_status = (
+                "queued"
+                if (allow_reuse and (has_running or has_queued or not prefer_running))
+                else "running"
+            )
+            run = MomentumBacktestRun(
+                run_id=f"momentum_bt_{uuid4().hex[:16]}",
+                status=initial_status,
+                profile=profile,
+                engine_version=MOMENTUM_BACKTEST_ENGINE_VERSION,
+                entry_baseline_version=MOMENTUM_ENTRY_BASELINE_VERSION,
+                market_scope_version=MOMENTUM_MARKET_SCOPE_VERSION,
+                top_n=top_n,
+                start_trade_date=start_dt,
+                end_trade_date=end_dt,
+                total_trade_dates=len(trade_dates),
+                processed_trade_dates=0,
+                failed_trade_dates=0,
+                current_stage_key="preparing" if initial_status == "running" else "queued",
+                current_stage_label=RUN_STAGE_LABELS["preparing"] if initial_status == "running" else RUN_STAGE_LABELS["queued"],
+                heartbeat_at=now,
+                started_at=now if initial_status == "running" else None,
+                finished_at=None,
+                cancel_requested=False,
+            )
+            created = self.repository.create_run(run)
+            message = (
+                "当前已有任务在运行，你的回测已进入队列"
+                if initial_status == "queued"
+                else "已创建回测任务，正在后台计算"
+            )
+            return created, trade_dates, {"created_new": True, "message": message}
+
+    def _worker_loop(self) -> None:
+        while not self._shutdown_event.is_set():
+            run = self.repository.get_first_run_by_statuses(("running",), ascending=True)
+            if run is None:
+                run = self._promote_next_queued_run()
+            if run is None:
+                self._worker_wake_event.wait(timeout=1.0)
+                self._worker_wake_event.clear()
+                continue
+            try:
+                trade_dates = self._list_trade_dates(run.start_trade_date, run.end_trade_date)
+                if not trade_dates:
+                    self.repository.update_run(
+                        run.run_id,
+                        status="failed",
+                        current_stage_key="failed",
+                        current_stage_label=RUN_STAGE_LABELS["failed"],
+                        finished_at=datetime.now(),
+                        error_message="No trade dates were found in the requested range",
+                    )
+                    continue
+                self._execute_run(
+                    run_id=run.run_id,
+                    trade_dates=trade_dates,
+                    profile=run.profile,
+                    top_n=run.top_n,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Momentum backtest worker crashed on run %s: %s", run.run_id, exc)
+
+    def close(self, *, timeout: float = 5.0) -> None:
+        self._shutdown_event.set()
+        self._worker_wake_event.set()
+        if self._worker_thread.is_alive():
+            self._worker_thread.join(timeout=timeout)
+
+    def _promote_next_queued_run(self) -> Optional[MomentumBacktestRun]:
+        with self._run_lock:
+            run = self.repository.get_first_run_by_statuses(("queued",), ascending=True)
+            if run is None:
+                return None
+            return self.repository.update_run(
+                run.run_id,
+                status="running",
+                current_stage_key="preparing",
+                current_stage_label=RUN_STAGE_LABELS["preparing"],
+                heartbeat_at=datetime.now(),
+                started_at=datetime.now(),
+                finished_at=None,
+                cancel_requested=False,
+                error_message=None,
+            )
+
+    def _execute_run(
+        self,
+        *,
+        run_id: str,
+        trade_dates: List[date],
+        profile: str,
+        top_n: int,
+    ) -> None:
+        existing_run = self.repository.get_run(run_id)
+        if existing_run is None:
+            raise ValueError(f"Backtest run not found: {run_id}")
+
+        attempted_count = min(
+            max((existing_run.processed_trade_dates or 0) + (existing_run.failed_trade_dates or 0), 0),
+            len(trade_dates),
+        )
+        processed_count = min(existing_run.processed_trade_dates or 0, attempted_count)
+        failed_count = min(existing_run.failed_trade_dates or 0, attempted_count - processed_count)
+        current_trade_dt: Optional[date] = None
+        effective_total_trade_dates = len(trade_dates)
+        remaining_trade_dates = trade_dates[attempted_count:]
+        if attempted_count > 0:
+            current_trade_dt = trade_dates[attempted_count - 1]
         try:
-            for trade_dt in trade_dates:
+            self.repository.update_run(
+                run_id,
+                status="running",
+                total_trade_dates=effective_total_trade_dates,
+                processed_trade_dates=processed_count,
+                failed_trade_dates=failed_count,
+                current_stage_key="preparing",
+                current_stage_label=RUN_STAGE_LABELS["preparing"],
+                current_trade_date=remaining_trade_dates[0] if remaining_trade_dates else current_trade_dt,
+                heartbeat_at=datetime.now(),
+                started_at=existing_run.started_at or datetime.now(),
+                finished_at=None,
+                summary_json=None if attempted_count == 0 else existing_run.summary_json,
+                error_message=None,
+            )
+            for trade_dt in remaining_trade_dates:
+                current_trade_dt = trade_dt
+                self._raise_if_cancel_requested(run_id)
                 try:
-                    artifacts = self._replay_trade_date(trade_dt=trade_dt, profile=profile, top_n=top_n)
+                    trade_date = trade_dt.strftime("%Y-%m-%d")
+                    request_params = self.decision_service._build_request_params(  # type: ignore[attr-defined]
+                        top_n=top_n,
+                        trade_date=trade_date,
+                        profile=profile,
+                    )
+                    candidate_pool_label_state = {"value": RUN_STAGE_LABELS["candidate_pool"]}
+                    self._update_stage(
+                        run_id,
+                        stage_key="candidate_pool",
+                        trade_dt=trade_dt,
+                        stage_label=candidate_pool_label_state["value"],
+                    )
+                    stop_candidate_pool_heartbeat = self._start_stage_heartbeat(
+                        run_id=run_id,
+                        stage_key="candidate_pool",
+                        trade_dt=trade_dt,
+                        label_state=candidate_pool_label_state,
+                    )
+                    try:
+                        screening = self.screener_service.screen(
+                            top_n=top_n,
+                            trade_date=trade_date,
+                            profile=profile,
+                        )
+                    finally:
+                        stop_candidate_pool_heartbeat()
+                    screening["_request_params"] = request_params
+
+                    self._raise_if_cancel_requested(run_id)
+                    secondary_decision_label_state = {"value": RUN_STAGE_LABELS["secondary_decision"]}
+                    self._update_stage(
+                        run_id,
+                        stage_key="secondary_decision",
+                        trade_dt=trade_dt,
+                        stage_label=secondary_decision_label_state["value"],
+                    )
+                    stop_secondary_decision_heartbeat = self._start_stage_heartbeat(
+                        run_id=run_id,
+                        stage_key="secondary_decision",
+                        trade_dt=trade_dt,
+                        label_state=secondary_decision_label_state,
+                    )
+                    try:
+                        decision = self.decision_service.build_from_screening(
+                            screening,
+                            request_params=request_params,
+                            wait_for_strategy_health=False,
+                            strategy_health_mode="cached_only",
+                            strategy_health_progress_callback=self._build_secondary_decision_progress_callback(
+                                run_id=run_id,
+                                trade_dt=trade_dt,
+                                label_state=secondary_decision_label_state,
+                            ),
+                        )
+                    finally:
+                        stop_secondary_decision_heartbeat()
+
+                    self._raise_if_cancel_requested(run_id)
+                    outcome_validation_label_state = {"value": RUN_STAGE_LABELS["outcome_validation"]}
+                    self._update_stage(
+                        run_id,
+                        stage_key="outcome_validation",
+                        trade_dt=trade_dt,
+                        stage_label=outcome_validation_label_state["value"],
+                    )
+                    stop_outcome_validation_heartbeat = self._start_stage_heartbeat(
+                        run_id=run_id,
+                        stage_key="outcome_validation",
+                        trade_dt=trade_dt,
+                        label_state=outcome_validation_label_state,
+                    )
+                    try:
+                        artifacts = self._freeze_trade_date_artifacts(
+                            trade_dt=trade_dt,
+                            screening=screening,
+                            decision=decision,
+                        )
+                    finally:
+                        stop_outcome_validation_heartbeat()
                     artifacts.daily_summary.run_id = run_id
                     for record in artifacts.candidate_records:
                         record.run_id = run_id
@@ -161,6 +461,12 @@ class MomentumBacktestService:
                         failed_trade_dates=failed_count,
                     )
 
+            self._raise_if_cancel_requested(run_id)
+            self._update_stage(
+                run_id,
+                stage_key="summary_build",
+                trade_dt=current_trade_dt,
+            )
             summary = self._build_run_summary(run_id)
             status = "completed" if processed_count > 0 else "failed"
             self.repository.update_run(
@@ -170,7 +476,30 @@ class MomentumBacktestService:
                 failed_trade_dates=failed_count,
                 summary_json=self._dump_json(summary),
                 error_message=None if processed_count > 0 else "No trade dates were replayed successfully",
+                current_stage_key=status,
+                current_stage_label=RUN_STAGE_LABELS[status],
+                current_trade_date=current_trade_dt,
+                heartbeat_at=datetime.now(),
+                finished_at=datetime.now(),
+                cancel_requested=False,
             )
+        except _MomentumBacktestCancelled:
+            summary = self._build_run_summary(run_id) if processed_count > 0 else None
+            self.repository.update_run(
+                run_id,
+                status="cancelled",
+                processed_trade_dates=processed_count,
+                failed_trade_dates=failed_count,
+                summary_json=self._dump_json(summary) if summary is not None else None,
+                error_message="任务已取消，已保留已完成部分",
+                current_stage_key="cancelled",
+                current_stage_label=RUN_STAGE_LABELS["cancelled"],
+                current_trade_date=current_trade_dt,
+                heartbeat_at=datetime.now(),
+                finished_at=datetime.now(),
+                cancel_requested=False,
+            )
+            logger.info("Momentum backtest run cancelled: %s", run_id)
         except Exception as exc:  # noqa: BLE001
             self.repository.update_run(
                 run_id,
@@ -178,16 +507,94 @@ class MomentumBacktestService:
                 processed_trade_dates=processed_count,
                 failed_trade_dates=failed_count or len(trade_dates),
                 error_message=str(exc),
+                current_stage_key="failed",
+                current_stage_label=RUN_STAGE_LABELS["failed"],
+                current_trade_date=current_trade_dt,
+                heartbeat_at=datetime.now(),
+                finished_at=datetime.now(),
+                cancel_requested=False,
             )
             raise
-
-        return self.get_run(run_id)
 
     def get_run(self, run_id: str) -> Dict[str, Any]:
         run = self.repository.get_run(run_id)
         if run is None:
             raise ValueError(f"Backtest run not found: {run_id}")
         return self._serialize_run(run)
+
+    def list_runs(
+        self,
+        *,
+        limit: int = 20,
+        profile: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        safe_limit = min(max(int(limit), 1), 50)
+        if profile and profile not in {"standard", "aggressive"}:
+            raise ValueError("Only profile=standard or profile=aggressive is supported")
+        current_running = self.repository.get_first_run_by_statuses(("running",), profile=profile, ascending=True)
+        queued_rows = self.repository.list_runs(
+            limit=50,
+            profile=profile,
+            statuses=("queued",),
+            ascending=True,
+        )
+        history_rows = self.repository.list_runs(
+            limit=safe_limit,
+            profile=profile,
+            statuses=("completed", "failed", "cancelled"),
+        )
+        return {
+            "current_running": self._serialize_run(current_running) if current_running else None,
+            "queued": {
+                "total": self.repository.count_runs(profile=profile, statuses=("queued",)),
+                "items": [self._serialize_run(row) for row in queued_rows],
+            },
+            "history": {
+                "total": self.repository.count_runs(
+                    profile=profile,
+                    statuses=("completed", "failed", "cancelled"),
+                ),
+                "limit": safe_limit,
+                "items": [self._serialize_run(row) for row in history_rows],
+            },
+            "refreshed_at": datetime.now().isoformat(),
+        }
+
+    def cancel_run(self, run_id: str) -> Dict[str, Any]:
+        run = self.repository.get_run(run_id)
+        if run is None:
+            raise ValueError(f"Backtest run not found: {run_id}")
+        if run.status != "running":
+            raise ValueError("Only running tasks can be cancelled")
+        updated = self.repository.update_run(
+            run_id,
+            cancel_requested=True,
+            current_stage_key="cancel_requested",
+            current_stage_label=RUN_STAGE_LABELS["cancel_requested"],
+            heartbeat_at=datetime.now(),
+        )
+        if updated is None:
+            raise ValueError(f"Backtest run not found: {run_id}")
+        self._worker_wake_event.set()
+        payload = self._serialize_run(updated)
+        payload["message"] = "任务已取消，已保留已完成部分"
+        return payload
+
+    def delete_run(self, run_id: str) -> Dict[str, Any]:
+        run = self.repository.get_run(run_id)
+        if run is None:
+            raise ValueError(f"Backtest run not found: {run_id}")
+        if run.status == "running":
+            raise ValueError("Running tasks must be cancelled before deletion")
+        deleted = self.repository.delete_run(run_id)
+        if not deleted:
+            raise ValueError(f"Backtest run not found: {run_id}")
+        self._worker_wake_event.set()
+        return {
+            "run_id": run_id,
+            "deleted": True,
+            "message": "任务已删除",
+        }
 
     def get_summary(self, run_id: str) -> Dict[str, Any]:
         run = self.repository.get_run(run_id)
@@ -356,19 +763,21 @@ class MomentumBacktestService:
             "items": items,
         }
 
-    def _replay_trade_date(self, *, trade_dt: date, profile: str, top_n: int) -> _ReplayDayArtifacts:
-        trade_date = trade_dt.strftime("%Y-%m-%d")
-        result = self.decision_service.build(
-            top_n=top_n,
-            trade_date=trade_date,
-            profile=profile,
-            wait_for_strategy_health=False,
-        )
-        screening = result["screening"]
-        decision = result["decision"]
+    def _freeze_trade_date_artifacts(
+        self,
+        *,
+        trade_dt: date,
+        screening: Dict[str, Any],
+        decision: Dict[str, Any],
+    ) -> _ReplayDayArtifacts:
         ranked_results = list(screening.get("ranked_results") or screening.get("results") or [])
         top_candidates = ranked_results[:10]
         portfolio = list(decision.get("portfolio") or [])
+        candidate_diagnostics_by_code = {
+            str(item.get("ts_code") or ""): item
+            for item in decision.get("candidate_diagnostics") or []
+            if isinstance(item, dict) and item.get("ts_code")
+        }
         gate_snapshot = self._extract_gate_snapshot(decision)
         gate_blockers = self._build_gate_blockers_from_snapshot(gate_snapshot)
 
@@ -419,7 +828,12 @@ class MomentumBacktestService:
                 extension_score=self._to_float(item.get("extension_score")),
                 risk_score=self._to_float(item.get("risk_score")),
                 buyability_score=self._to_float(item.get("buyability_score")),
-                candidate_payload_json=self._dump_json(item),
+                candidate_payload_json=self._dump_json(
+                    self._candidate_payload_with_diagnostics(
+                        item,
+                        candidate_diagnostics_by_code.get(str(item.get("ts_code") or "")),
+                    )
+                ),
             )
             for item in top_candidates
         ]
@@ -475,6 +889,140 @@ class MomentumBacktestService:
             decision_records=decision_records,
             outcome_records=outcome_records,
         )
+
+    @staticmethod
+    def _candidate_payload_with_diagnostics(
+        item: Dict[str, Any],
+        diagnostics: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        payload = dict(item)
+        if diagnostics:
+            payload["_decision_diagnostics"] = dict(diagnostics)
+        return payload
+
+    def _update_stage(
+        self,
+        run_id: str,
+        *,
+        stage_key: str,
+        trade_dt: Optional[date],
+        stage_label: Optional[str] = None,
+    ) -> None:
+        self.repository.update_run(
+            run_id,
+            current_stage_key=stage_key,
+            current_stage_label=stage_label or RUN_STAGE_LABELS.get(stage_key, stage_key),
+            current_trade_date=trade_dt,
+            heartbeat_at=datetime.now(),
+        )
+
+    def _start_stage_heartbeat(
+        self,
+        *,
+        run_id: str,
+        stage_key: str,
+        trade_dt: Optional[date],
+        label_state: Optional[Dict[str, Any]] = None,
+        interval_seconds: Optional[float] = None,
+    ):
+        stop_event = threading.Event()
+        heartbeat_interval_seconds = float(interval_seconds or self.stage_heartbeat_interval_seconds)
+
+        def _heartbeat_loop() -> None:
+            while not stop_event.wait(heartbeat_interval_seconds):
+                try:
+                    stage_label = (
+                        str(label_state.get("value"))
+                        if isinstance(label_state, dict) and label_state.get("value")
+                        else RUN_STAGE_LABELS.get(stage_key, stage_key)
+                    )
+                    self.repository.update_run(
+                        run_id,
+                        current_stage_key=stage_key,
+                        current_stage_label=stage_label,
+                        current_trade_date=trade_dt,
+                        heartbeat_at=datetime.now(),
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "Failed to refresh heartbeat for momentum backtest stage: run_id=%s stage=%s",
+                        run_id,
+                        stage_key,
+                    )
+
+        heartbeat_thread = threading.Thread(
+            target=_heartbeat_loop,
+            name=f"momentum-stage-heartbeat-{run_id}-{stage_key}",
+            daemon=True,
+        )
+        heartbeat_thread.start()
+
+        def _stop() -> None:
+            stop_event.set()
+            if heartbeat_thread.is_alive():
+                heartbeat_thread.join(timeout=1.0)
+
+        return _stop
+
+    def _build_secondary_decision_progress_callback(
+        self,
+        *,
+        run_id: str,
+        trade_dt: date,
+        label_state: Optional[Dict[str, Any]] = None,
+    ):
+        last_progress_signature: Dict[str, Any] = {
+            "valid_sample_count": None,
+            "processed_trade_date_count": None,
+            "total_trade_date_count": None,
+            "status": None,
+        }
+
+        def _callback(runtime_metadata: Dict[str, Any]) -> None:
+            progress = runtime_metadata.get("progress") if isinstance(runtime_metadata, dict) else None
+            if not isinstance(progress, dict):
+                return
+
+            signature = {
+                "valid_sample_count": int(progress.get("valid_sample_count", 0) or 0),
+                "processed_trade_date_count": int(progress.get("processed_trade_date_count", 0) or 0),
+                "total_trade_date_count": int(progress.get("total_trade_date_count", 0) or 0),
+                "status": str(progress.get("status") or ""),
+            }
+            if signature == last_progress_signature:
+                return
+            last_progress_signature.update(signature)
+            stage_label = self._build_secondary_decision_progress_label(progress)
+            if isinstance(label_state, dict):
+                label_state["value"] = stage_label
+
+            self.repository.update_run(
+                run_id,
+                current_stage_key="secondary_decision",
+                current_stage_label=stage_label,
+                current_trade_date=trade_dt,
+                heartbeat_at=datetime.now(),
+            )
+
+        return _callback
+
+    def _build_secondary_decision_progress_label(self, progress: Dict[str, Any]) -> str:
+        base_label = RUN_STAGE_LABELS["secondary_decision"]
+        valid_sample_count = int(progress.get("valid_sample_count", 0) or 0)
+        target_sample_count = int(progress.get("target_sample_count", 0) or 0)
+        processed_trade_date_count = int(progress.get("processed_trade_date_count", 0) or 0)
+        total_trade_date_count = int(progress.get("total_trade_date_count", 0) or 0)
+
+        if valid_sample_count > 0 and target_sample_count > 0:
+            return f"{base_label}（样本 {valid_sample_count}/{target_sample_count}）"
+        if processed_trade_date_count > 0 and total_trade_date_count > 0:
+            return f"{base_label}（扫描 {processed_trade_date_count}/{total_trade_date_count}）"
+        return base_label
+
+    def _raise_if_cancel_requested(self, run_id: str) -> None:
+        run = self.repository.get_run(run_id)
+        if run is not None and run.cancel_requested:
+            raise _MomentumBacktestCancelled(run_id)
 
     def _extract_gate_snapshot(self, decision: Dict[str, Any]) -> List[Dict[str, Any]]:
         return [
@@ -1643,6 +2191,7 @@ class MomentumBacktestService:
         row: MomentumBacktestCandidateRecord,
         outcome: Optional[MomentumBacktestOutcomeRecord],
     ) -> Dict[str, Any]:
+        payload_snapshot = MomentumBacktestService._load_json(row.candidate_payload_json) or {}
         payload = {
             "rank": row.rank,
             "ts_code": row.ts_code,
@@ -1657,6 +2206,9 @@ class MomentumBacktestService:
             "risk_score": row.risk_score,
             "buyability_score": row.buyability_score,
         }
+        diagnostics = payload_snapshot.get("_decision_diagnostics")
+        if isinstance(diagnostics, dict):
+            payload["decision_diagnostics"] = diagnostics
         if outcome is not None:
             payload["outcome"] = MomentumBacktestService._serialize_outcome_record(outcome)
         return payload
@@ -1758,21 +2310,39 @@ class MomentumBacktestService:
 
     def _list_trade_dates(self, start_dt: date, end_dt: date) -> List[date]:
         fetcher = self.screener_service.fetcher
-        trade_dates: List[str] = []
+        parsed: List[date] = []
 
         trade_dates_loader = getattr(fetcher, "_get_trade_dates", None)
         if callable(trade_dates_loader):
             try:
                 trade_dates = list(trade_dates_loader(end_dt.strftime("%Y%m%d")) or [])
+                parsed = self._filter_trade_dates_to_range(
+                    trade_dates,
+                    start_dt=start_dt,
+                    end_dt=end_dt,
+                )
+                if parsed and parsed[0] > start_dt:
+                    logger.info(
+                        "Momentum backtest trade dates cache is incomplete for %s -> %s, falling back to trade_cal",
+                        start_dt.isoformat(),
+                        end_dt.isoformat(),
+                    )
+                    parsed = []
             except Exception:  # noqa: BLE001
                 logger.exception("Momentum backtest failed to load trade dates via _get_trade_dates")
 
-        if not trade_dates:
+        if not parsed:
             attr_dates = getattr(fetcher, "trade_dates", None)
             if isinstance(attr_dates, list) and attr_dates:
-                trade_dates = [str(item) for item in attr_dates]
+                parsed = self._filter_trade_dates_to_range(
+                    [str(item) for item in attr_dates],
+                    start_dt=start_dt,
+                    end_dt=end_dt,
+                )
+                if parsed and parsed[0] > start_dt:
+                    parsed = []
 
-        if not trade_dates:
+        if not parsed:
             try:
                 calendar = fetcher._call_api_with_rate_limit(  # noqa: SLF001
                     "trade_cal",
@@ -1783,17 +2353,32 @@ class MomentumBacktestService:
                 if isinstance(calendar, pd.DataFrame) and not calendar.empty and "cal_date" in calendar.columns:
                     if "is_open" in calendar.columns:
                         calendar = calendar[calendar["is_open"] == 1]
-                    trade_dates = calendar["cal_date"].astype(str).tolist()
+                    parsed = self._filter_trade_dates_to_range(
+                        calendar["cal_date"].astype(str).tolist(),
+                        start_dt=start_dt,
+                        end_dt=end_dt,
+                    )
             except Exception:  # noqa: BLE001
                 logger.exception("Momentum backtest failed to load trade dates via trade_cal")
 
-        parsed = [
-            datetime.strptime(str(item), "%Y%m%d").date()
-            for item in trade_dates
-            if start_dt <= datetime.strptime(str(item), "%Y%m%d").date() <= end_dt
-        ]
-        parsed = sorted(set(parsed))
         return parsed
+
+    @staticmethod
+    def _filter_trade_dates_to_range(
+        trade_dates: List[str],
+        *,
+        start_dt: date,
+        end_dt: date,
+    ) -> List[date]:
+        parsed: List[date] = []
+        for item in trade_dates:
+            try:
+                trade_dt = datetime.strptime(str(item), "%Y%m%d").date()
+            except (TypeError, ValueError):
+                continue
+            if start_dt <= trade_dt <= end_dt:
+                parsed.append(trade_dt)
+        return sorted(set(parsed))
 
     def _load_forward_bars(self, ts_code: str, trade_dt: date, days: int = 2) -> List[Dict[str, Any]]:
         fetcher = self.screener_service.fetcher
@@ -1900,7 +2485,14 @@ class MomentumBacktestService:
             "total_trade_dates": run.total_trade_dates,
             "processed_trade_dates": run.processed_trade_dates,
             "failed_trade_dates": run.failed_trade_dates,
-            "summary": self._load_complete_summary(run.run_id, run.summary_json),
+            "current_trade_date": run.current_trade_date.isoformat() if run.current_trade_date else None,
+            "current_stage_key": run.current_stage_key,
+            "current_stage_label": run.current_stage_label,
+            "heartbeat_at": run.heartbeat_at.isoformat() if run.heartbeat_at else None,
+            "started_at": run.started_at.isoformat() if run.started_at else None,
+            "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+            "cancel_requested": bool(run.cancel_requested),
+            "summary": self._load_json(run.summary_json),
             "error_message": run.error_message,
             "created_at": run.created_at.isoformat() if run.created_at else None,
             "updated_at": run.updated_at.isoformat() if run.updated_at else None,

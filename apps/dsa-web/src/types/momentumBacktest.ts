@@ -5,6 +5,12 @@ export interface MomentumBacktestCreateRequest {
   topN?: number;
 }
 
+export interface MomentumBacktestTaskSection {
+  total: number;
+  limit?: number | null;
+  items: MomentumBacktestRunResponse[];
+}
+
 export interface MomentumBacktestSummary {
   completedTradeDates: number;
   actionBreakdown: Record<string, number>;
@@ -106,7 +112,7 @@ export interface MomentumBacktestRegimeBreakdownItem {
 
 export interface MomentumBacktestRunResponse {
   runId: string;
-  status: 'running' | 'completed' | 'failed';
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
   profile: 'standard' | 'aggressive';
   engineVersion: string;
   entryBaselineVersion: string;
@@ -117,10 +123,36 @@ export interface MomentumBacktestRunResponse {
   totalTradeDates: number;
   processedTradeDates: number;
   failedTradeDates: number;
+  currentTradeDate?: string | null;
+  currentStageKey?: string | null;
+  currentStageLabel?: string | null;
+  heartbeatAt?: string | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  cancelRequested: boolean;
   summary?: MomentumBacktestSummary | null;
   errorMessage?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
+}
+
+export interface MomentumBacktestCreateResponse {
+  createdNew: boolean;
+  message: string;
+  run: MomentumBacktestRunResponse;
+}
+
+export interface MomentumBacktestRunListResponse {
+  currentRunning?: MomentumBacktestRunResponse | null;
+  queued: MomentumBacktestTaskSection;
+  history: MomentumBacktestTaskSection;
+  refreshedAt?: string | null;
+}
+
+export interface MomentumBacktestDeleteResponse {
+  runId: string;
+  deleted: boolean;
+  message: string;
 }
 
 export interface MomentumBacktestSummaryResponse {
@@ -206,6 +238,7 @@ export interface MomentumBacktestCandidateDetailItem {
   extensionScore?: number | null;
   riskScore?: number | null;
   buyabilityScore?: number | null;
+  decisionDiagnostics?: Record<string, unknown> | null;
   outcome?: MomentumBacktestOutcomeItem | null;
 }
 

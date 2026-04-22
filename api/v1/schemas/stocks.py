@@ -223,6 +223,9 @@ class MomentumDecisionPortfolioSlot(BaseModel):
     score: float = Field(..., description="组合优先级分")
     rank_score: float = Field(..., description="原始排序分")
     risk_score: float = Field(..., description="风险分")
+    rule_base_score: Optional[float] = Field(None, description="规则底座分")
+    decision_score: Optional[float] = Field(None, description="二次决策规则分")
+    forward_alpha_score: Optional[float] = Field(None, description="未来 1-2 日延续潜力先验分")
     buy_point_status: Literal["clear", "waiting", "unclear"] = Field(..., description="买点状态枚举")
     buy_point_label: str = Field(..., description="买点状态文案")
     suggested_action: Literal["ready", "wait_for_trigger", "observe_only"] = Field(
@@ -237,6 +240,7 @@ class MomentumDecisionPortfolioSlot(BaseModel):
     entry_range_low: Optional[float] = Field(None, description="建议买入区间下沿")
     entry_range_high: Optional[float] = Field(None, description="建议买入区间上沿")
     opportunity_tag: Optional[str] = Field(None, description="机会标签")
+    risk_tags: List[str] = Field(default_factory=list, description="风险标签")
 
 
 class MomentumDecisionExcludedCandidate(BaseModel):
@@ -249,6 +253,34 @@ class MomentumDecisionExcludedCandidate(BaseModel):
     role: str = Field(..., description="角色标签")
     reason: str = Field(..., description="主淘汰原因")
     rank_score: float = Field(..., description="排序分")
+
+
+class MomentumDecisionCandidateDiagnostic(BaseModel):
+    """二次决策候选股级别排序诊断。"""
+
+    rank: int = Field(..., description="完整排序集排名")
+    ts_code: str = Field(..., description="股票代码")
+    name: str = Field(..., description="股票名称")
+    theme: str = Field(..., description="所属主线")
+    theme_score: float = Field(..., description="主线评分")
+    role_key: str = Field(..., description="角色枚举")
+    role: str = Field(..., description="角色标签")
+    buy_point_status: str = Field(..., description="买点状态枚举")
+    buy_point_label: str = Field(..., description="买点状态文案")
+    rank_score: float = Field(..., description="原始排序分")
+    continuation_score: float = Field(..., description="延续分")
+    extension_score: float = Field(..., description="弹性分")
+    extension_signal_score: float = Field(..., description="用于延续判断的弹性信号分")
+    buyability_score: Optional[float] = Field(None, description="可买性分")
+    risk_score: float = Field(..., description="风险分")
+    rule_base_score: float = Field(..., description="规则底座分")
+    explain_adjustment_score: float = Field(..., description="解释修正分")
+    decision_score: float = Field(..., description="二次决策规则分")
+    forward_alpha_score: float = Field(..., description="未来 1-2 日延续潜力先验分")
+    forward_alpha_adjustment: float = Field(..., description="前瞻先验对组合排序的修正值")
+    portfolio_priority: float = Field(..., description="最终组合排序优先级")
+    selected_slot: Optional[str] = Field(None, description="入选槽位")
+    is_selected: bool = Field(False, description="是否进入默认组合")
 
 
 class MomentumDecisionEvidence(BaseModel):
@@ -398,6 +430,10 @@ class MomentumSecondaryDecision(BaseModel):
     strategy_health: MomentumStrategyHealth = Field(..., description="策略健康状态")
     themes: List[MomentumDecisionTheme] = Field(default_factory=list, description="主线识别结果")
     portfolio: List[MomentumDecisionPortfolioSlot] = Field(default_factory=list, description="默认 1-3 票组合")
+    candidate_diagnostics: List[MomentumDecisionCandidateDiagnostic] = Field(
+        default_factory=list,
+        description="候选股级别排序诊断",
+    )
     excluded_candidates: List[MomentumDecisionExcludedCandidate] = Field(
         default_factory=list,
         description="未进入默认组合的候选股说明",
@@ -622,7 +658,7 @@ class MomentumBacktestRunResponse(BaseModel):
     """V1 回测任务状态。"""
 
     run_id: str = Field(..., description="回测任务 ID")
-    status: Literal["running", "completed", "failed"] = Field(..., description="回测任务状态")
+    status: Literal["queued", "running", "completed", "failed", "cancelled"] = Field(..., description="回测任务状态")
     profile: Literal["standard", "aggressive"] = Field(..., description="回放使用的画像")
     engine_version: str = Field(..., description="回测引擎版本")
     entry_baseline_version: str = Field(..., description="候选池入口基线版本")
@@ -633,10 +669,50 @@ class MomentumBacktestRunResponse(BaseModel):
     total_trade_dates: int = Field(..., description="区间内交易日总数")
     processed_trade_dates: int = Field(..., description="已处理交易日数量")
     failed_trade_dates: int = Field(..., description="失败交易日数量")
+    current_trade_date: Optional[str] = Field(None, description="当前正在处理的交易日")
+    current_stage_key: Optional[str] = Field(None, description="当前阶段键")
+    current_stage_label: Optional[str] = Field(None, description="当前阶段文案")
+    heartbeat_at: Optional[str] = Field(None, description="最近一次进度心跳时间")
+    started_at: Optional[str] = Field(None, description="任务实际开始时间")
+    finished_at: Optional[str] = Field(None, description="任务实际结束时间")
+    cancel_requested: bool = Field(False, description="当前是否已经请求取消")
     summary: Optional[MomentumBacktestSummary] = Field(None, description="当前区间摘要")
     error_message: Optional[str] = Field(None, description="任务错误信息")
     created_at: Optional[str] = Field(None, description="创建时间")
     updated_at: Optional[str] = Field(None, description="更新时间")
+
+
+class MomentumBacktestCreateResponse(BaseModel):
+    """V1 回测任务创建结果。"""
+
+    created_new: bool = Field(..., description="是否本次新建了任务")
+    message: str = Field(..., description="前端可直接展示的提示文案")
+    run: MomentumBacktestRunResponse = Field(..., description="当前定位到的回测任务")
+
+
+class MomentumBacktestRunSectionResponse(BaseModel):
+    """V1 回测任务列表的单个分区。"""
+
+    total: int = Field(..., description="该分区内的任务数量")
+    limit: Optional[int] = Field(None, description="该分区的默认展示上限")
+    items: List[MomentumBacktestRunResponse] = Field(default_factory=list, description="该分区的任务列表")
+
+
+class MomentumBacktestRunListResponse(BaseModel):
+    """V1 回测任务列表响应。"""
+
+    current_running: Optional[MomentumBacktestRunResponse] = Field(None, description="当前正在后台计算的任务")
+    queued: MomentumBacktestRunSectionResponse = Field(..., description="排队中的任务列表")
+    history: MomentumBacktestRunSectionResponse = Field(..., description="历史任务列表")
+    refreshed_at: Optional[str] = Field(None, description="最近一次列表刷新时间")
+
+
+class MomentumBacktestDeleteResponse(BaseModel):
+    """V1 回测任务删除响应。"""
+
+    run_id: str = Field(..., description="已删除的回测任务 ID")
+    deleted: bool = Field(..., description="是否已成功删除")
+    message: str = Field(..., description="前端可直接展示的提示文案")
 
 
 class MomentumBacktestSummaryResponse(BaseModel):
@@ -736,6 +812,7 @@ class MomentumBacktestCandidateDetailItem(BaseModel):
     extension_score: Optional[float] = Field(None, description="弹性分")
     risk_score: Optional[float] = Field(None, description="风险分")
     buyability_score: Optional[float] = Field(None, description="可买性分")
+    decision_diagnostics: Optional[Dict[str, Any]] = Field(None, description="二次决策排序诊断快照")
     outcome: Optional[MomentumBacktestOutcomeItem] = Field(None, description="该候选股的真实结果")
 
 
@@ -756,6 +833,7 @@ class MomentumBacktestDecisionDetailItem(BaseModel):
     entry_range_low: Optional[float] = Field(None, description="建议买入区间下沿")
     entry_range_high: Optional[float] = Field(None, description="建议买入区间上沿")
     opportunity_tag: Optional[str] = Field(None, description="机会标签")
+    risk_tags: List[str] = Field(default_factory=list, description="风险标签")
     outcome: Optional[MomentumBacktestOutcomeItem] = Field(None, description="该组合票的真实结果")
 
 
