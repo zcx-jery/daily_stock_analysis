@@ -24,6 +24,7 @@ MOMENTUM_EOD_READY_COVERAGE_RATIO = 0.6
 MOMENTUM_MARKET_CLOSE_CUTOFF = "15:00"
 MOMENTUM_ENTRY_BASELINE_VERSION = "v1_4_2_2"
 MOMENTUM_MARKET_SCOPE_VERSION = "v1_a_share_main_chinext_star"
+MOMENTUM_SCREENING_CACHE_VERSION = "v1_4_2_2_ranked_screening_v1"
 MOMENTUM_DEFAULT_TOP_N = 30
 MOMENTUM_DEFAULT_MIN_CHANGE_PCT = 4.0
 MOMENTUM_DEFAULT_MIN_AMOUNT = 2e8
@@ -64,6 +65,9 @@ class MomentumScreenerService:
     _shared_candidate_pool_cache: Dict[str, Dict[str, Any]] = {}
     _candidate_pool_cache_ttl_seconds: int = 7 * 24 * 60 * 60
     _candidate_pool_cache_dirname: str = "momentum_candidate_pools"
+    _shared_screening_result_cache: Dict[str, Dict[str, Any]] = {}
+    _screening_result_cache_ttl_seconds: int = 7 * 24 * 60 * 60
+    _screening_result_cache_dirname: str = "momentum_screening_results"
     _shared_history_cache: Dict[str, Dict[str, Any]] = {}
     _history_cache_ttl_seconds: int = 12 * 60 * 60
     _history_cache_dirname: str = "momentum_histories"
@@ -74,11 +78,13 @@ class MomentumScreenerService:
         history_cache_dir: Optional[Path] = None,
         trade_snapshot_cache_dir: Optional[Path] = None,
         candidate_pool_cache_dir: Optional[Path] = None,
+        screening_result_cache_dir: Optional[Path] = None,
     ) -> None:
         self.fetcher = fetcher or TushareFetcher(rate_limit_per_minute=200)
         self._sector_context_cache = self.__class__._shared_sector_context_cache
         self._trade_snapshot_cache = self.__class__._shared_trade_snapshot_cache
         self._candidate_pool_cache = self.__class__._shared_candidate_pool_cache
+        self._screening_result_cache = self.__class__._shared_screening_result_cache
         self._history_cache = self.__class__._shared_history_cache
         self.__class__._refresh_sector_cache_ttl_from_config()
         self._trade_snapshot_cache_dir = (
@@ -90,6 +96,11 @@ class MomentumScreenerService:
             Path(candidate_pool_cache_dir)
             if candidate_pool_cache_dir is not None
             else Path.cwd() / "data" / "cache" / self.__class__._candidate_pool_cache_dirname
+        )
+        self._screening_result_cache_dir = (
+            Path(screening_result_cache_dir)
+            if screening_result_cache_dir is not None
+            else Path.cwd() / "data" / "cache" / self.__class__._screening_result_cache_dirname
         )
         self._history_cache_dir = (
             Path(history_cache_dir)
@@ -105,6 +116,7 @@ class MomentumScreenerService:
         cls._shared_sector_cache_stats = {"hit": 0, "miss": 0, "expired": 0}
         cls._shared_trade_snapshot_cache.clear()
         cls._shared_candidate_pool_cache.clear()
+        cls._shared_screening_result_cache.clear()
         cls._shared_history_cache.clear()
 
     @classmethod
@@ -145,8 +157,45 @@ class MomentumScreenerService:
         if profile not in {"standard", "aggressive"}:
             raise ValueError("仅支持 profile=standard 或 profile=aggressive")
 
+        explicit_cached = self._load_cached_screening_for_explicit_trade_date(
+            trade_date=trade_date,
+            top_n=top_n,
+            min_change_pct=min_change_pct,
+            min_amount=min_amount,
+            min_turnover=min_turnover,
+            exclude_st=exclude_st,
+            main_board_only=main_board_only,
+            profile=profile,
+            use_sector_context=use_sector_context,
+            max_scored_candidates=max_scored_candidates,
+        )
+        if explicit_cached is not None:
+            return explicit_cached
+
         trade_date_resolution = self._resolve_trade_date_and_snapshot(trade_date)
         resolved_trade_date = trade_date_resolution["trade_date"]
+        screening_cache_key: Optional[str] = None
+        if self._is_past_trade_date(resolved_trade_date):
+            screening_cache_key = self._build_screening_result_cache_key(
+                trade_date=resolved_trade_date,
+                min_change_pct=min_change_pct,
+                min_amount=min_amount,
+                min_turnover=min_turnover,
+                exclude_st=exclude_st,
+                main_board_only=main_board_only,
+                profile=profile,
+                use_sector_context=use_sector_context,
+                max_scored_candidates=max_scored_candidates,
+            )
+            cached_screening = self._load_cached_screening_result(screening_cache_key)
+            if cached_screening is not None:
+                return self._build_screening_response_from_cached(
+                    cached_screening,
+                    top_n=top_n,
+                    requested_trade_date=trade_date_resolution.get("requested_trade_date"),
+                    trade_date_note=trade_date_resolution.get("trade_date_note"),
+                )
+
         snapshot = trade_date_resolution["snapshot"]
         candidates = self._load_candidate_pool(
             trade_date=resolved_trade_date,
@@ -200,6 +249,18 @@ class MomentumScreenerService:
         results = sorted(results, key=lambda item: item["rank_score"], reverse=True)
         for index, item in enumerate(results, start=1):
             item["rank"] = index
+
+        cached_payload = {
+            "profile": profile,
+            "trade_date": self._format_trade_date(resolved_trade_date),
+            "entry_baseline_version": MOMENTUM_ENTRY_BASELINE_VERSION,
+            "market_scope_version": MOMENTUM_MARKET_SCOPE_VERSION,
+            "screening_cache_version": MOMENTUM_SCREENING_CACHE_VERSION,
+            "candidate_count": len(candidates),
+            "ranked_results": results,
+        }
+        if screening_cache_key is not None:
+            self._store_cached_screening_result(screening_cache_key, cached_payload)
 
         return {
             "profile": profile,
@@ -855,6 +916,63 @@ class MomentumScreenerService:
         normalized = _safe_str(stock_code).strip().upper()
         return f"{normalized}|{start_date}|{end_date}|{days}"
 
+    def _load_cached_screening_for_explicit_trade_date(
+        self,
+        *,
+        trade_date: Optional[str],
+        top_n: int,
+        min_change_pct: float,
+        min_amount: float,
+        min_turnover: float,
+        exclude_st: bool,
+        main_board_only: bool,
+        profile: str,
+        use_sector_context: bool,
+        max_scored_candidates: Optional[int],
+    ) -> Optional[Dict[str, Any]]:
+        normalized_trade_date = self._normalize_trade_date(trade_date)
+        if not normalized_trade_date or not self._is_past_trade_date(normalized_trade_date):
+            return None
+
+        cache_key = self._build_screening_result_cache_key(
+            trade_date=normalized_trade_date,
+            min_change_pct=min_change_pct,
+            min_amount=min_amount,
+            min_turnover=min_turnover,
+            exclude_st=exclude_st,
+            main_board_only=main_board_only,
+            profile=profile,
+            use_sector_context=use_sector_context,
+            max_scored_candidates=max_scored_candidates,
+        )
+        cached = self._load_cached_screening_result(cache_key)
+        if cached is None:
+            return None
+        return self._build_screening_response_from_cached(
+            cached,
+            top_n=top_n,
+            requested_trade_date=self._format_trade_date(normalized_trade_date),
+            trade_date_note=None,
+        )
+
+    @staticmethod
+    def _normalize_trade_date(trade_date: Optional[str]) -> Optional[str]:
+        normalized = _safe_str(trade_date).strip().replace("-", "")
+        if len(normalized) != 8 or not normalized.isdigit():
+            return None
+        try:
+            datetime.strptime(normalized, "%Y%m%d")
+        except ValueError:
+            return None
+        return normalized
+
+    def _is_past_trade_date(self, trade_date: str) -> bool:
+        try:
+            parsed = datetime.strptime(trade_date, "%Y%m%d").date()
+        except ValueError:
+            return False
+        return parsed < self._get_china_now().date()
+
     def _build_candidate_pool_cache_key(
         self,
         *,
@@ -876,6 +994,66 @@ class MomentumScreenerService:
             "market_scope_version": MOMENTUM_MARKET_SCOPE_VERSION,
         }
         return "|".join(f"{key}={value}" for key, value in normalized.items())
+
+    def _build_screening_result_cache_key(
+        self,
+        *,
+        trade_date: str,
+        min_change_pct: float,
+        min_amount: float,
+        min_turnover: float,
+        exclude_st: bool,
+        main_board_only: bool,
+        profile: str,
+        use_sector_context: bool,
+        max_scored_candidates: Optional[int],
+    ) -> str:
+        normalized = {
+            "trade_date": trade_date,
+            "profile": profile,
+            "min_change_pct": round(_safe_float(min_change_pct), 3),
+            "min_amount": round(_safe_float(min_amount), 3),
+            "min_turnover": round(_safe_float(min_turnover), 3),
+            "exclude_st": bool(exclude_st),
+            "main_board_only": bool(main_board_only),
+            "use_sector_context": bool(use_sector_context),
+            "max_scored_candidates": int(max_scored_candidates or 0),
+            "entry_baseline_version": MOMENTUM_ENTRY_BASELINE_VERSION,
+            "market_scope_version": MOMENTUM_MARKET_SCOPE_VERSION,
+            "screening_cache_version": MOMENTUM_SCREENING_CACHE_VERSION,
+        }
+        return "|".join(f"{key}={value}" for key, value in normalized.items())
+
+    def _build_screening_response_from_cached(
+        self,
+        payload: Dict[str, Any],
+        *,
+        top_n: int,
+        requested_trade_date: Optional[str],
+        trade_date_note: Optional[str],
+    ) -> Dict[str, Any]:
+        ranked_results = [
+            dict(item)
+            for item in payload.get("ranked_results", [])
+            if isinstance(item, dict)
+        ]
+        return {
+            "profile": _safe_str(payload.get("profile"), "standard"),
+            "trade_date": _safe_str(payload.get("trade_date")),
+            "requested_trade_date": requested_trade_date,
+            "trade_date_note": trade_date_note,
+            "entry_baseline_version": _safe_str(
+                payload.get("entry_baseline_version"),
+                MOMENTUM_ENTRY_BASELINE_VERSION,
+            ),
+            "market_scope_version": _safe_str(
+                payload.get("market_scope_version"),
+                MOMENTUM_MARKET_SCOPE_VERSION,
+            ),
+            "candidate_count": int(_safe_float(payload.get("candidate_count"), len(ranked_results))),
+            "ranked_results": ranked_results,
+            "results": ranked_results[:top_n],
+        }
 
     @staticmethod
     def _copy_snapshot(snapshot: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
@@ -1070,6 +1248,88 @@ class MomentumScreenerService:
             )
         except Exception:
             logger.debug("Momentum candidate pool disk cache write failed: key=%s", cache_key, exc_info=True)
+
+    def _load_cached_screening_result(self, cache_key: str) -> Optional[Dict[str, Any]]:
+        cached = self._screening_result_cache.get(cache_key)
+        if cached is not None:
+            expires_at = _safe_float(cached.get("expires_at"))
+            if expires_at > self.__class__._cache_now_ts():
+                payload = cached.get("payload")
+                if self._is_valid_screening_cache_payload(payload):
+                    return json.loads(json.dumps(payload, ensure_ascii=False))
+                self._screening_result_cache.pop(cache_key, None)
+            else:
+                self._screening_result_cache.pop(cache_key, None)
+
+        return self._load_disk_cached_screening_result(cache_key)
+
+    def _store_cached_screening_result(self, cache_key: str, payload: Dict[str, Any]) -> None:
+        if not self._is_valid_screening_cache_payload(payload):
+            return
+        expires_at = self.__class__._cache_now_ts() + self.__class__._screening_result_cache_ttl_seconds
+        cache_payload = json.loads(json.dumps(payload, ensure_ascii=False))
+        self._screening_result_cache[cache_key] = {
+            "payload": cache_payload,
+            "expires_at": expires_at,
+        }
+        self._store_disk_cached_screening_result(cache_key, cache_payload, expires_at)
+
+    def _screening_result_cache_path(self, cache_key: str) -> Path:
+        digest = hashlib.sha1(f"screening|{cache_key}".encode("utf-8")).hexdigest()
+        return self._screening_result_cache_dir / f"{digest}.json"
+
+    def _load_disk_cached_screening_result(self, cache_key: str) -> Optional[Dict[str, Any]]:
+        cache_path = self._screening_result_cache_path(cache_key)
+        if not cache_path.exists():
+            return None
+        try:
+            payload = json.loads(cache_path.read_text(encoding="utf-8"))
+            expires_at = _safe_float(payload.get("expires_at"))
+            if expires_at <= self.__class__._cache_now_ts():
+                return None
+
+            screening_payload = payload.get("screening")
+            if not self._is_valid_screening_cache_payload(screening_payload):
+                return None
+            self._screening_result_cache[cache_key] = {
+                "payload": screening_payload,
+                "expires_at": expires_at,
+            }
+            return json.loads(json.dumps(screening_payload, ensure_ascii=False))
+        except Exception:
+            logger.debug("Momentum screening result disk cache read failed: key=%s", cache_key, exc_info=True)
+            return None
+
+    def _store_disk_cached_screening_result(
+        self,
+        cache_key: str,
+        payload: Dict[str, Any],
+        expires_at: float,
+    ) -> None:
+        try:
+            self._screening_result_cache_dir.mkdir(parents=True, exist_ok=True)
+            cache_path = self._screening_result_cache_path(cache_key)
+            cache_path.write_text(
+                json.dumps(
+                    {
+                        "expires_at": expires_at,
+                        "screening": payload,
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+        except Exception:
+            logger.debug("Momentum screening result disk cache write failed: key=%s", cache_key, exc_info=True)
+
+    @staticmethod
+    def _is_valid_screening_cache_payload(payload: Any) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        if payload.get("screening_cache_version") != MOMENTUM_SCREENING_CACHE_VERSION:
+            return False
+        ranked_results = payload.get("ranked_results")
+        return isinstance(ranked_results, list) and len(ranked_results) > 0
 
     @staticmethod
     def _is_trade_snapshot_ready(snapshot: Dict[str, pd.DataFrame]) -> bool:

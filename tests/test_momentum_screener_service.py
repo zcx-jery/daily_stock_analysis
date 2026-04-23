@@ -301,6 +301,7 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
             history_cache_dir=cache_root / "histories",
             trade_snapshot_cache_dir=cache_root / "snapshots",
             candidate_pool_cache_dir=cache_root / "candidate_pools",
+            screening_result_cache_dir=cache_root / "screening_results",
         )
 
     def test_screen_returns_ranked_results(self) -> None:
@@ -573,6 +574,36 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
 
         self.assertEqual(second["candidate_count"], 2)
         self.assertEqual(len(second["ranked_results"]), 2)
+
+    def test_screening_result_cache_shortcuts_historical_replay_before_snapshot_load(self) -> None:
+        fetcher = _FakeFetcher(current_time=datetime(2026, 4, 11, 18, 0, 0))
+
+        first_service = self._build_service(fetcher)
+        first = first_service.screen(top_n=2, profile="standard", trade_date="2026-04-10")
+
+        self.assertEqual(first["candidate_count"], 2)
+        self.assertEqual(fetcher.api_calls.get("daily"), 1)
+        self.assertEqual(fetcher.history_calls.get("600001"), 1)
+
+        MomentumScreenerService._shared_sector_context_cache.clear()
+        MomentumScreenerService._shared_trade_snapshot_cache.clear()
+        MomentumScreenerService._shared_candidate_pool_cache.clear()
+        MomentumScreenerService._shared_history_cache.clear()
+
+        second_service = self._build_service(fetcher)
+        with patch.object(
+            second_service,
+            "_load_trade_snapshot",
+            side_effect=AssertionError("historical screening should come from ranked-result cache"),
+        ):
+            second = second_service.screen(top_n=1, profile="standard", trade_date="2026-04-10")
+
+        self.assertEqual(second["candidate_count"], 2)
+        self.assertEqual(len(second["results"]), 1)
+        self.assertEqual(len(second["ranked_results"]), 2)
+        self.assertEqual(second["results"][0]["ts_code"], first["results"][0]["ts_code"])
+        self.assertEqual(fetcher.api_calls.get("daily"), 1)
+        self.assertEqual(fetcher.history_calls.get("600001"), 1)
 
 
 if __name__ == "__main__":

@@ -109,6 +109,7 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
             history_cache_dir=cache_root / "histories",
             trade_snapshot_cache_dir=cache_root / "snapshots",
             candidate_pool_cache_dir=cache_root / "candidate_pools",
+            screening_result_cache_dir=cache_root / "screening_results",
         )
         decision_service = MomentumSecondaryDecisionService(
             screener_service=screener_service,

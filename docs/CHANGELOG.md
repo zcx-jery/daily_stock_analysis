@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [改进] V1 强势筛选新增完整排序结果缓存：历史交易日同一官方入口与同一 profile 重复筛选/回测时，可在加载全量快照和逐股历史评分前直接复用 `ranked_results`，提升回测复跑与页面重复查询性能。
 - [文档] 同步强势筛选技术设计、开发任务清单和架构索引到 V1 新口径：服务端固定 `4 / 2亿 / 2% / Top30`，回测 `Standard-only`，`Aggressive` 仅作折叠补充观察层
 - [文档] 更新强势筛选产品文档基线：官方入口统一收口为 `4 / 2亿 / 2%`、页面展示固定 `Top30`、官方回测只保留 `Standard` 链路，并补齐 `Aggressive` 折叠式进攻补充观察层的展示、治理与补充增益率口径
 - [改进] 强势筛选总闸门校准“核心溢价”口径：从二元达标改为强/中/弱分层，避免昨日 Top3 命中率短暂归零但利润窗口仍明显存在时，被市场环境误判成弱市
