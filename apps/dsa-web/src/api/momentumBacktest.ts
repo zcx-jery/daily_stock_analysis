@@ -25,7 +25,6 @@ export interface MomentumBacktestDailyQuery {
 
 export interface MomentumBacktestRunListQuery {
   limit?: number;
-  profile?: 'standard' | 'aggressive';
 }
 
 export const momentumBacktestApi = {
@@ -33,8 +32,6 @@ export const momentumBacktestApi = {
     const response = await apiClient.post<Record<string, unknown>>('/api/v1/stocks/screener/momentum/backtests', {
       start_trade_date: payload.startTradeDate,
       end_trade_date: payload.endTradeDate,
-      profile: payload.profile ?? 'standard',
-      top_n: payload.topN ?? 30,
     });
     return toCamelCase<MomentumBacktestCreateResponse>(response.data);
   },
@@ -43,7 +40,6 @@ export const momentumBacktestApi = {
     const response = await apiClient.get<Record<string, unknown>>('/api/v1/stocks/screener/momentum/backtests', {
       params: {
         limit: query.limit,
-        profile: query.profile,
       },
     });
     return toCamelCase<MomentumBacktestRunListResponse>(response.data);

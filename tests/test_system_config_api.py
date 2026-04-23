@@ -97,19 +97,19 @@ class SystemConfigApiTestCase(unittest.TestCase):
         )
         self.assertEqual(
             item_map["MOMENTUM_SCREENER_DEFAULT_TOP_N"]["schema"]["default_value"],
-            "10",
+            "30",
         )
         self.assertEqual(
             item_map["MOMENTUM_SCREENER_DEFAULT_MIN_CHANGE_PCT"]["schema"]["default_value"],
-            "7",
+            "4",
         )
         self.assertEqual(
             item_map["MOMENTUM_SCREENER_DEFAULT_MIN_AMOUNT_YI"]["schema"]["default_value"],
-            "3",
+            "2",
         )
         self.assertEqual(
             item_map["MOMENTUM_SCREENER_DEFAULT_MIN_TURNOVER"]["schema"]["default_value"],
-            "3",
+            "2",
         )
 
     def test_put_config_updates_secret_and_plain_field(self) -> None:

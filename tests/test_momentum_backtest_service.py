@@ -15,7 +15,14 @@ from src.repositories.momentum_backtest_repo import MomentumBacktestRepository
 from src.services.momentum_backtest_service import MomentumBacktestService
 from src.services.momentum_screener_service import MomentumScreenerService
 from src.services.momentum_secondary_decision_service import MomentumSecondaryDecisionService
-from src.storage import DatabaseManager, MomentumBacktestRun
+from src.storage import (
+    DatabaseManager,
+    MomentumBacktestCandidateRecord,
+    MomentumBacktestDailySummary,
+    MomentumBacktestDecisionRecord,
+    MomentumBacktestOutcomeRecord,
+    MomentumBacktestRun,
+)
 from tests.test_momentum_screener_service import _FakeFetcher
 
 
@@ -138,6 +145,90 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
 
         self.service._freeze_trade_date_artifacts = delayed  # type: ignore[method-assign]
 
+    def _build_daily_summary_fixture(self) -> MomentumBacktestDailySummary:
+        trade_date = pd.Timestamp("2026-04-10").date()
+        return MomentumBacktestDailySummary(
+            run_id="momentum_bt_diag",
+            trade_date=trade_date,
+            action_level="cautious_go",
+            action_label="谨慎出手",
+            recommendation_cap="partial",
+            action_checklist_mode="disabled",
+            market_environment_level="strong",
+            opportunity_quality_level="medium",
+            historical_validity_level="healthy",
+            candidate_count=3,
+            result_count=3,
+            selected_count=1,
+            buy_ready_count=1,
+            main_ts_code="600001.SH",
+            decision_payload_json="{}",
+            diagnosis_json="{}",
+        )
+
+    def _build_candidate_record(
+        self,
+        *,
+        ts_code: str,
+        name: str,
+        theme: str,
+        role: str,
+        rank: int,
+    ) -> MomentumBacktestCandidateRecord:
+        return MomentumBacktestCandidateRecord(
+            run_id="momentum_bt_diag",
+            trade_date=pd.Timestamp("2026-04-10").date(),
+            view_scope="candidate_top10",
+            rank=rank,
+            ts_code=ts_code,
+            name=name,
+            theme=theme,
+            role=role,
+        )
+
+    def _build_decision_record(
+        self,
+        *,
+        slot: str,
+        ts_code: str,
+        name: str,
+        theme: str,
+        role: str,
+    ) -> MomentumBacktestDecisionRecord:
+        return MomentumBacktestDecisionRecord(
+            run_id="momentum_bt_diag",
+            trade_date=pd.Timestamp("2026-04-10").date(),
+            slot=slot,
+            rank=1,
+            ts_code=ts_code,
+            name=name,
+            theme=theme,
+            role=role,
+            buy_point_status="clear",
+            suggested_action="ready",
+        )
+
+    def _build_outcome_record(
+        self,
+        *,
+        view_scope: str,
+        ts_code: str,
+        name: str,
+        t2_profit_window_pct: float,
+        slot: str | None = None,
+    ) -> MomentumBacktestOutcomeRecord:
+        return MomentumBacktestOutcomeRecord(
+            run_id="momentum_bt_diag",
+            trade_date=pd.Timestamp("2026-04-10").date(),
+            view_scope=view_scope,
+            slot=slot,
+            ts_code=ts_code,
+            name=name,
+            buy_triggered=True,
+            t2_profit_window_pct=t2_profit_window_pct,
+            t2_close_return_pct=t2_profit_window_pct / 2,
+        )
+
     def test_create_run_replays_trade_dates_and_persists_summary(self) -> None:
         result = self.service.create_run(
             start_trade_date="2026-04-08",
@@ -191,6 +282,189 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
                 end_trade_date="2026-04-08",
                 profile="standard",
             )
+
+    def test_daily_diagnosis_flags_main_slot_issue_for_same_theme_outperformer(self) -> None:
+        diagnosis = self.service._build_daily_diagnosis(
+            daily_row=self._build_daily_summary_fixture(),
+            candidate_rows=[
+                self._build_candidate_record(
+                    ts_code="600001.SH",
+                    name="主仓股",
+                    theme="电子",
+                    role="龙头核心",
+                    rank=1,
+                ),
+                self._build_candidate_record(
+                    ts_code="300001.SZ",
+                    name="同主线更强股",
+                    theme="电子",
+                    role="前排换手",
+                    rank=2,
+                ),
+            ],
+            decision_rows=[
+                self._build_decision_record(
+                    slot="main",
+                    ts_code="600001.SH",
+                    name="主仓股",
+                    theme="电子",
+                    role="龙头核心",
+                )
+            ],
+            candidate_outcomes=[
+                self._build_outcome_record(
+                    view_scope="candidate_top10",
+                    ts_code="600001.SH",
+                    name="主仓股",
+                    t2_profit_window_pct=4.0,
+                ),
+                self._build_outcome_record(
+                    view_scope="candidate_top10",
+                    ts_code="300001.SZ",
+                    name="同主线更强股",
+                    t2_profit_window_pct=9.5,
+                ),
+            ],
+            decision_outcomes=[
+                self._build_outcome_record(
+                    view_scope="decision_top3",
+                    slot="main",
+                    ts_code="600001.SH",
+                    name="主仓股",
+                    t2_profit_window_pct=4.0,
+                )
+            ],
+        )
+
+        issue = next(item for item in diagnosis["issues"] if item["issue_key"] == "main_slot_underperformed")
+        self.assertTrue(issue["metrics"]["best_candidate_same_theme"])
+        self.assertFalse(issue["metrics"]["best_candidate_in_selected_top3"])
+
+    def test_daily_diagnosis_skips_cross_theme_unselected_outlier_for_main_slot_issue(self) -> None:
+        diagnosis = self.service._build_daily_diagnosis(
+            daily_row=self._build_daily_summary_fixture(),
+            candidate_rows=[
+                self._build_candidate_record(
+                    ts_code="600001.SH",
+                    name="主仓股",
+                    theme="电子",
+                    role="龙头核心",
+                    rank=1,
+                ),
+                self._build_candidate_record(
+                    ts_code="300002.SZ",
+                    name="跨主线黑马",
+                    theme="公用事业",
+                    role="龙头核心",
+                    rank=2,
+                ),
+            ],
+            decision_rows=[
+                self._build_decision_record(
+                    slot="main",
+                    ts_code="600001.SH",
+                    name="主仓股",
+                    theme="电子",
+                    role="龙头核心",
+                )
+            ],
+            candidate_outcomes=[
+                self._build_outcome_record(
+                    view_scope="candidate_top10",
+                    ts_code="600001.SH",
+                    name="主仓股",
+                    t2_profit_window_pct=4.0,
+                ),
+                self._build_outcome_record(
+                    view_scope="candidate_top10",
+                    ts_code="300002.SZ",
+                    name="跨主线黑马",
+                    t2_profit_window_pct=12.0,
+                ),
+            ],
+            decision_outcomes=[
+                self._build_outcome_record(
+                    view_scope="decision_top3",
+                    slot="main",
+                    ts_code="600001.SH",
+                    name="主仓股",
+                    t2_profit_window_pct=4.0,
+                )
+            ],
+        )
+
+        self.assertFalse(any(item["issue_key"] == "main_slot_underperformed" for item in diagnosis["issues"]))
+
+    def test_daily_diagnosis_splits_cross_theme_selected_outperformer_into_anchor_issue(self) -> None:
+        diagnosis = self.service._build_daily_diagnosis(
+            daily_row=self._build_daily_summary_fixture(),
+            candidate_rows=[
+                self._build_candidate_record(
+                    ts_code="600001.SH",
+                    name="主仓股",
+                    theme="电子",
+                    role="龙头核心",
+                    rank=1,
+                ),
+                self._build_candidate_record(
+                    ts_code="300003.SZ",
+                    name="组合内更强股",
+                    theme="公用事业",
+                    role="龙头核心",
+                    rank=2,
+                ),
+            ],
+            decision_rows=[
+                self._build_decision_record(
+                    slot="main",
+                    ts_code="600001.SH",
+                    name="主仓股",
+                    theme="电子",
+                    role="龙头核心",
+                ),
+                self._build_decision_record(
+                    slot="watch",
+                    ts_code="300003.SZ",
+                    name="组合内更强股",
+                    theme="公用事业",
+                    role="龙头核心",
+                ),
+            ],
+            candidate_outcomes=[
+                self._build_outcome_record(
+                    view_scope="candidate_top10",
+                    ts_code="600001.SH",
+                    name="主仓股",
+                    t2_profit_window_pct=4.0,
+                ),
+                self._build_outcome_record(
+                    view_scope="candidate_top10",
+                    ts_code="300003.SZ",
+                    name="组合内更强股",
+                    t2_profit_window_pct=12.0,
+                ),
+            ],
+            decision_outcomes=[
+                self._build_outcome_record(
+                    view_scope="decision_top3",
+                    slot="main",
+                    ts_code="600001.SH",
+                    name="主仓股",
+                    t2_profit_window_pct=4.0,
+                ),
+                self._build_outcome_record(
+                    view_scope="decision_top3",
+                    slot="watch",
+                    ts_code="300003.SZ",
+                    name="组合内更强股",
+                    t2_profit_window_pct=12.0,
+                ),
+            ],
+        )
+
+        issue = next(item for item in diagnosis["issues"] if item["issue_key"] == "portfolio_anchor_underperformed")
+        self.assertFalse(issue["metrics"]["best_candidate_same_theme"])
+        self.assertTrue(issue["metrics"]["best_candidate_in_selected_top3"])
 
     def test_async_create_reuses_same_params_and_queues_different_tasks(self) -> None:
         self._slow_down_freeze()
@@ -436,7 +710,7 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
             status="running",
             profile="standard",
             engine_version="v1",
-            entry_baseline_version="v1_5_3_3",
+            entry_baseline_version="v1_4_2_2",
             market_scope_version="v1_a_share_main_chinext_star",
             top_n=30,
             start_trade_date=pd.Timestamp("2026-04-08").date(),
@@ -472,7 +746,7 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
             status="queued",
             profile="standard",
             engine_version="v1",
-            entry_baseline_version="v1_5_3_3",
+            entry_baseline_version="v1_4_2_2",
             market_scope_version="v1_a_share_main_chinext_star",
             top_n=20,
             start_trade_date=pd.Timestamp("2026-04-08").date(),

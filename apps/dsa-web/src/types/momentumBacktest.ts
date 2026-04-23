@@ -1,8 +1,6 @@
 export interface MomentumBacktestCreateRequest {
   startTradeDate: string;
   endTradeDate: string;
-  profile?: 'standard' | 'aggressive';
-  topN?: number;
 }
 
 export interface MomentumBacktestTaskSection {

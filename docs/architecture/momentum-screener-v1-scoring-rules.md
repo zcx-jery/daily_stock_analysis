@@ -68,11 +68,11 @@
 
 推荐默认值：
 
-- `min_change_pct = 7`
-- `min_amount = 3亿`
-- `min_turnover = 3%`
+- `min_change_pct = 4`
+- `min_amount = 2亿`
+- `min_turnover = 2%`
 - `exclude_st = true`
-- `main_board_only = true`
+- `main_board_only = false`（纳入主板、创业板、科创板）
 
 说明：
 

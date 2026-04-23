@@ -23,6 +23,7 @@ from src.services.momentum_screener_service import (
     MOMENTUM_DEFAULT_MIN_AMOUNT,
     MOMENTUM_DEFAULT_MIN_CHANGE_PCT,
     MOMENTUM_DEFAULT_MIN_TURNOVER,
+    MOMENTUM_DEFAULT_TOP_N,
     MomentumScreenerService,
 )
 from src.services.stock_service import StockService
@@ -47,10 +48,26 @@ GATE_LEVEL_LABELS = {
     "medium": "中",
     "weak": "弱",
 }
+OPPORTUNITY_MATRIX_LEVEL_LABELS = {
+    "strong": "强",
+    "upper_mid": "中上",
+    "mid": "中",
+    "weak": "弱",
+}
 HISTORICAL_VALIDITY_LABELS = {
     "healthy": "健康",
     "general": "一般",
     "weak": "偏弱",
+}
+ATTACK_PERMISSION_STATUS_LABELS = {
+    "open": "可进攻",
+    "recovering": "恢复中",
+    "paused": "暂停进攻",
+}
+THEME_CONFIDENCE_STATUS_LABELS = {
+    "credible": "可信",
+    "recovering": "恢复中",
+    "questionable": "存疑",
 }
 
 SLOT_LABELS = {
@@ -177,6 +194,23 @@ STRATEGY_HEALTH_MIN_PARTIAL_SAMPLE_COUNT = 5
 STRATEGY_HEALTH_MAX_SCORED_CANDIDATES = 30
 STRATEGY_HEALTH_TARGET_SAMPLE_COUNT = STRATEGY_HEALTH_WINDOW_TARGETS["long_60d"]["lookback"]
 STRATEGY_HEALTH_IN_PROGRESS_STATUSES = {"queued", "running", "partial"}
+MARKET_ENVIRONMENT_BREADTH_SAMPLE_SIZE = 10
+ATTACK_PERMISSION_MIN_SAMPLES = {
+    "open": 5,
+    "recovering": 3,
+}
+ATTACK_PERMISSION_HIT_RATE_THRESHOLDS = {
+    "open": 55.0,
+    "recovering": 40.0,
+}
+THEME_CONFIDENCE_MIN_SAMPLES = {
+    "credible": 12,
+    "recovering": 8,
+}
+THEME_CONFIDENCE_SCORE_THRESHOLDS = {
+    "credible": 60.0,
+    "recovering": 45.0,
+}
 STRATEGY_HEALTH_WARMING_REASON = (
     "真实 20/60 日历史验证正在后台计算，本次先展示代理健康度，稍后刷新即可切换为真实结果。"
 )
@@ -314,7 +348,7 @@ class MomentumSecondaryDecisionService:
     def build(
         self,
         *,
-        top_n: int = 10,
+        top_n: int = MOMENTUM_DEFAULT_TOP_N,
         min_change_pct: float = MOMENTUM_DEFAULT_MIN_CHANGE_PCT,
         min_amount: float = MOMENTUM_DEFAULT_MIN_AMOUNT,
         min_turnover: float = MOMENTUM_DEFAULT_MIN_TURNOVER,
@@ -361,7 +395,7 @@ class MomentumSecondaryDecisionService:
     def build_intraday(
         self,
         *,
-        top_n: int = 10,
+        top_n: int = MOMENTUM_DEFAULT_TOP_N,
         min_change_pct: float = MOMENTUM_DEFAULT_MIN_CHANGE_PCT,
         min_amount: float = MOMENTUM_DEFAULT_MIN_AMOUNT,
         min_turnover: float = MOMENTUM_DEFAULT_MIN_TURNOVER,
@@ -417,6 +451,28 @@ class MomentumSecondaryDecisionService:
                 strategy_health_mode=strategy_health_mode,
             )
             action_reason = "当前没有形成足够强的候选池，系统不建议今天给出强推荐。"
+            attack_permission = self._build_attack_permission(strategy_health)
+            theme_confidence = self._build_theme_confidence(strategy_health)
+            historical_validity = self._build_historical_validity(
+                strategy_health,
+                attack_permission=attack_permission,
+            )
+            market_environment = {
+                "level": "weak",
+                "label": GATE_LEVEL_LABELS["weak"],
+                "score": 0.0,
+                "reason": "当前没有候选池，无法形成强势股溢价判断。",
+                "modules": [],
+            }
+            opportunity_quality = {
+                "level": "weak",
+                "label": GATE_LEVEL_LABELS["weak"],
+                "matrix_level": "weak",
+                "matrix_label": OPPORTUNITY_MATRIX_LEVEL_LABELS["weak"],
+                "score": 0.0,
+                "reason": "当前没有默认组合，机会质量直接判弱。",
+                "modules": [],
+            }
             return {
                 "profile": profile,
                 "trade_date": trade_date,
@@ -426,13 +482,20 @@ class MomentumSecondaryDecisionService:
                     "reason": action_reason,
                     "source_profile": profile,
                 },
+                "market_environment": market_environment,
+                "opportunity_quality": opportunity_quality,
+                "historical_validity": historical_validity,
                 "strategy_health": strategy_health,
+                "attack_permission": attack_permission,
+                "theme_confidence": theme_confidence,
+                "risk_banner": None,
                 "themes": [],
                 "portfolio": [],
                 "candidate_diagnostics": [],
                 "excluded_candidates": [],
                 "action_checklist": {
                     "enabled": False,
+                    "mode": "disabled",
                     "reason": "当前没有可执行的默认组合，因此不生成明日行动清单。",
                     "steps": [],
                 },
@@ -457,6 +520,8 @@ class MomentumSecondaryDecisionService:
             strategy_health_progress_callback=strategy_health_progress_callback,
             strategy_health_mode=strategy_health_mode,
         )
+        attack_permission = self._build_attack_permission(strategy_health)
+        theme_confidence = self._build_theme_confidence(strategy_health)
         market_environment = self._build_market_environment(
             trade_date=trade_date,
             profile=profile,
@@ -470,7 +535,10 @@ class MomentumSecondaryDecisionService:
             themes=themes,
             portfolio=portfolio,
         )
-        historical_validity = self._build_historical_validity(strategy_health)
+        historical_validity = self._build_historical_validity(
+            strategy_health,
+            attack_permission=attack_permission,
+        )
         raw_action = self._build_action(
             profile,
             market_environment=market_environment,
@@ -478,7 +546,12 @@ class MomentumSecondaryDecisionService:
             historical_validity=historical_validity,
             portfolio=portfolio,
         )
-        action = self._apply_historical_validity_to_action(raw_action, historical_validity)
+        action = self._apply_historical_validity_to_action(
+            raw_action,
+            historical_validity,
+            market_environment=market_environment,
+            opportunity_quality=opportunity_quality,
+        )
         portfolio = self._apply_action_permissions_to_portfolio(portfolio, action, historical_validity)
         candidate_diagnostics = self._build_candidate_diagnostics(
             enriched_candidates,
@@ -486,6 +559,10 @@ class MomentumSecondaryDecisionService:
             theme_score_map,
         )
         action_checklist = self._build_action_checklist(action, portfolio, historical_validity)
+        risk_banner = self._build_decision_risk_banner(
+            action=action,
+            theme_confidence=theme_confidence,
+        )
         evidence = self._build_evidence(
             profile,
             action,
@@ -506,6 +583,9 @@ class MomentumSecondaryDecisionService:
             "opportunity_quality": opportunity_quality,
             "historical_validity": historical_validity,
             "strategy_health": strategy_health,
+            "attack_permission": attack_permission,
+            "theme_confidence": theme_confidence,
+            "risk_banner": risk_banner,
             "themes": themes,
             "portfolio": portfolio,
             "candidate_diagnostics": candidate_diagnostics,
@@ -517,7 +597,7 @@ class MomentumSecondaryDecisionService:
     @staticmethod
     def _build_request_params(
         *,
-        top_n: int = 10,
+        top_n: int = MOMENTUM_DEFAULT_TOP_N,
         min_change_pct: float = MOMENTUM_DEFAULT_MIN_CHANGE_PCT,
         min_amount: float = MOMENTUM_DEFAULT_MIN_AMOUNT,
         min_turnover: float = MOMENTUM_DEFAULT_MIN_TURNOVER,
@@ -807,6 +887,8 @@ class MomentumSecondaryDecisionService:
         if watch_candidate is not None:
             selected.append(("watch", watch_candidate))
 
+        selected = self._rebalance_same_theme_main_slot(selected, theme_score_map)
+
         return [
             self._build_portfolio_slot(slot, candidate, theme_score_map)
             for slot, candidate in selected
@@ -913,6 +995,105 @@ class MomentumSecondaryDecisionService:
             )
         return diagnostics
 
+    def _build_attack_permission(self, strategy_health: Dict[str, Any]) -> Dict[str, Any]:
+        short_window = strategy_health.get("short_window", {})
+        sample_count = int(_safe_float(short_window.get("sample_count"), 0))
+        hit_rate = round(_safe_float(short_window.get("success_rate"), 0.0), 1)
+        avg_profit_window_pct = round(_safe_float(short_window.get("avg_profit_window_pct"), 0.0), 2)
+        avg_max_drawdown_pct = round(_safe_float(short_window.get("avg_max_drawdown_pct"), 0.0), 2)
+        score = round(
+            _clamp_float(
+                hit_rate * 0.75
+                + min(avg_profit_window_pct, 3.0) / 3.0 * 18.0
+                + max(0.0, 1.0 - avg_max_drawdown_pct / 6.0) * 7.0
+            ),
+            1,
+        )
+
+        if (
+            sample_count >= ATTACK_PERMISSION_MIN_SAMPLES["open"]
+            and hit_rate >= ATTACK_PERMISSION_HIT_RATE_THRESHOLDS["open"]
+        ):
+            status = "open"
+            summary = "最近 20 日里，系统仍能稳定打出可执行的核心票，当前可继续进攻。"
+        elif (
+            sample_count >= ATTACK_PERMISSION_MIN_SAMPLES["recovering"]
+            and hit_rate >= ATTACK_PERMISSION_HIT_RATE_THRESHOLDS["recovering"]
+        ):
+            status = "recovering"
+            summary = "最近 20 日的进攻命中开始修复，但还没恢复到完整进攻节奏。"
+        else:
+            status = "paused"
+            summary = "最近 20 日的进攻命中仍不足，今天不适合把进攻节奏开满。"
+
+        return {
+            "status": status,
+            "status_label": ATTACK_PERMISSION_STATUS_LABELS[status],
+            "label": ATTACK_PERMISSION_STATUS_LABELS[status],
+            "score": score,
+            "window": "short_20d",
+            "window_label": "20 日进攻许可",
+            "valid_sample_count": sample_count,
+            "hit_rate": hit_rate,
+            "avg_profit_window_pct": avg_profit_window_pct,
+            "avg_max_drawdown_pct": avg_max_drawdown_pct,
+            "reason": summary,
+            "summary": summary,
+        }
+
+    def _build_theme_confidence(self, strategy_health: Dict[str, Any]) -> Dict[str, Any]:
+        long_window = strategy_health.get("long_window", {})
+        sample_count = int(_safe_float(long_window.get("sample_count"), 0))
+        score = round(_safe_float(long_window.get("score"), 0.0), 1)
+        core_hit_rate = round(_safe_float(long_window.get("success_rate"), 0.0), 1)
+
+        if (
+            sample_count >= THEME_CONFIDENCE_MIN_SAMPLES["credible"]
+            and score >= THEME_CONFIDENCE_SCORE_THRESHOLDS["credible"]
+        ):
+            status = "credible"
+            summary = "最近 60 日主线识别整体仍稳定，当前可继续把它作为主判断框架。"
+        elif (
+            sample_count >= THEME_CONFIDENCE_MIN_SAMPLES["recovering"]
+            and score >= THEME_CONFIDENCE_SCORE_THRESHOLDS["recovering"]
+        ):
+            status = "recovering"
+            summary = "最近 60 日主线识别质量正在恢复，但结构信任度仍需要打折。"
+        else:
+            status = "questionable"
+            summary = "最近 60 日主线结构的可信度偏弱，今天可做也要明确降低信任度。"
+
+        return {
+            "status": status,
+            "status_label": THEME_CONFIDENCE_STATUS_LABELS[status],
+            "label": THEME_CONFIDENCE_STATUS_LABELS[status],
+            "score": score,
+            "window": "long_60d",
+            "window_label": "60 日主线可信度",
+            "valid_sample_count": sample_count,
+            "core_hit_rate": core_hit_rate,
+            "reason": summary,
+            "summary": summary,
+        }
+
+    @staticmethod
+    def _build_decision_risk_banner(
+        *,
+        action: Dict[str, Any],
+        theme_confidence: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        action_level = _safe_str(action.get("level"))
+        theme_status = _safe_str(theme_confidence.get("status"))
+        if action_level not in {"strong_go", "normal_go", "cautious_go"}:
+            return None
+        if theme_status != "questionable":
+            return None
+        return {
+            "tone": "warning",
+            "title": "60 日主线可信度存疑",
+            "message": "今天仍可以按当前动作级别跟踪，但这套主线结构的可信度在下降，信任度需要打折。",
+        }
+
     def _build_market_environment(
         self,
         *,
@@ -923,40 +1104,90 @@ class MomentumSecondaryDecisionService:
         themes: List[Dict[str, Any]],
         portfolio: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
-        index_trend = self._build_market_environment_index_trend()
         profitability = self._build_market_environment_profitability(
             trade_date=trade_date,
             profile=profile,
             request_params=request_params,
         )
-        sentiment = self._build_market_environment_sentiment(candidates, portfolio)
-        breadth = self._build_market_environment_breadth(themes)
-        modules = [index_trend, profitability, sentiment, breadth]
+        core_success_rate = round(_safe_float(profitability.get("core_success_rate"), 0.0), 1)
+        core_profit_window_pct = round(_safe_float(profitability.get("core_profit_window_pct"), 0.0), 2)
+        broad_success_rate = round(_safe_float(profitability.get("broad_success_rate"), 0.0), 1)
+        broad_profit_window_pct = round(_safe_float(profitability.get("broad_profit_window_pct"), 0.0), 2)
 
-        score = (
-            index_trend["score"] * 0.25
-            + profitability["score"] * 0.35
-            + sentiment["score"] * 0.25
-            + breadth["score"] * 0.15
+        core_level = self._classify_core_premium_level(core_success_rate, core_profit_window_pct)
+        breadth_level = self._classify_breadth_premium_level(
+            broad_success_rate,
+            broad_profit_window_pct,
         )
-        if profitability["level"] == "weak" and sentiment["level"] == "weak":
-            level = "weak"
-        elif score >= 70 and profitability["level"] != "weak":
+
+        if core_level == "strong" and breadth_level == "strong":
             level = "strong"
-        elif score >= 45:
-            level = "medium"
-        else:
+        elif core_level == "weak" and breadth_level == "weak":
             level = "weak"
+        else:
+            level = "medium"
+
+        modules = [
+            {
+                "key": "core_premium",
+                "label": GATE_LEVEL_LABELS[core_level],
+                "level": core_level,
+                "score": round(
+                    _clamp_float(core_success_rate * 0.7 + min(core_profit_window_pct, 4.0) / 4.0 * 30.0),
+                    1,
+                ),
+                "summary": (
+                    f"昨日默认 Top3 命中率 {core_success_rate:.1f}% ，"
+                    f"核心溢价利润窗口 {core_profit_window_pct:.2f}% 。"
+                ),
+            },
+            {
+                "key": "breadth_premium",
+                "label": GATE_LEVEL_LABELS[breadth_level],
+                "level": breadth_level,
+                "score": round(
+                    _clamp_float(
+                        broad_success_rate * 0.7 + min(broad_profit_window_pct, 4.0) / 4.0 * 30.0
+                    ),
+                    1,
+                ),
+                "summary": (
+                    f"昨日候选池 Top10 命中率 {broad_success_rate:.1f}% ，"
+                    f"平均利润窗口 {broad_profit_window_pct:.2f}% 。"
+                ),
+            },
+        ]
+        score = round(_clamp_float(modules[0]["score"] * 0.55 + modules[1]["score"] * 0.45), 1)
 
         return {
             "level": level,
             "label": GATE_LEVEL_LABELS[level],
-            "score": round(score, 1),
+            "score": score,
             "reason": (
-                f"指数趋势{index_trend['label']}、赚钱效应{profitability['label']}、情绪强弱{sentiment['label']}、主线扩散{breadth['label']}。"
+                f"核心溢价为{GATE_LEVEL_LABELS[core_level]}，"
+                f"广度溢价为{GATE_LEVEL_LABELS[breadth_level]}，"
+                f"市场环境判定为{GATE_LEVEL_LABELS[level]}。"
             ),
             "modules": modules,
         }
+
+    @staticmethod
+    def _classify_core_premium_level(success_rate: float, profit_window_pct: float) -> str:
+        """Core premium is noisy on only three names, so keep it graded instead of binary."""
+
+        if success_rate >= 40.0 and profit_window_pct >= 2.0:
+            return "strong"
+        if success_rate >= 10.0 or profit_window_pct >= 1.2:
+            return "medium"
+        return "weak"
+
+    @staticmethod
+    def _classify_breadth_premium_level(success_rate: float, profit_window_pct: float) -> str:
+        if success_rate >= 30.0 and profit_window_pct >= 2.0:
+            return "strong"
+        if success_rate >= 20.0 or profit_window_pct >= 1.2:
+            return "medium"
+        return "weak"
 
     def _get_market_environment_current_datetime(self) -> datetime:
         get_china_now = getattr(self.screener_service, "_get_china_now", None)
@@ -1184,7 +1415,7 @@ class MomentumSecondaryDecisionService:
         previous_trade_date = previous_dates[0]
         try:
             screening = self.screener_service.screen(
-                top_n=max(int(_safe_float(request_params.get("top_n"), 10)), 10),
+                top_n=max(int(_safe_float(request_params.get("top_n"), MOMENTUM_DEFAULT_TOP_N)), MOMENTUM_DEFAULT_TOP_N),
                 min_change_pct=_safe_float(request_params.get("min_change_pct"), MOMENTUM_DEFAULT_MIN_CHANGE_PCT),
                 min_amount=_safe_float(request_params.get("min_amount"), MOMENTUM_DEFAULT_MIN_AMOUNT),
                 min_turnover=_safe_float(request_params.get("min_turnover"), MOMENTUM_DEFAULT_MIN_TURNOVER),
@@ -1424,45 +1655,65 @@ class MomentumSecondaryDecisionService:
         buy_point_clarity = self._build_opportunity_buy_point_clarity(portfolio)
         role_structure = self._build_opportunity_role_structure(portfolio)
         risk_control = self._build_opportunity_risk_control(portfolio)
-        modules = [theme_clarity, portfolio_quality, buy_point_clarity, role_structure, risk_control]
+        modules = [buy_point_clarity, portfolio_quality, theme_clarity]
         score = (
-            theme_clarity["score"] * 0.30
-            + portfolio_quality["score"] * 0.25
-            + buy_point_clarity["score"] * 0.25
-            + role_structure["score"] * 0.10
-            + risk_control["score"] * 0.10
+            buy_point_clarity["score"] * 0.5
+            + portfolio_quality["score"] * 0.3
+            + theme_clarity["score"] * 0.2
         )
         main_item = next((item for item in portfolio if item.get("slot") == "main"), None)
         secondary_item = next((item for item in portfolio if item.get("slot") == "secondary"), None)
-        main_buy_point_clear = main_item is not None and main_item.get("buy_point_status") == "clear"
+        main_buy_point_clear = self._has_planned_buy_point(main_item)
         secondary_buy_point_clear = (
-            secondary_item is not None and secondary_item.get("buy_point_status") == "clear"
+            self._has_planned_buy_point(secondary_item)
         )
         core_overextended_count = self._count_core_overextended_items(portfolio)
         portfolio_unresolved = len(portfolio) <= 1
+        clear_count = int(buy_point_clarity.get("clear_count", 0))
+        main_risk_reward_pass = self._opportunity_main_risk_reward_pass(main_item)
+        theme_concentration_pass = self._opportunity_theme_concentration_pass(portfolio, themes)
         if not portfolio or not themes:
-            level = "weak"
-        elif portfolio_unresolved and not main_buy_point_clear:
-            level = "weak"
-        elif not main_buy_point_clear:
-            level = "medium" if score >= 55 else "weak"
-        elif core_overextended_count >= 2:
-            level = "medium" if score >= 55 else "weak"
-        elif secondary_item is not None and secondary_buy_point_clear and score >= 72:
+            matrix_level = "weak"
+        elif clear_count >= 3:
+            matrix_level = "strong" if main_risk_reward_pass else "upper_mid"
+        elif clear_count == 2:
+            matrix_level = (
+                "strong"
+                if main_risk_reward_pass and theme_concentration_pass
+                else "upper_mid"
+            )
+        elif clear_count == 1:
+            matrix_level = "mid" if main_risk_reward_pass else "weak"
+        else:
+            matrix_level = "weak"
+
+        if matrix_level == "strong":
             level = "strong"
-        elif score >= 55:
+        elif matrix_level in {"upper_mid", "mid"}:
             level = "medium"
         else:
             level = "weak"
         return {
             "level": level,
             "label": GATE_LEVEL_LABELS[level],
+            "matrix_level": matrix_level,
+            "matrix_label": OPPORTUNITY_MATRIX_LEVEL_LABELS[matrix_level],
             "score": round(score, 1),
             "reason": (
-                f"主线清晰度{theme_clarity['label']}、组合质量{portfolio_quality['label']}、买点清晰度{buy_point_clarity['label']}、"
-                f"角色结构{role_structure['label']}、风险可控度{risk_control['label']}。"
+                f"默认组合有 {clear_count} 只明日买点计划清晰，"
+                f"主仓盈亏比{'过线' if main_risk_reward_pass else '未过线'}，"
+                f"主线集中度{'达标' if theme_concentration_pass else '不足'}，"
+                f"机会质量判定为{OPPORTUNITY_MATRIX_LEVEL_LABELS[matrix_level]}。"
             ),
             "modules": modules,
+            "clear_count": clear_count,
+            "clear_buy_point_count": clear_count,
+            "main_risk_reward_pass": main_risk_reward_pass,
+            "theme_concentration_pass": theme_concentration_pass,
+            "main_buy_point_clear": main_buy_point_clear,
+            "secondary_buy_point_clear": secondary_buy_point_clear,
+            "core_overextended_count": core_overextended_count,
+            "portfolio_unresolved": portfolio_unresolved,
         }
 
     @staticmethod
@@ -1490,12 +1741,13 @@ class MomentumSecondaryDecisionService:
     @staticmethod
     def _build_opportunity_portfolio_quality(portfolio: List[Dict[str, Any]]) -> Dict[str, Any]:
         ready_count = sum(item.get("suggested_action") == "ready" for item in portfolio)
+        planned_count = sum(MomentumSecondaryDecisionService._has_planned_buy_point(item) for item in portfolio)
         slot_count = len(portfolio)
         main_item = next((item for item in portfolio if item.get("slot") == "main"), None)
-        main_clear = main_item is not None and main_item.get("buy_point_status") == "clear"
-        if main_clear and ready_count >= 2 and slot_count >= 2:
+        main_clear = MomentumSecondaryDecisionService._has_planned_buy_point(main_item)
+        if main_clear and planned_count >= 2 and slot_count >= 2:
             level, score = "strong", 82.0
-        elif main_clear or ready_count >= 1:
+        elif main_clear or planned_count >= 2 or ready_count >= 1:
             level, score = "medium", 60.0
         else:
             level, score = "weak", 30.0
@@ -1504,14 +1756,17 @@ class MomentumSecondaryDecisionService:
             "label": GATE_LEVEL_LABELS[level],
             "level": level,
             "score": score,
-            "summary": f"默认组合共 {slot_count} 只，买点清晰/可执行 {ready_count} 只。",
+            "summary": (
+                f"默认组合共 {slot_count} 只，明日买点计划清晰 {planned_count} 只，"
+                f"当前已触发/可执行 {ready_count} 只。"
+            ),
         }
 
     @staticmethod
     def _build_opportunity_buy_point_clarity(portfolio: List[Dict[str, Any]]) -> Dict[str, Any]:
-        clear_count = sum(item.get("buy_point_status") == "clear" for item in portfolio)
+        clear_count = sum(MomentumSecondaryDecisionService._has_planned_buy_point(item) for item in portfolio)
         main_item = next((item for item in portfolio if item.get("slot") == "main"), None)
-        main_clear = main_item is not None and main_item.get("buy_point_status") == "clear"
+        main_clear = MomentumSecondaryDecisionService._has_planned_buy_point(main_item)
         if main_clear and clear_count >= 2:
             level, score = "strong", 84.0
         elif clear_count >= 2:
@@ -1525,8 +1780,53 @@ class MomentumSecondaryDecisionService:
             "label": GATE_LEVEL_LABELS[level],
             "level": level,
             "score": score,
-            "summary": f"主仓{'已' if main_clear else '未'}形成清晰买点，组合共 {clear_count} 只买点清晰。",
+            "clear_count": clear_count,
+            "summary": (
+                f"主仓{'已' if main_clear else '未'}具备明日买点计划，"
+                f"组合共 {clear_count} 只买点计划清晰。"
+            ),
         }
+
+    @staticmethod
+    def _has_planned_buy_point(item: Optional[Dict[str, Any]]) -> bool:
+        """Whether a T-day candidate has a clear T+1 execution plan, not necessarily triggered yet."""
+
+        if not isinstance(item, dict):
+            return False
+
+        status = _safe_str(item.get("buy_point_status"))
+        if status == "clear":
+            return True
+        if status != "waiting":
+            return False
+        if item.get("entry_range_low") is None or item.get("entry_range_high") is None:
+            return False
+        if MomentumSecondaryDecisionService._is_static_overextended_item(item):
+            return False
+        return _safe_float(item.get("risk_score"), 100.0) <= 45.0
+
+    @staticmethod
+    def _opportunity_main_risk_reward_pass(main_item: Optional[Dict[str, Any]]) -> bool:
+        if not isinstance(main_item, dict):
+            return False
+        if main_item.get("entry_range_low") is None or main_item.get("entry_range_high") is None:
+            return False
+        if MomentumSecondaryDecisionService._is_static_overextended_item(main_item):
+            return False
+        return _safe_float(main_item.get("risk_score"), 100.0) <= 35.0
+
+    @staticmethod
+    def _opportunity_theme_concentration_pass(
+        portfolio: List[Dict[str, Any]],
+        themes: List[Dict[str, Any]],
+    ) -> bool:
+        if not portfolio or not themes:
+            return False
+        first_theme = _safe_str(themes[0].get("name"))
+        if not first_theme:
+            return False
+        same_theme_count = sum(1 for item in portfolio if _safe_str(item.get("theme")) == first_theme)
+        return same_theme_count >= 2
 
     @staticmethod
     def _build_opportunity_role_structure(portfolio: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -1595,13 +1895,17 @@ class MomentumSecondaryDecisionService:
         )
 
     @staticmethod
-    def _build_historical_validity(strategy_health: Dict[str, Any]) -> Dict[str, Any]:
-        status = _safe_str(strategy_health.get("status"))
-        if status == "healthy":
+    def _build_historical_validity(
+        strategy_health: Dict[str, Any],
+        *,
+        attack_permission: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        attack_status = _safe_str((attack_permission or {}).get("status"))
+        if attack_status == "open":
             level = "healthy"
             max_action_level = "strong_go"
             recommendation_cap = "full"
-        elif status == "partial_healthy":
+        elif attack_status == "recovering":
             level = "general"
             max_action_level = "normal_go"
             recommendation_cap = "full"
@@ -1614,16 +1918,19 @@ class MomentumSecondaryDecisionService:
             "level": level,
             "label": HISTORICAL_VALIDITY_LABELS[level],
             "score": round(
-                (
+                _safe_float((attack_permission or {}).get("score"))
+                or (
                     _safe_float(strategy_health.get("short_window", {}).get("score"))
                     + _safe_float(strategy_health.get("long_window", {}).get("score"))
                 )
                 / 2,
                 1,
             ),
-            "reason": _safe_str(strategy_health.get("reason")),
+            "reason": _safe_str((attack_permission or {}).get("reason"), _safe_str(strategy_health.get("reason"))),
             "max_action_level": max_action_level,
             "recommendation_cap": recommendation_cap,
+            "attack_permission_status": attack_status or "paused",
+            "attack_permission_label": _safe_str((attack_permission or {}).get("label"), "暂停进攻"),
         }
 
     def _build_action(
@@ -1639,91 +1946,60 @@ class MomentumSecondaryDecisionService:
             level = "stand_aside"
         else:
             matrix = {
-                ("strong", "strong"): "normal_go",
-                ("strong", "medium"): "cautious_go",
+                ("strong", "strong"): "strong_go",
+                ("strong", "upper_mid"): "normal_go",
+                ("strong", "mid"): "cautious_go",
                 ("strong", "weak"): "observe_only",
-                ("medium", "strong"): "cautious_go",
-                ("medium", "medium"): "observe_only",
-                ("medium", "weak"): "observe_only",
-                ("weak", "strong"): "observe_only",
-                ("weak", "medium"): "stand_aside",
+                ("medium", "strong"): "normal_go",
+                ("medium", "upper_mid"): "cautious_go",
+                ("medium", "mid"): "observe_only",
+                ("medium", "weak"): "stand_aside",
+                ("weak", "strong"): "cautious_go",
+                ("weak", "upper_mid"): "observe_only",
+                ("weak", "mid"): "stand_aside",
                 ("weak", "weak"): "stand_aside",
             }
+            opportunity_matrix_level = _safe_str(opportunity_quality.get("matrix_level"))
+            if not opportunity_matrix_level:
+                opportunity_modules = {
+                    _safe_str(module.get("key")): module
+                    for module in opportunity_quality.get("modules", [])
+                    if isinstance(module, dict)
+                }
+                clear_count = int(
+                    _safe_float(
+                        opportunity_quality.get("clear_count"),
+                        opportunity_modules.get("buy_point_clarity", {}).get("clear_count", 0),
+                    )
+                )
+                main_item = next((item for item in portfolio if item.get("slot") == "main"), None)
+                main_risk_reward_pass = bool(opportunity_quality.get("main_risk_reward_pass"))
+                if "main_risk_reward_pass" not in opportunity_quality:
+                    main_risk_reward_pass = self._opportunity_main_risk_reward_pass(main_item)
+                theme_concentration_pass = bool(opportunity_quality.get("theme_concentration_pass"))
+                if "theme_concentration_pass" not in opportunity_quality:
+                    theme_counts: Dict[str, int] = defaultdict(int)
+                    for item in portfolio:
+                        theme_name = _safe_str(item.get("theme"))
+                        if theme_name:
+                            theme_counts[theme_name] += 1
+                    theme_concentration_pass = max(theme_counts.values(), default=0) >= 2
+                if clear_count >= 3:
+                    opportunity_matrix_level = "strong" if main_risk_reward_pass else "upper_mid"
+                elif clear_count == 2:
+                    opportunity_matrix_level = (
+                        "strong"
+                        if main_risk_reward_pass and theme_concentration_pass
+                        else "upper_mid"
+                    )
+                elif clear_count == 1:
+                    opportunity_matrix_level = "mid" if main_risk_reward_pass else "weak"
+                else:
+                    opportunity_matrix_level = "weak"
             level = matrix.get(
-                (_safe_str(market_environment.get("level")), _safe_str(opportunity_quality.get("level"))),
+                (_safe_str(market_environment.get("level")), opportunity_matrix_level),
                 "observe_only",
             )
-
-            market_modules = {
-                _safe_str(module.get("key")): module
-                for module in market_environment.get("modules", [])
-                if isinstance(module, dict)
-            }
-            opportunity_modules = {
-                _safe_str(module.get("key")): module
-                for module in opportunity_quality.get("modules", [])
-                if isinstance(module, dict)
-            }
-            profitability_module = market_modules.get("profitability", {})
-            profitability_level = _safe_str(profitability_module.get("level"))
-            core_profitability_level = _safe_str(
-                profitability_module.get("core_level"),
-                profitability_level,
-            )
-            theme_clarity_level = _safe_str(opportunity_modules.get("theme_clarity", {}).get("level"))
-            portfolio_quality_level = _safe_str(opportunity_modules.get("portfolio_quality", {}).get("level"))
-            market_level = _safe_str(market_environment.get("level"))
-            opportunity_level = _safe_str(opportunity_quality.get("level"))
-
-            main_item = next((item for item in portfolio if item.get("slot") == "main"), None)
-            secondary_item = next((item for item in portfolio if item.get("slot") == "secondary"), None)
-            main_buy_point_clear = (
-                bool(opportunity_quality.get("main_buy_point_clear"))
-                if "main_buy_point_clear" in opportunity_quality
-                else main_item is not None and main_item.get("buy_point_status") == "clear"
-            )
-            secondary_buy_point_clear = (
-                bool(opportunity_quality.get("secondary_buy_point_clear"))
-                if "secondary_buy_point_clear" in opportunity_quality
-                else secondary_item is not None and secondary_item.get("buy_point_status") == "clear"
-            )
-            core_overextended_count = int(
-                _safe_float(
-                    opportunity_quality.get("core_overextended_count"),
-                    self._count_core_overextended_items(portfolio),
-                )
-            )
-            portfolio_unresolved = (
-                bool(opportunity_quality.get("portfolio_unresolved"))
-                if "portfolio_unresolved" in opportunity_quality
-                else len(portfolio) <= 1
-            )
-
-            if market_level == "weak" and core_profitability_level == "weak":
-                level = "stand_aside"
-            elif theme_clarity_level == "weak" and portfolio_quality_level == "weak":
-                level = "stand_aside" if market_level == "weak" else "observe_only"
-            elif portfolio_unresolved:
-                level = self._limit_action_level(level, "observe_only")
-            elif not main_buy_point_clear:
-                level = self._limit_action_level(level, "cautious_go")
-            elif core_overextended_count >= 2:
-                level = self._limit_action_level(level, "observe_only")
-
-            if (
-                level == "normal_go"
-                and market_level == "strong"
-                and opportunity_level == "strong"
-                and historical_validity.get("level") == "healthy"
-                and profitability_level == "strong"
-                and core_profitability_level == "strong"
-                and main_item is not None
-                and secondary_item is not None
-                and main_buy_point_clear
-                and secondary_buy_point_clear
-                and core_overextended_count == 0
-            ):
-                level = "strong_go"
 
         reason = self._build_action_reason(
             level,
@@ -1742,7 +2018,7 @@ class MomentumSecondaryDecisionService:
         return {
             "status": "disabled",
             "label": STRATEGY_HEALTH_LABELS["disabled"],
-            "reason": "当前没有形成可验证的候选池，策略健康度直接落入停用状态。",
+            "reason": "当前没有形成可验证的候选池，20 日进攻许可直接暂停。",
             "recommendation_cap": "disabled",
             "can_full_recommend": False,
             "short_window": self._build_strategy_health_window(
@@ -1835,7 +2111,7 @@ class MomentumSecondaryDecisionService:
             recovery_conditions.append("60 日窗口仍在恢复中，需要继续验证主线与组合结构是否稳定。")
 
         if avg_risk >= 40:
-            blockers.append("当前默认组合平均风险分偏高，策略健康度需要至少降一级理解。")
+            blockers.append("当前默认组合平均风险分偏高，20 日进攻许可需要至少降一级理解。")
 
         if status == "healthy":
             reason = "20 日可用性与 60 日结构可信度同时健康，允许维持完整强推荐。"
@@ -1916,7 +2192,7 @@ class MomentumSecondaryDecisionService:
         return {
             "status": "disabled",
             "label": STRATEGY_HEALTH_LABELS["disabled"],
-            "reason": "当前没有足够的历史验证样本，策略健康度暂时落入停用状态。",
+            "reason": "当前没有足够的历史验证样本，20 日进攻许可暂时暂停。",
             "recommendation_cap": "disabled",
             "can_full_recommend": False,
             "short_window": self._build_strategy_health_window("short_20d", metrics=short_metrics),
@@ -2705,11 +2981,11 @@ class MomentumSecondaryDecisionService:
     def _build_strategy_health_cache_key(self, trade_date: str, request_params: Dict[str, Any]) -> str:
         normalized = {
             "trade_date": trade_date,
-            "min_change_pct": round(_safe_float(request_params.get("min_change_pct"), 7.0), 3),
-            "min_amount": round(_safe_float(request_params.get("min_amount"), 3e8), 3),
-            "min_turnover": round(_safe_float(request_params.get("min_turnover"), 3.0), 3),
+            "min_change_pct": round(_safe_float(request_params.get("min_change_pct"), MOMENTUM_DEFAULT_MIN_CHANGE_PCT), 3),
+            "min_amount": round(_safe_float(request_params.get("min_amount"), MOMENTUM_DEFAULT_MIN_AMOUNT), 3),
+            "min_turnover": round(_safe_float(request_params.get("min_turnover"), MOMENTUM_DEFAULT_MIN_TURNOVER), 3),
             "exclude_st": bool(request_params.get("exclude_st", True)),
-            "main_board_only": bool(request_params.get("main_board_only", True)),
+            "main_board_only": bool(request_params.get("main_board_only", False)),
             "profile": _safe_str(request_params.get("profile"), "standard"),
         }
         return "|".join(f"{key}={value}" for key, value in normalized.items())
@@ -3142,16 +3418,31 @@ class MomentumSecondaryDecisionService:
         self,
         action: Dict[str, Any],
         historical_validity: Dict[str, Any],
+        *,
+        market_environment: Dict[str, Any],
+        opportunity_quality: Dict[str, Any],
     ) -> Dict[str, Any]:
         level = _safe_str(action.get("level"), "stand_aside")
-        capped_level = self._limit_action_level(
-            level,
-            _safe_str(historical_validity.get("max_action_level"), level),
+        attack_permission_status = _safe_str(historical_validity.get("attack_permission_status"), "paused")
+        market_level = _safe_str(market_environment.get("level"))
+        opportunity_matrix_level = _safe_str(
+            opportunity_quality.get("matrix_level"),
+            "strong" if _safe_str(opportunity_quality.get("level")) == "strong" else "weak",
         )
+        if attack_permission_status == "open":
+            capped_level = level
+        elif attack_permission_status == "recovering":
+            capped_level = self._limit_action_level(level, "normal_go")
+        elif market_level == "strong" and opportunity_matrix_level == "strong":
+            capped_level = self._limit_action_level(level, "cautious_go")
+        elif market_level == "strong" or opportunity_matrix_level == "strong":
+            capped_level = self._limit_action_level(level, "observe_only")
+        else:
+            capped_level = self._limit_action_level(level, "stand_aside")
         reason = _safe_str(action.get("reason"))
         if capped_level != level:
             reason = (
-                f"{reason} 当前历史有效性为“{_safe_str(historical_validity.get('label'), '一般')}”，"
+                f"{reason} 当前 20 日进攻许可为“{_safe_str(historical_validity.get('attack_permission_label'), '暂停进攻')}”，"
                 f"所以今日最高只放到“{ACTION_LEVEL_LABELS[capped_level]}”。"
             )
         return {
@@ -3171,7 +3462,7 @@ class MomentumSecondaryDecisionService:
             return []
 
         action_level = _safe_str(action.get("level"))
-        historical_label = _safe_str(historical_validity.get("label"), "一般")
+        historical_label = _safe_str(historical_validity.get("attack_permission_label"), "恢复中")
         adjusted: List[Dict[str, Any]] = []
 
         for item in portfolio:
@@ -3193,7 +3484,7 @@ class MomentumSecondaryDecisionService:
                         "ready" if updated.get("buy_point_status") == "clear" else "wait_for_trigger"
                     )
                     updated["suggested_action_label"] = SUGGESTED_ACTION_LABELS[updated["suggested_action"]]
-                    note = f"当前历史有效性为“{historical_label}”，谨慎出手阶段只允许主仓进入正式执行判断。"
+                    note = f"当前 20 日进攻许可为“{historical_label}”，谨慎出手阶段只允许主仓进入正式执行判断。"
                 else:
                     updated["suggested_action"] = "observe_only"
                     updated["suggested_action_label"] = SUGGESTED_ACTION_LABELS["observe_only"]
@@ -3241,7 +3532,7 @@ class MomentumSecondaryDecisionService:
             f"本次官方结论来自 {profile} 候选引擎收口后的二次决策，不直接沿用页面 TopN 排名。",
             f"市场环境当前为“{_safe_str(market_environment.get('label'), '中')}”，{_safe_str(market_environment.get('reason'))}",
             f"当日机会质量为“{_safe_str(opportunity_quality.get('label'), '中')}”，{_safe_str(opportunity_quality.get('reason'))}",
-            f"历史有效性为“{_safe_str(historical_validity.get('label'), strategy_health.get('label'))}”，{_safe_str(historical_validity.get('reason'), strategy_health.get('reason'))}",
+            f"20 日进攻许可为“{_safe_str(historical_validity.get('attack_permission_label'), historical_validity.get('label'))}”，{_safe_str(historical_validity.get('reason'), strategy_health.get('reason'))}",
             _safe_str(action.get("reason")),
         ]
         if portfolio:
@@ -3364,7 +3655,7 @@ class MomentumSecondaryDecisionService:
                 },
             ]
             reason = (
-                f"当前出手级别为“{action_label}”，历史有效性仅“{_safe_str(historical_validity.get('label'), '一般')}”，"
+                f"当前出手级别为“{action_label}”，20 日进攻许可为“{_safe_str(historical_validity.get('attack_permission_label'), '恢复中')}”，"
                 "系统只生成简化版行动清单，重点防止多票并行和盘中乱买。"
             )
 
@@ -3524,6 +3815,47 @@ class MomentumSecondaryDecisionService:
             + _safe_float(theme_score_map.get(item["_theme"]), 50.0) * 0.08
             - _safe_float(item.get("risk_score")) * 0.02
         )
+
+    def _rebalance_same_theme_main_slot(
+        self,
+        selected: List[Tuple[str, Dict[str, Any]]],
+        theme_score_map: Dict[str, float],
+    ) -> List[Tuple[str, Dict[str, Any]]]:
+        if len(selected) < 2:
+            return selected
+
+        main_slot_index = next((index for index, (slot, _) in enumerate(selected) if slot == "main"), None)
+        if main_slot_index is None:
+            return selected
+
+        main_slot, main_candidate = selected[main_slot_index]
+        if _safe_str(main_candidate.get("_role_key")) not in {"mid", "back"}:
+            return selected
+        if _safe_str(main_candidate.get("_buy_point_status")) == "clear":
+            return selected
+
+        same_theme_candidates = [
+            (index, slot, candidate)
+            for index, (slot, candidate) in enumerate(selected)
+            if (
+                slot != "main"
+                and candidate.get("_theme") == main_candidate.get("_theme")
+                and _safe_str(candidate.get("_role_key")) in {"leader", "front"}
+                and _safe_str(candidate.get("_buy_point_status")) == "clear"
+            )
+        ]
+        if not same_theme_candidates:
+            return selected
+
+        best_index, best_slot, best_candidate = max(
+            same_theme_candidates,
+            key=lambda item: self._portfolio_priority(item[2], theme_score_map),
+        )
+
+        rebalanced = list(selected)
+        rebalanced[main_slot_index] = (main_slot, best_candidate)
+        rebalanced[best_index] = (best_slot, main_candidate)
+        return rebalanced
 
     def _pick_main_candidate(
         self,
@@ -4148,21 +4480,21 @@ class MomentumSecondaryDecisionService:
     ) -> str:
         market_label = _safe_str(market_environment.get("label"), "中")
         opportunity_label = _safe_str(opportunity_quality.get("label"), "中")
-        historical_label = _safe_str(historical_validity.get("label"), "一般")
+        attack_label = _safe_str(historical_validity.get("attack_permission_label"), "恢复中")
         if level == "strong_go":
             return (
-                f"当前市场环境{market_label}、当日机会质量{opportunity_label}、历史有效性{historical_label}，"
+                f"当前市场环境{market_label}、当日机会质量{opportunity_label}、20 日进攻许可{attack_label}，"
                 "主仓与次仓都具备较清晰买点，今天可以按固定顺序积极跟踪。"
             )
         if level == "normal_go":
             return (
                 f"当前市场环境{market_label}、当日机会质量{opportunity_label}，"
-                f"历史有效性{historical_label}允许正常执行，今天可按主仓优先、次仓次选的顺序跟踪。"
+                f"20 日进攻许可{attack_label}，今天可按主仓优先、次仓次选的顺序跟踪。"
             )
         if level == "cautious_go":
             return (
                 f"当前市场环境{market_label}、当日机会质量{opportunity_label}，"
-                f"但历史有效性仅{historical_label}，今天只适合谨慎出手，最多保留 1-2 只重点跟踪对象。"
+                f"但 20 日进攻许可为{attack_label}，今天只适合谨慎出手，最多保留 1-2 只重点跟踪对象。"
             )
         if level == "observe_only":
             return (

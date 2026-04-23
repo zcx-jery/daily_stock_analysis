@@ -742,10 +742,10 @@ class Config:
     momentum_sector_cache_ttl_seconds: int = 21600
     # Momentum Screener 默认表单配置
     momentum_screener_default_profile: str = "standard"
-    momentum_screener_default_top_n: int = 10
-    momentum_screener_default_min_change_pct: float = 7.0
-    momentum_screener_default_min_amount_yi: float = 3.0
-    momentum_screener_default_min_turnover: float = 3.0
+    momentum_screener_default_top_n: int = 30
+    momentum_screener_default_min_change_pct: float = 4.0
+    momentum_screener_default_min_amount_yi: float = 2.0
+    momentum_screener_default_min_turnover: float = 2.0
     # 熔断器冷却时间（秒）
     circuit_breaker_cooldown: int = 300
 
@@ -1438,27 +1438,27 @@ class Config:
             ),
             momentum_screener_default_top_n=parse_env_int(
                 os.getenv('MOMENTUM_SCREENER_DEFAULT_TOP_N'),
-                10,
+                30,
                 field_name='MOMENTUM_SCREENER_DEFAULT_TOP_N',
                 minimum=1,
                 maximum=100,
             ),
             momentum_screener_default_min_change_pct=parse_env_float(
                 os.getenv('MOMENTUM_SCREENER_DEFAULT_MIN_CHANGE_PCT'),
-                7.0,
+                4.0,
                 field_name='MOMENTUM_SCREENER_DEFAULT_MIN_CHANGE_PCT',
                 minimum=0.0,
                 maximum=20.0,
             ),
             momentum_screener_default_min_amount_yi=parse_env_float(
                 os.getenv('MOMENTUM_SCREENER_DEFAULT_MIN_AMOUNT_YI'),
-                3.0,
+                2.0,
                 field_name='MOMENTUM_SCREENER_DEFAULT_MIN_AMOUNT_YI',
                 minimum=0.0,
             ),
             momentum_screener_default_min_turnover=parse_env_float(
                 os.getenv('MOMENTUM_SCREENER_DEFAULT_MIN_TURNOVER'),
-                3.0,
+                2.0,
                 field_name='MOMENTUM_SCREENER_DEFAULT_MIN_TURNOVER',
                 minimum=0.0,
                 maximum=100.0,

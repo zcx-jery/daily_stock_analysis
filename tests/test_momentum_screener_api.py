@@ -141,7 +141,7 @@ class _FakeMomentumBacktestService:
             "status": "completed",
             "profile": "standard",
             "engine_version": "v1",
-            "entry_baseline_version": "v1_5_3_3",
+            "entry_baseline_version": "v1_4_2_2",
             "market_scope_version": "v1_a_share_main_chinext_star",
             "top_n": 30,
             "start_trade_date": "2026-04-08",
@@ -586,7 +586,7 @@ class _FakeMomentumBacktestService:
                     },
                     {
                         "key": "historical_validity",
-                        "label": "历史有效性",
+                        "label": "20日进攻许可",
                         "level": "general",
                         "level_label": "一般",
                         "score": 51.0,
@@ -699,7 +699,7 @@ def _build_fake_screening_result(profile="standard", candidate_count=1):
         "trade_date": "2026-04-10",
         "requested_trade_date": None,
         "trade_date_note": None,
-        "entry_baseline_version": "v1_5_3_3",
+        "entry_baseline_version": "v1_4_2_2",
         "market_scope_version": "v1_a_share_main_chinext_star",
         "candidate_count": candidate_count,
         "results": [result],
@@ -813,12 +813,22 @@ def _build_fake_decision(profile="aggressive", action_level="normal_go", checkli
         "opportunity_quality": {
             "level": "strong" if action_level in {"strong_go", "normal_go"} else "medium",
             "label": "Strong" if action_level in {"strong_go", "normal_go"} else "Medium",
+            "matrix_level": "strong" if action_level in {"strong_go", "normal_go"} else "mid",
+            "matrix_label": "Strong" if action_level in {"strong_go", "normal_go"} else "Mid",
             "score": 74.0 if action_level in {"strong_go", "normal_go"} else 61.0,
             "reason": "The default portfolio has at least one executable core idea.",
             "modules": [
                 _build_fake_gate_module("theme_clarity", "Theme Clarity", "strong", 80.0, "Theme structure is clear."),
                 _build_fake_gate_module("buy_point_clarity", "Buy Point Clarity", "medium", 65.0, "Main slot is close to trigger."),
             ],
+            "clear_count": 2,
+            "clear_buy_point_count": 2,
+            "main_risk_reward_pass": True,
+            "theme_concentration_pass": True,
+            "main_buy_point_clear": True,
+            "secondary_buy_point_clear": True,
+            "core_overextended_count": 0,
+            "portfolio_unresolved": False,
         },
         "historical_validity": {
             "level": "healthy" if action_level in {"strong_go", "normal_go"} else "general",
@@ -827,6 +837,8 @@ def _build_fake_decision(profile="aggressive", action_level="normal_go", checkli
             "reason": "Recent 20/60 day validation is supportive enough.",
             "max_action_level": "normal_go" if action_level != "strong_go" else "strong_go",
             "recommendation_cap": "full" if action_level in {"strong_go", "normal_go"} else "limited",
+            "attack_permission_status": "open" if action_level in {"strong_go", "normal_go"} else "recovering",
+            "attack_permission_label": "Open" if action_level in {"strong_go", "normal_go"} else "Recovering",
         },
         "strategy_health": _build_fake_strategy_health(
             status="healthy" if action_level in {"strong_go", "normal_go"} else "partial_healthy",
@@ -835,6 +847,33 @@ def _build_fake_decision(profile="aggressive", action_level="normal_go", checkli
             recommendation_cap="full" if action_level in {"strong_go", "normal_go"} else "limited",
             can_full_recommend=action_level in {"strong_go", "normal_go"},
         ),
+        "attack_permission": {
+            "status": "open" if action_level in {"strong_go", "normal_go"} else "recovering",
+            "status_label": "Open" if action_level in {"strong_go", "normal_go"} else "Recovering",
+            "label": "Open" if action_level in {"strong_go", "normal_go"} else "Recovering",
+            "score": 79.0 if action_level in {"strong_go", "normal_go"} else 62.0,
+            "window": "short_20d",
+            "window_label": "20d attack permission",
+            "valid_sample_count": 12,
+            "hit_rate": 62.0,
+            "avg_profit_window_pct": 2.6,
+            "avg_max_drawdown_pct": 2.1,
+            "reason": "20d attack permission is open.",
+            "summary": "20d attack permission is open.",
+        },
+        "theme_confidence": {
+            "status": "credible",
+            "status_label": "Credible",
+            "label": "Credible",
+            "score": 72.0,
+            "window": "long_60d",
+            "window_label": "60d theme confidence",
+            "valid_sample_count": 32,
+            "core_hit_rate": 61.0,
+            "reason": "60d theme confidence remains credible.",
+            "summary": "60d theme confidence remains credible.",
+        },
+        "risk_banner": None,
         "themes": [
             {
                 "name": "Power Equipment",
@@ -962,7 +1001,7 @@ def test_momentum_screener_endpoint_returns_response(client):
     assert response.status_code == 200
     data = response.json()
     assert data["profile"] == "standard"
-    assert data["entry_baseline_version"] == "v1_5_3_3"
+    assert data["entry_baseline_version"] == "v1_4_2_2"
     assert data["market_scope_version"] == "v1_a_share_main_chinext_star"
     assert data["candidate_count"] == 1
     assert data["results"][0]["ts_code"] == "600001.SH"
@@ -1007,7 +1046,7 @@ def test_momentum_screener_endpoint_runs_real_standard_service_flow(client):
     assert len(data["results"]) == 2
     assert data["results"][0]["ts_code"] == "600001.SH"
     assert data["results"][0]["themes"]
-    assert data["entry_baseline_version"] == "v1_5_3_3"
+    assert data["entry_baseline_version"] == "v1_4_2_2"
     assert data["market_scope_version"] == "v1_a_share_main_chinext_star"
     assert "strength_confirmation" in data["results"][0]["score_breakdown"]
     assert data["results"][0]["entry_range_low"] is not None
@@ -1073,9 +1112,9 @@ def test_momentum_secondary_decision_endpoint_runs_real_service_flow(client):
 
     assert response.status_code == 200
     data = response.json()
-    assert data["screening"]["profile"] == "aggressive"
+    assert data["screening"]["profile"] == "standard"
     assert data["screening"]["candidate_count"] == 2
-    assert data["decision"]["profile"] == "aggressive"
+    assert data["decision"]["profile"] == "standard"
     assert data["decision"]["trade_date"] == "2026-04-10"
     assert data["decision"]["action"]["level"] in {
         "strong_go",
@@ -1236,7 +1275,7 @@ def test_momentum_intraday_signal_endpoint_runs_real_service_flow(client):
 
     assert response.status_code == 200
     data = response.json()
-    assert data["screening"]["profile"] == "aggressive"
+    assert data["screening"]["profile"] == "standard"
     assert data["decision"]["portfolio"]
     assert "strategy_health" in data["decision"]
     assert data["intraday_signal"]["market_phase"] in {

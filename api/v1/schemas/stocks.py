@@ -115,14 +115,17 @@ class StockHistoryResponse(BaseModel):
 class MomentumScreenerRequest(BaseModel):
     """次日强势股筛选请求。"""
 
-    top_n: int = Field(10, ge=1, le=100, description="返回前几只股票")
-    min_change_pct: float = Field(5.0, ge=0, le=20, description="V1 生产链路固定使用的最小涨幅基线；请求值会被忽略")
-    min_amount: float = Field(3e8, ge=0, description="V1 生产链路固定使用的最小成交额基线；请求值会被忽略")
-    min_turnover: float = Field(3.0, ge=0, le=100, description="V1 生产链路固定使用的最小换手率基线；请求值会被忽略")
+    top_n: int = Field(30, ge=1, le=100, description="V1 生产链路固定展示 Top30；请求值会被服务端归一化")
+    min_change_pct: float = Field(4.0, ge=0, le=20, description="V1 生产链路固定使用的最小涨幅 4%；请求值会被忽略")
+    min_amount: float = Field(2e8, ge=0, description="V1 生产链路固定使用的最小成交额 2 亿；请求值会被忽略")
+    min_turnover: float = Field(2.0, ge=0, le=100, description="V1 生产链路固定使用的最小换手率 2%；请求值会被忽略")
     exclude_st: bool = Field(True, description="V1 生产链路固定排除 ST；请求值会被忽略")
     main_board_only: bool = Field(False, description="V1 生产链路固定纳入主板、创业板、科创板；请求值会被忽略")
     trade_date: Optional[str] = Field(None, description="交易日，格式 YYYY-MM-DD 或 YYYYMMDD")
-    profile: Literal["standard", "aggressive"] = Field("standard", description="评分画像")
+    profile: Literal["standard", "aggressive"] = Field(
+        "standard",
+        description="评分画像；官方二次决策与回测固定 standard，aggressive 仅用于进攻补充观察",
+    )
 
 
 class MomentumScoreBreakdown(BaseModel):
@@ -315,23 +318,81 @@ class MomentumDecisionOpportunityQuality(BaseModel):
 
     level: Literal["strong", "medium", "weak"] = Field(..., description="机会质量级别")
     label: str = Field(..., description="机会质量级别文案")
+    matrix_level: Optional[Literal["strong", "upper_mid", "mid", "weak"]] = Field(
+        None,
+        description="用于今日出手主矩阵的机会质量细分档",
+    )
+    matrix_label: Optional[str] = Field(None, description="机会质量细分档文案")
     score: float = Field(..., description="机会质量综合得分")
     reason: str = Field(..., description="机会质量一句话总结")
     modules: List[MomentumDecisionGateModule] = Field(default_factory=list, description="机会质量子模块")
+    clear_count: Optional[int] = Field(None, description="默认组合中明日买点计划清晰的数量")
+    clear_buy_point_count: Optional[int] = Field(None, description="默认组合中明日买点计划清晰的数量")
+    main_risk_reward_pass: Optional[bool] = Field(None, description="主仓盈亏比是否达标")
+    theme_concentration_pass: Optional[bool] = Field(None, description="默认组合是否至少 2 只来自第一主线")
+    main_buy_point_clear: Optional[bool] = Field(None, description="主仓明日买点计划是否清晰")
+    secondary_buy_point_clear: Optional[bool] = Field(None, description="次仓明日买点计划是否清晰")
+    core_overextended_count: Optional[int] = Field(None, description="主仓/次仓中过度偏离的数量")
+    portfolio_unresolved: Optional[bool] = Field(None, description="默认组合是否仍未形成完整结构")
 
 
 class MomentumDecisionHistoricalValidity(BaseModel):
-    """历史有效性层。"""
+    """20 日进攻封顶兼容层。"""
 
-    level: Literal["healthy", "general", "weak"] = Field(..., description="历史有效性级别")
-    label: str = Field(..., description="历史有效性文案")
-    score: float = Field(..., description="历史有效性得分")
-    reason: str = Field(..., description="历史有效性一句话总结")
+    level: Literal["healthy", "general", "weak"] = Field(..., description="兼容层级")
+    label: str = Field(..., description="兼容层文案")
+    score: float = Field(..., description="兼容层得分")
+    reason: str = Field(..., description="兼容层一句话总结")
     max_action_level: Literal["strong_go", "normal_go", "cautious_go"] = Field(
         ...,
-        description="当前历史有效性允许的最高出手级别",
+        description="由 20 日进攻许可折算出的兼容最高出手级别",
     )
     recommendation_cap: Literal["full", "limited"] = Field(..., description="当前推荐能力上限")
+    attack_permission_status: Optional[Literal["open", "recovering", "paused"]] = Field(
+        None,
+        description="20 日进攻许可状态",
+    )
+    attack_permission_label: Optional[str] = Field(None, description="20 日进攻许可状态文案")
+
+
+class MomentumDecisionAttackPermission(BaseModel):
+    """20 日进攻许可。"""
+
+    status: Literal["open", "recovering", "paused"] = Field(..., description="20 日进攻许可状态")
+    status_label: str = Field(..., description="20 日进攻许可状态文案")
+    label: str = Field(..., description="20 日进攻许可状态文案")
+    score: float = Field(..., description="20 日进攻许可分")
+    window: Literal["short_20d"] = Field(..., description="窗口枚举")
+    window_label: str = Field(..., description="窗口文案")
+    valid_sample_count: int = Field(..., description="有效样本数量")
+    hit_rate: float = Field(..., description="买点触发后单票命中率(%)")
+    avg_profit_window_pct: float = Field(..., description="平均利润窗口(%)")
+    avg_max_drawdown_pct: float = Field(..., description="平均最大回撤(%)")
+    reason: str = Field(..., description="一句话解释")
+    summary: str = Field(..., description="摘要说明")
+
+
+class MomentumDecisionThemeConfidence(BaseModel):
+    """60 日主线可信度。"""
+
+    status: Literal["credible", "recovering", "questionable"] = Field(..., description="60 日主线可信度状态")
+    status_label: str = Field(..., description="60 日主线可信度状态文案")
+    label: str = Field(..., description="60 日主线可信度状态文案")
+    score: float = Field(..., description="60 日主线可信度分")
+    window: Literal["long_60d"] = Field(..., description="窗口枚举")
+    window_label: str = Field(..., description="窗口文案")
+    valid_sample_count: int = Field(..., description="有效样本数量")
+    core_hit_rate: float = Field(..., description="当前主线识别代理命中率或结构分参考(%)")
+    reason: str = Field(..., description="一句话解释")
+    summary: str = Field(..., description="摘要说明")
+
+
+class MomentumDecisionRiskBanner(BaseModel):
+    """二次决策顶部风险提示条。"""
+
+    tone: Literal["warning"] = Field(..., description="提示条语气")
+    title: str = Field(..., description="提示标题")
+    message: str = Field(..., description="提示正文")
 
 
 class MomentumActionChecklistStep(BaseModel):
@@ -355,31 +416,31 @@ class MomentumActionChecklist(BaseModel):
 
 
 class MomentumStrategyHealthWindow(BaseModel):
-    """策略健康的单个窗口状态。"""
+    """20/60 日验证的单个窗口状态。"""
 
     window: Literal["short_20d", "long_60d"] = Field(..., description="窗口枚举")
     window_label: str = Field(..., description="窗口文案")
     status: Literal["healthy", "recovering", "weak"] = Field(..., description="窗口状态")
     status_label: str = Field(..., description="窗口状态文案")
-    score: float = Field(..., description="窗口健康分")
-    threshold: float = Field(..., description="达到健康状态的阈值")
+    score: float = Field(..., description="窗口分")
+    threshold: float = Field(..., description="达到可用状态的阈值")
     summary: str = Field(..., description="窗口状态摘要")
 
 
-    sample_count: int = Field(..., description="鍙傝瘎鏍锋湰鏁伴噺")
-    success_count: int = Field(..., description="婊¤冻缁勫悎鏍囧噯鐨勬牱鏈暟")
-    success_rate: float = Field(..., description="缁勫悎鎴愬姛鐜?%)")
-    avg_profit_window_pct: float = Field(..., description="1-2 涓氦鏄撴棩鍒╂鼎绐楀彛鍧囧€?%)")
-    avg_max_drawdown_pct: float = Field(..., description="1-2 涓氦鏄撴棩鏈€澶у洖鎾ゅ潎鍊?%)")
-    avg_selected_count: float = Field(..., description="姣忔棩榛樿缁勫悎鍧囧€煎叆閫夋暟")
+    sample_count: int = Field(..., description="参评样本数量")
+    success_count: int = Field(..., description="满足组合标准的样本数")
+    success_rate: float = Field(..., description="组合成功率(%)")
+    avg_profit_window_pct: float = Field(..., description="1-2 个交易日利润窗口均值(%)")
+    avg_max_drawdown_pct: float = Field(..., description="1-2 个交易日最大回撤均值(%)")
+    avg_selected_count: float = Field(..., description="每日默认组合平均入选数")
 
 
 class MomentumStrategyHealthProgress(BaseModel):
-    """策略健康历史验证进度。"""
+    """20/60 日历史验证进度。"""
 
     status: Literal["proxy", "queued", "running", "partial", "final", "failed"] = Field(
         "proxy",
-        description="当前策略健康计算进度状态",
+        description="当前 20/60 日验证计算进度状态",
     )
     processed_trade_date_count: int = Field(0, description="已处理的历史交易日数量")
     total_trade_date_count: int = Field(0, description="待处理的历史交易日总数量")
@@ -391,13 +452,13 @@ class MomentumStrategyHealthProgress(BaseModel):
 
 
 class MomentumStrategyHealth(BaseModel):
-    """策略健康状态。"""
+    """20/60 日验证兼容状态。"""
 
     status: Literal["healthy", "partial_healthy", "recovery_mode", "disabled"] = Field(
         ...,
-        description="策略健康总状态",
+        description="兼容总状态",
     )
-    label: str = Field(..., description="策略健康状态文案")
+    label: str = Field(..., description="兼容状态文案")
     reason: str = Field(..., description="当前状态的一句话解释")
     recommendation_cap: Literal["full", "limited", "disabled"] = Field(..., description="当前推荐能力上限")
     can_full_recommend: bool = Field(..., description="当前是否允许完整强推荐")
@@ -405,7 +466,7 @@ class MomentumStrategyHealth(BaseModel):
     long_window: MomentumStrategyHealthWindow = Field(..., description="60 日窗口状态")
     blockers: List[str] = Field(default_factory=list, description="当前阻断项")
     recovery_conditions: List[str] = Field(default_factory=list, description="恢复条件")
-    data_source: Literal["historical", "proxy"] = Field("historical", description="当前策略健康结果来源")
+    data_source: Literal["historical", "proxy"] = Field("historical", description="当前 20/60 日验证结果来源")
     is_warming: bool = Field(False, description="真实历史验证是否仍在后台计算")
 
     validation_status: Literal["proxy", "partial", "final"] = Field(
@@ -426,8 +487,11 @@ class MomentumSecondaryDecision(BaseModel):
     action: MomentumDecisionAction = Field(..., description="今日出手级别")
     market_environment: MomentumDecisionMarketEnvironment = Field(..., description="市场环境层")
     opportunity_quality: MomentumDecisionOpportunityQuality = Field(..., description="当日机会质量层")
-    historical_validity: MomentumDecisionHistoricalValidity = Field(..., description="历史有效性层")
-    strategy_health: MomentumStrategyHealth = Field(..., description="策略健康状态")
+    historical_validity: MomentumDecisionHistoricalValidity = Field(..., description="20 日进攻封顶兼容层")
+    strategy_health: MomentumStrategyHealth = Field(..., description="20/60 日验证兼容状态")
+    attack_permission: MomentumDecisionAttackPermission = Field(..., description="20 日进攻许可")
+    theme_confidence: MomentumDecisionThemeConfidence = Field(..., description="60 日主线可信度")
+    risk_banner: Optional[MomentumDecisionRiskBanner] = Field(None, description="顶部风险提示条")
     themes: List[MomentumDecisionTheme] = Field(default_factory=list, description="主线识别结果")
     portfolio: List[MomentumDecisionPortfolioSlot] = Field(default_factory=list, description="默认 1-3 票组合")
     candidate_diagnostics: List[MomentumDecisionCandidateDiagnostic] = Field(
@@ -537,8 +601,11 @@ class MomentumBacktestCreateRequest(BaseModel):
 
     start_trade_date: str = Field(..., description="回测起始交易日，格式 YYYY-MM-DD 或 YYYYMMDD")
     end_trade_date: str = Field(..., description="回测结束交易日，格式 YYYY-MM-DD 或 YYYYMMDD")
-    profile: Literal["standard", "aggressive"] = Field("standard", description="回放使用的画像")
-    top_n: int = Field(30, ge=1, le=100, description="回放时保留的展示结果数量")
+    profile: Literal["standard", "aggressive"] = Field(
+        "standard",
+        description="兼容旧请求字段；V1 官方回测固定归一化为 Standard 主引擎",
+    )
+    top_n: int = Field(30, ge=1, le=100, description="兼容旧请求字段；V1 官方回测固定归一化为 Top30")
 
 
 class MomentumBacktestSummary(BaseModel):
@@ -548,7 +615,7 @@ class MomentumBacktestSummary(BaseModel):
     action_breakdown: Dict[str, int] = Field(default_factory=dict, description="各今日出手级别分布")
     market_environment_breakdown: Dict[str, int] = Field(default_factory=dict, description="市场环境分桶分布")
     opportunity_quality_breakdown: Dict[str, int] = Field(default_factory=dict, description="机会质量分桶分布")
-    historical_validity_breakdown: Dict[str, int] = Field(default_factory=dict, description="历史有效性分桶分布")
+    historical_validity_breakdown: Dict[str, int] = Field(default_factory=dict, description="20 日进攻封顶兼容分桶分布")
     avg_candidate_count: Optional[float] = Field(None, description="候选池数量均值")
     avg_selected_count: Optional[float] = Field(None, description="默认组合入选数量均值")
     avg_buy_ready_count: Optional[float] = Field(None, description="默认组合中 ready 数量均值")
@@ -734,7 +801,7 @@ class MomentumBacktestDailyItem(BaseModel):
     action_checklist_mode: str = Field(..., description="当日行动清单模式")
     market_environment_level: str = Field(..., description="市场环境层级别")
     opportunity_quality_level: str = Field(..., description="当日机会质量级别")
-    historical_validity_level: str = Field(..., description="历史有效性级别")
+    historical_validity_level: str = Field(..., description="20 日进攻封顶兼容级别")
     candidate_count: int = Field(..., description="候选池数量")
     result_count: int = Field(..., description="完整排序集数量")
     selected_count: int = Field(..., description="默认组合数量")

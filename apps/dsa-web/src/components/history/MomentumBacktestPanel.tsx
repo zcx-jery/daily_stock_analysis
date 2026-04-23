@@ -498,8 +498,6 @@ function GateSnapshotGroupCard({ group }: { group: MomentumBacktestGateSnapshotG
 export const MomentumBacktestPanel: React.FC = () => {
   const [startTradeDate, setStartTradeDate] = useState('2026-04-08');
   const [endTradeDate, setEndTradeDate] = useState('2026-04-10');
-  const [profile, setProfile] = useState<'standard' | 'aggressive'>('standard');
-  const [topN, setTopN] = useState('30');
   const [runIdInput, setRunIdInput] = useState('');
   const [taskCenter, setTaskCenter] = useState<MomentumBacktestRunListResponse>(EMPTY_TASK_CENTER);
   const [dailyFilters, setDailyFilters] = useState<DailyFilters>(DEFAULT_DAILY_FILTERS);
@@ -587,8 +585,6 @@ export const MomentumBacktestPanel: React.FC = () => {
       const created = await momentumBacktestApi.createRun({
         startTradeDate,
         endTradeDate,
-        profile,
-        topN: Number(topN) || 30,
       });
       setTaskNotice(created.message);
       await loadRunArtifacts(created.run.runId, DEFAULT_DAILY_FILTERS, created.run);
@@ -819,15 +815,16 @@ export const MomentumBacktestPanel: React.FC = () => {
               <span className="label-uppercase">Momentum Backtest V1</span>
               <h2 className="mt-1 text-xl font-semibold text-foreground">强势筛选回测结果页</h2>
               <p className="mt-2 max-w-3xl text-sm text-secondary-text">
-                回放 V1 生产链路，冻结候选池 Top10、二次决策 Top3 与 T+1 / T+2 结果，并按“概览、基准、分层诊断、市场分桶、问题清单、日级回放”统一查看。
+                回放 V1 生产链路，固定 Standard 主引擎、官方 Top30、二次决策 Top3 与 T+1 / T+2 结果，并按“概览、基准、分层诊断、市场分桶、问题清单、日级回放”统一查看。
               </p>
             </div>
             <div className="flex items-center gap-2">
-              {profileBadge(profile)}
-              <Badge variant="default">统一入口 5 / 3 / 3</Badge>
+              {profileBadge('standard')}
+              <Badge variant="default">统一入口 4 / 2亿 / 2%</Badge>
+              <Badge variant="default">官方 Top30</Badge>
             </div>
           </div>
-          <div className="grid gap-3 lg:grid-cols-[1.2fr_1.2fr_0.8fr_0.8fr_auto]">
+          <div className="grid gap-3 lg:grid-cols-[1.2fr_1.2fr_1fr_auto]">
             <div>
               <div className="mb-1 text-xs text-muted-text">起始交易日</div>
               <input className={INPUT_CLASS} type="date" value={startTradeDate} onChange={(e) => setStartTradeDate(e.target.value)} />
@@ -837,15 +834,10 @@ export const MomentumBacktestPanel: React.FC = () => {
               <input className={INPUT_CLASS} type="date" value={endTradeDate} onChange={(e) => setEndTradeDate(e.target.value)} />
             </div>
             <div>
-              <div className="mb-1 text-xs text-muted-text">画像</div>
-              <select className={INPUT_CLASS} value={profile} onChange={(e) => setProfile(e.target.value as 'standard' | 'aggressive')}>
-                <option value="standard">Standard</option>
-                <option value="aggressive">Aggressive</option>
-              </select>
-            </div>
-            <div>
-              <div className="mb-1 text-xs text-muted-text">展示数量</div>
-              <input className={INPUT_CLASS} type="number" min={1} max={100} value={topN} onChange={(e) => setTopN(e.target.value)} />
+              <div className="mb-1 text-xs text-muted-text">官方回测口径</div>
+              <div className={`${INPUT_CLASS} flex items-center text-secondary-text`}>
+                Standard / Top30 / 4-2-2
+              </div>
             </div>
             <div className="flex items-end">
               <button type="button" className="btn-primary w-full" onClick={handleCreateRun} disabled={isSubmitting}>

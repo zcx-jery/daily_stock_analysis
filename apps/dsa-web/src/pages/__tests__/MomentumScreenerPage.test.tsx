@@ -84,7 +84,7 @@ function createAiStreamResponse() {
 const standardResponse: MomentumScreenerResponse = {
   profile: 'standard' as const,
   tradeDate: '2026-04-10',
-  entryBaselineVersion: 'v1_5_3_3',
+  entryBaselineVersion: 'v1_4_2_2',
   marketScopeVersion: 'v1_a_share_main_chinext_star',
   candidateCount: 3,
   results: [
@@ -144,7 +144,7 @@ const standardResponse: MomentumScreenerResponse = {
 const aggressiveResponse: MomentumScreenerResponse = {
   profile: 'aggressive' as const,
   tradeDate: '2026-04-10',
-  entryBaselineVersion: 'v1_5_3_3',
+  entryBaselineVersion: 'v1_4_2_2',
   marketScopeVersion: 'v1_a_share_main_chinext_star',
   candidateCount: 2,
   results: [
@@ -187,7 +187,7 @@ const aggressiveResponse: MomentumScreenerResponse = {
 const mixedKeyResponse: MomentumScreenerResponse = {
   profile: 'aggressive' as const,
   tradeDate: '2026-04-10',
-  entryBaselineVersion: 'v1_5_3_3',
+  entryBaselineVersion: 'v1_4_2_2',
   marketScopeVersion: 'v1_a_share_main_chinext_star',
   candidateCount: 1,
   results: [
@@ -303,6 +303,8 @@ function buildDecisionResponse(screening: MomentumScreenerResponse): MomentumScr
       opportunityQuality: {
         level: 'strong' as const,
         label: '强',
+        matrixLevel: 'strong' as const,
+        matrixLabel: '强',
         score: 74,
         reason: '主线、默认组合和买点清晰度都支持继续跟踪，当日机会质量偏强。',
         modules: [
@@ -320,6 +322,8 @@ function buildDecisionResponse(screening: MomentumScreenerResponse): MomentumScr
         reason: '20/60 日历史验证当前仍保持在健康区间。',
         maxActionLevel: 'strong_go' as const,
         recommendationCap: 'full' as const,
+        attackPermissionStatus: 'open' as const,
+        attackPermissionLabel: '可进攻',
       },
       strategyHealth: {
         status: 'healthy' as const,
@@ -360,6 +364,33 @@ function buildDecisionResponse(screening: MomentumScreenerResponse): MomentumScr
         blockers: [],
         recoveryConditions: [],
       },
+      attackPermission: {
+        status: 'open' as const,
+        statusLabel: '可进攻',
+        label: '可进攻',
+        score: 80,
+        window: 'short_20d' as const,
+        windowLabel: '20 日进攻许可',
+        validSampleCount: 14,
+        hitRate: 70,
+        avgProfitWindowPct: 2.6,
+        avgMaxDrawdownPct: 2.1,
+        reason: '最近 20 日里，系统仍能稳定打出可执行的核心票。',
+        summary: '最近 20 日里，系统仍能稳定打出可执行的核心票。',
+      },
+      themeConfidence: {
+        status: 'credible' as const,
+        statusLabel: '可信',
+        label: '可信',
+        score: 78,
+        window: 'long_60d' as const,
+        windowLabel: '60 日主线可信度',
+        validSampleCount: 38,
+        coreHitRate: 63.3,
+        reason: '最近 60 日主线识别整体仍稳定。',
+        summary: '最近 60 日主线识别整体仍稳定。',
+      },
+      riskBanner: null,
       themes: [
         {
           name: topThemeName,
@@ -608,12 +639,14 @@ describe('MomentumScreenerPage', () => {
 
     await waitFor(() => {
       expect(mockGetSystemConfig).toHaveBeenCalledWith(false);
-      expect(screen.getByDisplayValue('12')).toBeInTheDocument();
+      expect(screen.getByText('官方展示 Top30')).toBeInTheDocument();
     });
 
     expect(screen.getByText('Standard 官方主引擎')).toBeInTheDocument();
     expect(screen.getAllByText('Aggressive 进攻补充').length).toBeGreaterThan(0);
-    expect(screen.getByText('最小涨幅 5%')).toBeInTheDocument();
+    expect(screen.getByText('最小涨幅 4%')).toBeInTheDocument();
+    expect(screen.getByText('最小成交额 2 亿')).toBeInTheDocument();
+    expect(screen.getByText('最小换手率 2%')).toBeInTheDocument();
     expect(screen.getByText('市场范围：主板 + 创业板 + 科创板')).toBeInTheDocument();
     expect(mockScreen).not.toHaveBeenCalled();
     expect(mockScreenWithDecision).not.toHaveBeenCalled();
@@ -642,10 +675,6 @@ describe('MomentumScreenerPage', () => {
     );
 
     render(<MomentumScreenerPage />);
-
-    await waitFor(() => {
-      expect(screen.getByDisplayValue('12')).toBeInTheDocument();
-    });
 
     expect(screen.getByDisplayValue('2026-04-09')).toBeInTheDocument();
     expect(mockGetSystemConfig).not.toHaveBeenCalled();
@@ -677,21 +706,17 @@ describe('MomentumScreenerPage', () => {
 
     render(<MomentumScreenerPage />);
 
-    await waitFor(() => {
-      expect(screen.getByDisplayValue('12')).toBeInTheDocument();
-    });
+    expect(screen.getByDisplayValue('2026-04-09')).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId('momentum-screener-restore'));
 
     await waitFor(() => {
       expect(mockScreenWithDecision).toHaveBeenLastCalledWith({
         profile: 'standard',
-        topN: 9,
+        topN: 30,
         tradeDate: undefined,
       });
     });
-
-    expect(screen.getByDisplayValue('9')).toBeInTheDocument();
   });
 
   it('re-sorts the list when switching sort mode', async () => {
@@ -768,6 +793,7 @@ describe('MomentumScreenerPage', () => {
     await screen.findByTestId('momentum-screener-row-600001.SH');
 
     expect(await screen.findByText('Aggressive 进攻补充视图')).toBeInTheDocument();
+    fireEvent.click(screen.getByText(/发现 1 只额外进攻补充标的/));
     expect(screen.getAllByText('Breakout One').length).toBeGreaterThan(0);
     expect(screen.getByText('Breakout Consensus')).toBeInTheDocument();
     expect(screen.getByText('10.34 - 10.66')).toBeInTheDocument();
@@ -782,6 +808,7 @@ describe('MomentumScreenerPage', () => {
     await screen.findByTestId('momentum-screener-row-600001.SH');
 
     await screen.findByText('Aggressive 进攻补充视图');
+    fireEvent.click(screen.getByText(/发现 1 只额外进攻补充标的/));
     fireEvent.click(screen.getAllByRole('button', { name: '查看详情' })[0]);
 
     const dialog = await screen.findByRole('dialog');
@@ -859,6 +886,7 @@ describe('MomentumScreenerPage', () => {
     await screen.findByTestId('momentum-screener-row-600001.SH');
 
     await screen.findByText('Aggressive 进攻补充视图');
+    fireEvent.click(screen.getByText(/发现 1 只额外进攻补充标的/));
     fireEvent.click(screen.getAllByRole('button', { name: '查看详情' })[0]);
 
     const dialog = await screen.findByRole('dialog');
@@ -879,9 +907,9 @@ describe('MomentumScreenerPage', () => {
     expect(within(panel).getByTestId('momentum-secondary-action-level')).toHaveTextContent('可正常出手');
     expect(within(panel).getByText('市场环境')).toBeInTheDocument();
     expect(within(panel).getByText('当日机会质量')).toBeInTheDocument();
-    expect(within(panel).getByText('历史有效性')).toBeInTheDocument();
-    expect(within(panel).getByText('策略健康')).toBeInTheDocument();
-    expect(within(panel).getByText('20 日当前可用性')).toBeInTheDocument();
+    expect(within(panel).getByText('进攻许可与主线可信度')).toBeInTheDocument();
+    expect(within(panel).getByText('20日进攻许可')).toBeInTheDocument();
+    expect(within(panel).getByText('60日主线可信度')).toBeInTheDocument();
     expect(within(panel).getByText('默认 1-3 票组合')).toBeInTheDocument();
     expect(within(panel).getByText('明日行动清单')).toBeInTheDocument();
     expect(within(panel).getByText('开盘后 60 分钟内')).toBeInTheDocument();
@@ -905,9 +933,9 @@ describe('MomentumScreenerPage', () => {
 
     expect(within(panel).getByTestId('momentum-secondary-refresh')).toBeInTheDocument();
     expect(within(panel).getByTestId('momentum-secondary-refresh-inline')).toBeInTheDocument();
-    expect(within(panel).getByText('真实 20/60 结果刷新')).toBeInTheDocument();
+    expect(within(panel).getAllByText('刷新 20/60 结果').length).toBeGreaterThan(0);
     expect(
-      within(panel).getByText('首轮请求已切换为后台预热模式，页面先给你代理健康度，等真实 20/60 日历史结果算完后，点击下方“刷新真实 20/60 结果”即可看到正式结论。'),
+      within(panel).getByText('首轮请求已切换为后台预热模式，页面先给你代理结果；等真实 20/60 日历史结果算完后，点击下方刷新即可看到正式结论。'),
     ).toBeInTheDocument();
   });
 
@@ -924,7 +952,7 @@ describe('MomentumScreenerPage', () => {
       expect(mockScreenWithDecision).toHaveBeenCalledWith(
         {
           profile: 'standard',
-          topN: 10,
+          topN: 30,
           tradeDate: undefined,
         },
         { waitForStrategyHealth: true },
@@ -949,7 +977,7 @@ describe('MomentumScreenerPage', () => {
     await waitFor(() => {
       expect(mockIntraday).toHaveBeenCalledWith({
         profile: 'standard',
-        topN: 10,
+        topN: 30,
         tradeDate: undefined,
       });
     });

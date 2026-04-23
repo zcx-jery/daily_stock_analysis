@@ -14,6 +14,7 @@ import pandas as pd
 
 from src.repositories.momentum_backtest_repo import MomentumBacktestRepository
 from src.services.momentum_screener_service import (
+    MOMENTUM_DEFAULT_TOP_N,
     MOMENTUM_ENTRY_BASELINE_VERSION,
     MOMENTUM_MARKET_SCOPE_VERSION,
     MomentumScreenerService,
@@ -30,6 +31,8 @@ from src.storage import (
 logger = logging.getLogger(__name__)
 
 MOMENTUM_BACKTEST_ENGINE_VERSION = "v1"
+MOMENTUM_BACKTEST_OFFICIAL_PROFILE = "standard"
+MOMENTUM_BACKTEST_OFFICIAL_TOP_N = MOMENTUM_DEFAULT_TOP_N
 REGIME_LABELS = {
     "strong": "强市",
     "general": "中性市",
@@ -43,9 +46,11 @@ LAYER_LEVEL_SCORES = {
 GATE_GROUP_LABELS = {
     "market_environment": "市场环境",
     "opportunity_quality": "机会质量",
-    "historical_validity": "历史有效性",
+    "historical_validity": "20日进攻许可",
 }
 GATE_MODULE_LABELS = {
+    "core_premium": "核心溢价",
+    "breadth_premium": "广度溢价",
     "index_trend": "指数趋势",
     "profitability": "赚钱效应",
     "sentiment": "市场情绪",
@@ -55,7 +60,7 @@ GATE_MODULE_LABELS = {
     "buy_point_clarity": "买点清晰度",
     "role_structure": "角色结构",
     "risk_control": "风险可控度",
-    "historical_validity": "历史有效性",
+    "historical_validity": "20日进攻许可",
 }
 RESTRICTED_ACTION_LEVELS = {"observe_only", "stand_aside"}
 ACTIVE_RUN_STATUSES = {"queued", "running"}
@@ -121,9 +126,11 @@ class MomentumBacktestService:
         *,
         start_trade_date: str,
         end_trade_date: str,
-        profile: str = "standard",
-        top_n: int = 30,
+        profile: str = MOMENTUM_BACKTEST_OFFICIAL_PROFILE,
+        top_n: int = MOMENTUM_BACKTEST_OFFICIAL_TOP_N,
     ) -> Dict[str, Any]:
+        profile = MOMENTUM_BACKTEST_OFFICIAL_PROFILE
+        top_n = MOMENTUM_BACKTEST_OFFICIAL_TOP_N
         run, trade_dates, _meta = self._create_or_reuse_run(
             start_trade_date=start_trade_date,
             end_trade_date=end_trade_date,
@@ -156,9 +163,11 @@ class MomentumBacktestService:
         *,
         start_trade_date: str,
         end_trade_date: str,
-        profile: str = "standard",
-        top_n: int = 30,
+        profile: str = MOMENTUM_BACKTEST_OFFICIAL_PROFILE,
+        top_n: int = MOMENTUM_BACKTEST_OFFICIAL_TOP_N,
     ) -> Dict[str, Any]:
+        profile = MOMENTUM_BACKTEST_OFFICIAL_PROFILE
+        top_n = MOMENTUM_BACKTEST_OFFICIAL_TOP_N
         run, _trade_dates, meta = self._create_or_reuse_run(
             start_trade_date=start_trade_date,
             end_trade_date=end_trade_date,
@@ -185,8 +194,8 @@ class MomentumBacktestService:
         allow_reuse: bool,
         prefer_running: bool,
     ) -> Tuple[MomentumBacktestRun, List[date], Dict[str, Any]]:
-        if profile not in {"standard", "aggressive"}:
-            raise ValueError("Only profile=standard or profile=aggressive is supported")
+        profile = MOMENTUM_BACKTEST_OFFICIAL_PROFILE
+        top_n = MOMENTUM_BACKTEST_OFFICIAL_TOP_N
 
         start_dt = self._parse_trade_date(start_trade_date)
         end_dt = self._parse_trade_date(end_trade_date)
@@ -529,8 +538,8 @@ class MomentumBacktestService:
         profile: Optional[str] = None,
     ) -> Dict[str, Any]:
         safe_limit = min(max(int(limit), 1), 50)
-        if profile and profile not in {"standard", "aggressive"}:
-            raise ValueError("Only profile=standard or profile=aggressive is supported")
+        if profile and profile != MOMENTUM_BACKTEST_OFFICIAL_PROFILE:
+            profile = None
         current_running = self.repository.get_first_run_by_statuses(("running",), profile=profile, ascending=True)
         queued_rows = self.repository.list_runs(
             limit=50,
@@ -1183,19 +1192,50 @@ class MomentumBacktestService:
                 and main_outcome.t2_profit_window_pct is not None
                 and best_candidate.t2_profit_window_pct - main_outcome.t2_profit_window_pct >= 2.0
             ):
-                issues.append(
-                    {
-                        "issue_key": "main_slot_underperformed",
-                        "severity": "warning",
-                        "title": "主仓排序可能偏弱",
-                        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
-                        "affected_codes": [main_row.ts_code, best_candidate.ts_code],
-                        "metrics": {
-                            "main_t2_profit_window_pct": main_outcome.t2_profit_window_pct,
-                            "best_candidate_t2_profit_window_pct": best_candidate.t2_profit_window_pct,
-                        },
-                    }
+                best_candidate_row = next(
+                    (row for row in candidate_rows if row.ts_code == best_candidate.ts_code),
+                    None,
                 )
+                best_candidate_same_theme = bool(
+                    main_row.theme
+                    and best_candidate_row
+                    and best_candidate_row.theme == main_row.theme
+                )
+                best_candidate_in_selected_top3 = any(
+                    row.ts_code == best_candidate.ts_code for row in decision_rows
+                )
+                if best_candidate_same_theme:
+                    issues.append(
+                        {
+                            "issue_key": "main_slot_underperformed",
+                            "severity": "warning",
+                            "title": "主仓排序可能偏弱",
+                            "summary": "同主线内或默认组合里已存在更强标的，说明主仓排序可能需要继续校准。",
+                            "affected_codes": [main_row.ts_code, best_candidate.ts_code],
+                            "metrics": {
+                                "main_t2_profit_window_pct": main_outcome.t2_profit_window_pct,
+                                "best_candidate_t2_profit_window_pct": best_candidate.t2_profit_window_pct,
+                                "best_candidate_same_theme": best_candidate_same_theme,
+                                "best_candidate_in_selected_top3": best_candidate_in_selected_top3,
+                            },
+                        }
+                    )
+                elif best_candidate_in_selected_top3:
+                    issues.append(
+                        {
+                            "issue_key": "portfolio_anchor_underperformed",
+                            "severity": "warning",
+                            "title": "组合锚点可能偏弱",
+                            "summary": "默认组合里已有其他主题/角色的更强标的，说明主仓承担组合锚点的力度可能偏弱，但不一定属于同主线错排。",
+                            "affected_codes": [main_row.ts_code, best_candidate.ts_code],
+                            "metrics": {
+                                "main_t2_profit_window_pct": main_outcome.t2_profit_window_pct,
+                                "best_candidate_t2_profit_window_pct": best_candidate.t2_profit_window_pct,
+                                "best_candidate_same_theme": best_candidate_same_theme,
+                                "best_candidate_in_selected_top3": best_candidate_in_selected_top3,
+                            },
+                        }
+                    )
 
         if (
             decision_metrics["trigger_rate_pct"] is not None

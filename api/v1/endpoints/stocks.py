@@ -64,7 +64,7 @@ from src.services.import_parser import (
 from src.services.momentum_backtest_service import MomentumBacktestService
 from src.services.momentum_secondary_decision_service import MomentumSecondaryDecisionService
 from src.services.stock_service import StockService
-from src.services.momentum_screener_service import MomentumScreenerService
+from src.services.momentum_screener_service import MOMENTUM_DEFAULT_TOP_N, MomentumScreenerService
 
 if TYPE_CHECKING:
     from src.services.momentum_screener_ai_commentary_service import MomentumScreenerAICommentaryService
@@ -95,7 +95,7 @@ def screen_momentum_stocks(
     """执行次日强势股筛选，支持 standard 和 aggressive 两种评分画像。"""
     try:
         result = service.screen(
-            top_n=payload.top_n,
+            top_n=MOMENTUM_DEFAULT_TOP_N,
             trade_date=payload.trade_date,
             profile=payload.profile,
         )
@@ -143,9 +143,9 @@ def build_momentum_secondary_decision(
     """构建强势筛选二次决策结果。"""
     try:
         result = service.build(
-            top_n=payload.top_n,
+            top_n=MOMENTUM_DEFAULT_TOP_N,
             trade_date=payload.trade_date,
-            profile=payload.profile,
+            profile="standard",
             wait_for_strategy_health=wait_for_strategy_health,
         )
         return MomentumSecondaryDecisionResponse(**result)
@@ -184,9 +184,9 @@ def build_momentum_intraday_signal(
     """构建强势筛选盘中信号结果。"""
     try:
         result = service.build_intraday(
-            top_n=payload.top_n,
+            top_n=MOMENTUM_DEFAULT_TOP_N,
             trade_date=payload.trade_date,
-            profile=payload.profile,
+            profile="standard",
             wait_for_strategy_health=wait_for_strategy_health,
         )
         return MomentumSecondaryDecisionIntradayResponse(**result)
@@ -225,15 +225,15 @@ def create_momentum_backtest_run(
             result = creator(
                 start_trade_date=payload.start_trade_date,
                 end_trade_date=payload.end_trade_date,
-                profile=payload.profile,
-                top_n=payload.top_n,
+                profile="standard",
+                top_n=MOMENTUM_DEFAULT_TOP_N,
             )
         else:
             run = service.create_run(
                 start_trade_date=payload.start_trade_date,
                 end_trade_date=payload.end_trade_date,
-                profile=payload.profile,
-                top_n=payload.top_n,
+                profile="standard",
+                top_n=MOMENTUM_DEFAULT_TOP_N,
             )
             result = {
                 "created_new": True,
@@ -266,12 +266,12 @@ def create_momentum_backtest_run(
 )
 def list_momentum_backtest_runs(
     limit: int = Query(20, ge=1, le=50, description="返回最近历史任务数量"),
-    profile: Optional[str] = Query(None, description="按 standard/aggressive 过滤"),
+    profile: Optional[str] = Query(None, description="兼容旧参数；V1 官方回测列表不再按画像分流"),
     service: MomentumBacktestService = Depends(get_momentum_backtest_service),
 ) -> MomentumBacktestRunListResponse:
     """List recent momentum screener V1 backtest runs."""
     try:
-        return MomentumBacktestRunListResponse(**service.list_runs(limit=limit, profile=profile))
+        return MomentumBacktestRunListResponse(**service.list_runs(limit=limit, profile=None))
     except ValueError as e:
         raise HTTPException(
             status_code=400,

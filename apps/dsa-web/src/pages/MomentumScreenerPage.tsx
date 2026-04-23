@@ -24,8 +24,6 @@ import type { MomentumScreenerAiReviewTarget } from '../types/momentumScreenerAi
 import { useMomentumScreenerAiStore } from '../stores/momentumScreenerAiStore';
 
 type FormState = {
-  profile: MomentumProfile;
-  topN: string;
   tradeDate: string;
 };
 
@@ -37,6 +35,7 @@ type SelectedResultState = {
 type SortKey = 'rank_score' | 'continuation_score' | 'extension_score' | 'risk_score' | 'buyability_score';
 
 const STORAGE_KEY = 'dsa.momentum-screener.page-state';
+const OFFICIAL_TOP_N = 30;
 
 const SORT_OPTIONS = [
   { value: 'rank_score', label: '按排序分' },
@@ -47,8 +46,6 @@ const SORT_OPTIONS = [
 ];
 
 const DEFAULT_FORM: FormState = {
-  profile: 'standard',
-  topN: '10',
   tradeDate: '',
 };
 
@@ -56,8 +53,8 @@ const DEFAULT_SORT: SortKey = 'rank_score';
 
 function buildScreeningPayload(nextForm: FormState): MomentumScreenerRequest {
   return {
-    profile: nextForm.profile,
-    topN: Number.parseInt(nextForm.topN, 10) || 10,
+    profile: 'standard',
+    topN: OFFICIAL_TOP_N,
     tradeDate: nextForm.tradeDate || undefined,
   };
 }
@@ -162,9 +159,10 @@ function loadPersistedState(): PersistedState {
       return { form: DEFAULT_FORM, sortBy: DEFAULT_SORT, hasPersisted: false };
     }
 
-    const parsed = JSON.parse(raw) as Partial<{ form: FormState; sortBy: SortKey }>;
+    const parsed = JSON.parse(raw) as Partial<{ form: Partial<FormState>; sortBy: SortKey }>;
+    const parsedForm = parsed.form;
     return {
-      form: { ...DEFAULT_FORM, ...(parsed.form ?? {}), profile: 'standard' },
+      form: { tradeDate: parsedForm?.tradeDate ?? DEFAULT_FORM.tradeDate },
       sortBy: parsed.sortBy ?? DEFAULT_SORT,
       hasPersisted: true,
     };
@@ -173,14 +171,8 @@ function loadPersistedState(): PersistedState {
   }
 }
 
-function buildFormFromSystemConfig(
-  items: Array<{ key: string; value: string }> | undefined,
-): FormState {
-  const itemMap = new Map((items ?? []).map((item) => [item.key, item.value]));
-
+function buildFormFromSystemConfig(): FormState {
   return {
-    profile: DEFAULT_FORM.profile,
-    topN: itemMap.get('MOMENTUM_SCREENER_DEFAULT_TOP_N') || DEFAULT_FORM.topN,
     tradeDate: DEFAULT_FORM.tradeDate,
   };
 }
@@ -244,27 +236,18 @@ function gateLevelBadgeVariant(level: 'strong' | 'medium' | 'weak'): 'success' |
   return 'danger';
 }
 
-function historicalValidityBadgeVariant(
-  level: MomentumSecondaryDecision['historicalValidity']['level'],
-): 'success' | 'info' | 'warning' {
-  if (level === 'healthy') return 'success';
-  if (level === 'general') return 'info';
-  return 'warning';
-}
-
-function strategyHealthBadgeVariant(
-  status: MomentumSecondaryDecision['strategyHealth']['status'],
-): 'success' | 'info' | 'warning' | 'danger' {
-  if (status === 'healthy') return 'success';
-  if (status === 'recovery_mode') return 'info';
-  if (status === 'partial_healthy') return 'warning';
+function attackPermissionBadgeVariant(
+  status: MomentumSecondaryDecision['attackPermission']['status'],
+): 'success' | 'warning' | 'danger' {
+  if (status === 'open') return 'success';
+  if (status === 'recovering') return 'warning';
   return 'danger';
 }
 
-function strategyHealthWindowBadgeVariant(
-  status: MomentumSecondaryDecision['strategyHealth']['shortWindow']['status'],
+function themeConfidenceBadgeVariant(
+  status: MomentumSecondaryDecision['themeConfidence']['status'],
 ): 'success' | 'warning' | 'danger' {
-  if (status === 'healthy') return 'success';
+  if (status === 'credible') return 'success';
   if (status === 'recovering') return 'warning';
   return 'danger';
 }
@@ -691,7 +674,14 @@ const AggressiveSupplementPanel: React.FC<{
           />
         </div>
       ) : (
-        <div className="space-y-4 pt-4">
+        <details className="group pt-4">
+          <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-3 rounded-2xl border border-warning/25 bg-warning/10 px-4 py-3 text-sm text-secondary-text transition-colors hover:bg-warning/15">
+            <span>
+              发现 {items.length} 只额外进攻补充标的，默认折叠；展开后仅用于观察，不纳入官方组合。
+            </span>
+            <Badge variant="warning">展开查看</Badge>
+          </summary>
+          <div className="mt-4 space-y-4">
           <div
             className={`rounded-2xl border px-4 py-3 text-sm leading-6 ${
               isExecutionBlocked
@@ -774,7 +764,8 @@ const AggressiveSupplementPanel: React.FC<{
               </div>
             ))}
           </div>
-        </div>
+          </div>
+        </details>
       )}
     </Card>
   );
@@ -912,13 +903,9 @@ const GateLayerPanel: React.FC<{
   icon: React.ComponentType<{ className?: string }>;
   layer:
     | MomentumSecondaryDecision['marketEnvironment']
-    | MomentumSecondaryDecision['opportunityQuality']
-    | MomentumSecondaryDecision['historicalValidity'];
+    | MomentumSecondaryDecision['opportunityQuality'];
 }> = ({ title, icon: Icon, layer }) => {
-  const isHistoricalLayer = 'maxActionLevel' in layer;
-  const badgeVariant = isHistoricalLayer
-    ? historicalValidityBadgeVariant(layer.level)
-    : gateLevelBadgeVariant(layer.level);
+  const matrixLabel = 'matrixLabel' in layer ? layer.matrixLabel : null;
 
   return (
     <div className="rounded-2xl border border-border/50 bg-card/50 p-4">
@@ -929,13 +916,9 @@ const GateLayerPanel: React.FC<{
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <p className="text-sm font-semibold text-foreground">{title}</p>
-            <Badge variant={badgeVariant}>{layer.label}</Badge>
+            <Badge variant={gateLevelBadgeVariant(layer.level)}>{layer.label}</Badge>
             <Badge variant="default">{layer.score.toFixed(1)}</Badge>
-            {isHistoricalLayer ? (
-              <Badge variant="default">
-                {layer.recommendationCap === 'full' ? '完整推荐' : '有限推荐'}
-              </Badge>
-            ) : null}
+            {matrixLabel ? <Badge variant="info">矩阵 {matrixLabel}</Badge> : null}
           </div>
           <p className="mt-2 text-sm leading-6 text-secondary-text">{layer.reason}</p>
         </div>
@@ -1022,28 +1005,17 @@ const ActionChecklistPanel: React.FC<{
   </div>
 );
 
-const StrategyHealthPanel: React.FC<{
-  health: MomentumSecondaryDecision['strategyHealth'];
+const DecisionConfidencePanel: React.FC<{
+  decision: MomentumSecondaryDecision;
   onRefresh: () => void;
   refreshing: boolean;
   refreshDisabled: boolean;
-}> = ({ health, onRefresh, refreshing, refreshDisabled }) => {
+}> = ({ decision, onRefresh, refreshing, refreshDisabled }) => {
+  const { attackPermission, themeConfidence, strategyHealth: health } = decision;
   const validationStatus = resolveStrategyHealthValidationStatus(health);
   const showRefresh = shouldShowStrategyHealthRefresh(health);
   const healthDataSourceLabel = buildStrategyHealthDataSourceLabel(health);
   const progressSummary = buildStrategyHealthProgressSummary(health);
-  const capLabel =
-    health.recommendationCap === 'full'
-      ? '完整推荐'
-      : health.recommendationCap === 'limited'
-        ? '有限推荐'
-        : '停用';
-  const dataSourceLabel =
-    health.dataSource === 'proxy'
-      ? health.isWarming
-        ? '历史验证计算中'
-        : '代理结果'
-      : '历史验证';
 
   return (
     <div className="rounded-2xl border border-border/50 bg-card/50 p-4">
@@ -1053,14 +1025,20 @@ const StrategyHealthPanel: React.FC<{
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <p className="text-sm font-semibold text-foreground">策略健康</p>
-            <Badge variant={strategyHealthBadgeVariant(health.status)}>{health.label}</Badge>
-            <Badge variant="default">{capLabel}</Badge>
+            <p className="text-sm font-semibold text-foreground">进攻许可与主线可信度</p>
+            <Badge variant={attackPermissionBadgeVariant(attackPermission.status)}>
+              20日 {attackPermission.label}
+            </Badge>
+            <Badge variant={themeConfidenceBadgeVariant(themeConfidence.status)}>
+              60日 {themeConfidence.label}
+            </Badge>
             <Badge variant={validationStatus === 'final' ? 'success' : 'warning'}>
-              {healthDataSourceLabel || dataSourceLabel}
+              {healthDataSourceLabel}
             </Badge>
           </div>
-          <p className="mt-2 text-sm leading-6 text-secondary-text">{health.reason}</p>
+          <p className="mt-2 text-sm leading-6 text-secondary-text">
+            20日决定今天进攻上限，60日只提示主线结构可信度，不再直接压低今日动作级别。
+          </p>
           {progressSummary ? (
             <p className="mt-2 text-xs leading-6 text-secondary-text">{progressSummary}</p>
           ) : null}
@@ -1071,21 +1049,33 @@ const StrategyHealthPanel: React.FC<{
           ) : null}
           {health.isWarming ? (
             <p className="mt-2 text-xs leading-6 text-secondary-text">
-              首轮请求已切换为后台预热模式，页面先给你代理健康度，等真实 20/60 日历史结果算完后，点击下方“刷新真实 20/60 结果”即可看到正式结论。
+              首轮请求已切换为后台预热模式，页面先给你代理结果；等真实 20/60 日历史结果算完后，点击下方刷新即可看到正式结论。
             </p>
           ) : null}
         </div>
       </div>
 
+      {decision.riskBanner ? (
+        <div className="mt-4 rounded-2xl border border-warning/30 bg-warning/10 p-4">
+          <div className="flex items-start gap-3">
+            <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+            <div>
+              <p className="text-sm font-medium text-foreground">{decision.riskBanner.title}</p>
+              <p className="mt-1 text-sm leading-6 text-secondary-text">{decision.riskBanner.message}</p>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {showRefresh ? (
         <div className="mt-4 rounded-2xl border border-cyan/20 bg-cyan/5 p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="min-w-0">
-              <p className="text-sm font-medium text-foreground">真实 20/60 结果刷新</p>
+              <p className="text-sm font-medium text-foreground">刷新 20/60 结果</p>
               <p className="mt-1 text-xs leading-6 text-secondary-text">
                 {health.isWarming
-                  ? '后台正在计算真实历史验证；点击后会直接等待正式结果返回，不再只看代理健康度。'
-                  : '当前仍是代理健康度；点击后会优先尝试返回真实 20/60 历史验证结果。'}
+                  ? '后台正在计算真实历史验证；点击后会直接等待正式结果返回，不再只看代理结果。'
+                  : '当前仍不是 final 结果；点击后会优先尝试返回真实 20/60 历史验证结果。'}
               </p>
             </div>
             <Button
@@ -1099,30 +1089,48 @@ const StrategyHealthPanel: React.FC<{
               onClick={onRefresh}
             >
               <RefreshCw className="h-4 w-4" />
-              刷新真实 20/60 结果
+              刷新 20/60 结果
             </Button>
           </div>
         </div>
       ) : null}
 
       <div className="mt-4 grid gap-4 md:grid-cols-2">
-        {[health.shortWindow, health.longWindow].map((window) => (
-          <div key={window.window} className="rounded-2xl border border-border/40 bg-hover/10 p-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-sm font-medium text-foreground">{window.windowLabel}</p>
-              <Badge variant={strategyHealthWindowBadgeVariant(window.status)}>{window.statusLabel}</Badge>
-            </div>
-            <p className={`mt-3 text-lg font-semibold ${scoreTone(window.score)}`}>{window.score.toFixed(1)}</p>
-            <p className="mt-1 text-xs text-secondary-text">健康阈值 {window.threshold.toFixed(1)}</p>
-            <div className="mt-3 grid gap-2 text-xs text-secondary-text sm:grid-cols-2">
-              <p>样本 {window.sampleCount} / 成功 {window.successCount}</p>
-              <p>成功率 {window.successRate.toFixed(1)}%</p>
-              <p>利润窗口 {window.avgProfitWindowPct.toFixed(2)}%</p>
-              <p>平均回撤 {window.avgMaxDrawdownPct.toFixed(2)}%</p>
-            </div>
-            <p className="mt-3 text-sm leading-6 text-secondary-text">{window.summary}</p>
+        <div className="rounded-2xl border border-border/40 bg-hover/10 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm font-medium text-foreground">20日进攻许可</p>
+            <Badge variant={attackPermissionBadgeVariant(attackPermission.status)}>
+              {attackPermission.statusLabel}
+            </Badge>
           </div>
-        ))}
+          <p className={`mt-3 text-lg font-semibold ${scoreTone(attackPermission.score)}`}>
+            {attackPermission.score.toFixed(1)}
+          </p>
+          <div className="mt-3 grid gap-2 text-xs text-secondary-text sm:grid-cols-2">
+            <p>有效样本 {attackPermission.validSampleCount}</p>
+            <p>命中率 {attackPermission.hitRate.toFixed(1)}%</p>
+            <p>利润窗口 {attackPermission.avgProfitWindowPct.toFixed(2)}%</p>
+            <p>平均回撤 {attackPermission.avgMaxDrawdownPct.toFixed(2)}%</p>
+          </div>
+          <p className="mt-3 text-sm leading-6 text-secondary-text">{attackPermission.summary}</p>
+        </div>
+
+        <div className="rounded-2xl border border-border/40 bg-hover/10 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm font-medium text-foreground">60日主线可信度</p>
+            <Badge variant={themeConfidenceBadgeVariant(themeConfidence.status)}>
+              {themeConfidence.statusLabel}
+            </Badge>
+          </div>
+          <p className={`mt-3 text-lg font-semibold ${scoreTone(themeConfidence.score)}`}>
+            {themeConfidence.score.toFixed(1)}
+          </p>
+          <div className="mt-3 grid gap-2 text-xs text-secondary-text sm:grid-cols-2">
+            <p>有效样本 {themeConfidence.validSampleCount}</p>
+            <p>结构参考 {themeConfidence.coreHitRate.toFixed(1)}%</p>
+          </div>
+          <p className="mt-3 text-sm leading-6 text-secondary-text">{themeConfidence.summary}</p>
+        </div>
       </div>
 
       {health.blockers.length > 0 ? (
@@ -1231,12 +1239,20 @@ const SecondaryDecisionPanel: React.FC<SecondaryDecisionPanelProps> = ({
               </div>
               <div>
                 <p className="text-sm font-semibold text-foreground">今日出手级别</p>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <Badge variant={attackPermissionBadgeVariant(decision.attackPermission.status)}>
+                    20日进攻许可：{decision.attackPermission.label}
+                  </Badge>
+                  <Badge variant={themeConfidenceBadgeVariant(decision.themeConfidence.status)}>
+                    60日主线可信度：{decision.themeConfidence.label}
+                  </Badge>
+                </div>
                 <p className="mt-2 text-base leading-7 text-foreground">{decision.action.reason}</p>
               </div>
             </div>
           </div>
 
-          <div className="grid gap-4 xl:grid-cols-3">
+          <div className="grid gap-4 xl:grid-cols-2">
             <GateLayerPanel
               title="市场环境"
               icon={BarChart3}
@@ -1247,15 +1263,10 @@ const SecondaryDecisionPanel: React.FC<SecondaryDecisionPanelProps> = ({
               icon={Target}
               layer={decision.opportunityQuality}
             />
-            <GateLayerPanel
-              title="历史有效性"
-              icon={ShieldAlert}
-              layer={decision.historicalValidity}
-            />
           </div>
 
-          <StrategyHealthPanel
-            health={decision.strategyHealth}
+          <DecisionConfidencePanel
+            decision={decision}
             onRefresh={onRefresh}
             refreshing={refreshing}
             refreshDisabled={refreshDisabled}
@@ -1599,7 +1610,7 @@ const MomentumScreenerPage: React.FC = () => {
     setAggressiveResponse(null);
     setAggressiveError(null);
 
-    const payload = buildScreeningPayload({ ...nextForm, profile: 'standard' });
+    const payload = buildScreeningPayload(nextForm);
     setLastSubmittedPayload(payload);
 
     try {
@@ -1671,12 +1682,12 @@ const MomentumScreenerPage: React.FC = () => {
       }
 
       try {
-        const config = await systemConfigApi.getConfig(false);
+        await systemConfigApi.getConfig(false);
         if (cancelled) {
           return;
         }
 
-        const nextForm = buildFormFromSystemConfig(config.items);
+        const nextForm = buildFormFromSystemConfig();
         setForm(nextForm);
       } catch {
         if (cancelled) {
@@ -1700,16 +1711,20 @@ const MomentumScreenerPage: React.FC = () => {
       return [];
     }
 
+    const officialTop3Codes = new Set((decision?.portfolio ?? []).map((item) => item.tsCode));
+
     return [...aggressiveResponse.results]
+      .filter((item) => !officialTop3Codes.has(item.tsCode))
       .sort(
         (a, b) =>
+          b.extensionScore - a.extensionScore ||
           (b.buyabilityScore ?? -1) - (a.buyabilityScore ?? -1) ||
           b.rankScore - a.rankScore ||
           b.finalScore - a.finalScore,
       )
-      .slice(0, 3)
+      .slice(0, 2)
       .map((item, index) => ({ ...item, rank: index + 1 }));
-  }, [aggressiveResponse]);
+  }, [aggressiveResponse, decision?.portfolio]);
   const selectedResultTsCode = selectedResult?.item.tsCode;
   const selectedResultSource = selectedResult?.source;
 
@@ -1880,8 +1895,8 @@ const MomentumScreenerPage: React.FC = () => {
     setError(null);
 
     try {
-      const config = await systemConfigApi.getConfig(false);
-      const nextForm = buildFormFromSystemConfig(config.items);
+      await systemConfigApi.getConfig(false);
+      const nextForm = buildFormFromSystemConfig();
       setForm(nextForm);
       setSortBy(DEFAULT_SORT);
       await runScreening(nextForm);
@@ -1950,20 +1965,13 @@ const MomentumScreenerPage: React.FC = () => {
                 <p>Aggressive 只补充更高弹性候选，不单独形成新的官方组合，也不会推翻总闸门。</p>
               </div>
             </div>
-            <Input
-              label="返回数量"
-              type="number"
-              min={1}
-              max={100}
-              value={form.topN}
-              onChange={(event) => setForm((prev) => ({ ...prev, topN: event.target.value }))}
-            />
             <div className="rounded-2xl border border-border/50 bg-hover/10 px-4 py-3">
               <p className="text-sm font-medium text-foreground">V1 统一入口基线</p>
               <div className="mt-2 grid gap-2 text-sm text-secondary-text sm:grid-cols-2">
-                <p>最小涨幅 5%</p>
-                <p>最小成交额 3 亿</p>
-                <p>最小换手率 3%</p>
+                <p>最小涨幅 4%</p>
+                <p>最小成交额 2 亿</p>
+                <p>最小换手率 2%</p>
+                <p>官方展示 Top30</p>
                 <p>市场范围：主板 + 创业板 + 科创板</p>
               </div>
               <p className="mt-2 text-xs leading-6 text-secondary-text">
@@ -2027,7 +2035,7 @@ const MomentumScreenerPage: React.FC = () => {
               icon={TrendingUp}
               label="结果数量"
               value={response ? String(sortedResults.length) : '--'}
-              subtext="当前页面展示的 TopN"
+              subtext="官方固定展示 Top30"
             />
             <SummaryCard
               icon={BarChart3}
@@ -2124,7 +2132,7 @@ const MomentumScreenerPage: React.FC = () => {
             {sortedResults.length === 0 ? (
               <EmptyState
                 title="暂无筛选结果"
-                description="先执行一次筛选；V1 候选池入口已经固定为全市场统一 5 / 3 / 3 基线。"
+                description="先执行一次筛选；V1 候选池入口已经固定为全市场统一 4 / 2亿 / 2% 基线，并固定展示 Top30。"
               />
             ) : (
               <div className="overflow-x-auto">

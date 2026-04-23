@@ -22,11 +22,12 @@ logger = logging.getLogger(__name__)
 
 MOMENTUM_EOD_READY_COVERAGE_RATIO = 0.6
 MOMENTUM_MARKET_CLOSE_CUTOFF = "15:00"
-MOMENTUM_ENTRY_BASELINE_VERSION = "v1_5_3_3"
+MOMENTUM_ENTRY_BASELINE_VERSION = "v1_4_2_2"
 MOMENTUM_MARKET_SCOPE_VERSION = "v1_a_share_main_chinext_star"
-MOMENTUM_DEFAULT_MIN_CHANGE_PCT = 5.0
-MOMENTUM_DEFAULT_MIN_AMOUNT = 3e8
-MOMENTUM_DEFAULT_MIN_TURNOVER = 3.0
+MOMENTUM_DEFAULT_TOP_N = 30
+MOMENTUM_DEFAULT_MIN_CHANGE_PCT = 4.0
+MOMENTUM_DEFAULT_MIN_AMOUNT = 2e8
+MOMENTUM_DEFAULT_MIN_TURNOVER = 2.0
 MOMENTUM_ALLOWED_MARKET_SEGMENTS = {"main_board", "chinext", "star"}
 MOMENTUM_MARKET_SEGMENT_LABELS = {
     "main_board": "主板",
@@ -130,7 +131,7 @@ class MomentumScreenerService:
     def screen(
         self,
         *,
-        top_n: int = 10,
+        top_n: int = MOMENTUM_DEFAULT_TOP_N,
         min_change_pct: float = MOMENTUM_DEFAULT_MIN_CHANGE_PCT,
         min_amount: float = MOMENTUM_DEFAULT_MIN_AMOUNT,
         min_turnover: float = MOMENTUM_DEFAULT_MIN_TURNOVER,

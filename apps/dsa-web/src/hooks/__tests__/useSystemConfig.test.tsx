@@ -75,7 +75,7 @@ const screenerDefaultsConfig = {
     },
     {
       key: 'MOMENTUM_SCREENER_DEFAULT_TOP_N',
-      value: '10',
+      value: '30',
       rawValueExists: true,
       isMasked: false,
       schema: {
@@ -93,7 +93,7 @@ const screenerDefaultsConfig = {
     },
     {
       key: 'MOMENTUM_SCREENER_DEFAULT_MIN_CHANGE_PCT',
-      value: '7',
+      value: '4',
       rawValueExists: true,
       isMasked: false,
       schema: {
@@ -111,7 +111,7 @@ const screenerDefaultsConfig = {
     },
     {
       key: 'MOMENTUM_SCREENER_DEFAULT_MIN_AMOUNT_YI',
-      value: '3',
+      value: '2',
       rawValueExists: true,
       isMasked: false,
       schema: {
@@ -129,7 +129,7 @@ const screenerDefaultsConfig = {
     },
     {
       key: 'MOMENTUM_SCREENER_DEFAULT_MIN_TURNOVER',
-      value: '3',
+      value: '2',
       rawValueExists: true,
       isMasked: false,
       schema: {

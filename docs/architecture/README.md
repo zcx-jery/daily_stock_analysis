@@ -41,7 +41,7 @@
 - 固化每个评分项的打分逻辑
 - 固化 `continuation_score / extension_score / risk_score`
 
-### 4. Aggressive 评分规则
+### 4. Aggressive 补充观察规则
 
 - [次日强势股筛选 V1-Aggressive 评分规则](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-v1-aggressive-scoring-rules.md)
 - [次日强势股筛选 V1-Aggressive 二级分数规则](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-aggressive-secondary-score-rules.md)
@@ -50,7 +50,8 @@
 
 - 固化进攻型评分规则
 - 固化 `buyability_score`
-- 固化进攻型排序公式
+- 固化进攻补充观察层的排序公式
+- 说明 `Aggressive` 只做补充观察，不作为第二套官方答案
 
 ### 5. 两套规则差异对照
 
@@ -59,8 +60,8 @@
 用途：
 
 - 对比 `standard` 与 `aggressive`
-- 供前端做模式切换
-- 供后端做 profile 参数化
+- 供前端解释官方主链路与补充观察层的边界
+- 供后端保留补充观察层 profile 参数化
 
 ### 6. 字段级实现映射
 
@@ -98,14 +99,15 @@
 
 当前已确定：
 
-- 产品采用 `V1 + 可切换 Aggressive`
-- `standard` 作为默认画像
-- `aggressive` 作为进攻型可选画像
+- 产品采用 `V1 Standard 官方链路 + Aggressive 折叠补充观察层`
+- `standard` 是唯一官方主引擎
+- `aggressive` 只作为进攻补充观察层，不输出第二套官方组合
 - `V1` 板块口径固定为申万一级行业
-- `V1` 候选池入口固定为全市场统一 `5 / 3 / 3`
+- `V1` 候选池入口固定为全市场统一 `4 / 2亿 / 2%`
+- `V1` 官方页面展示固定为 `Top30`
 - `V1` 普通用户不可调整入口参数，不保留研究模式
-- `Standard` 为官方生产引擎，`Aggressive` 为进攻补充引擎
-- `V1` 总闸门采用 `市场环境 × 当日机会质量 × 历史有效性` 联合裁决
+- `V1` 官方回测只回放 `Standard` 生产链路
+- `V1` 总闸门采用 `市场环境 × 当日机会质量` 主矩阵，并由 `20日进攻许可` 做动作封顶；`60日主线可信度` 只做结构提示
 
 ## 维护建议
 
@@ -137,6 +139,7 @@
 
 ## Secondary Decision Docs
 
+- [Momentum Screener New Gate Rules Draft](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-new-gate-rules-draft.md)
 - [Momentum Screener Secondary Decision SPEC](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-secondary-decision-spec.md)
 - [Momentum Screener Secondary Decision PRD](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-secondary-decision-prd.md)
 - [Momentum Screener Secondary Decision Technical Design](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-secondary-decision-technical-design.md)

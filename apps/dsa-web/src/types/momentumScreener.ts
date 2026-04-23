@@ -174,9 +174,19 @@ export interface MomentumDecisionMarketEnvironment {
 export interface MomentumDecisionOpportunityQuality {
   level: 'strong' | 'medium' | 'weak';
   label: string;
+  matrixLevel?: 'strong' | 'upper_mid' | 'mid' | 'weak' | null;
+  matrixLabel?: string | null;
   score: number;
   reason: string;
   modules: MomentumDecisionGateModule[];
+  clearCount?: number | null;
+  clearBuyPointCount?: number | null;
+  mainRiskRewardPass?: boolean | null;
+  themeConcentrationPass?: boolean | null;
+  mainBuyPointClear?: boolean | null;
+  secondaryBuyPointClear?: boolean | null;
+  coreOverextendedCount?: number | null;
+  portfolioUnresolved?: boolean | null;
 }
 
 export interface MomentumDecisionHistoricalValidity {
@@ -186,6 +196,42 @@ export interface MomentumDecisionHistoricalValidity {
   reason: string;
   maxActionLevel: 'strong_go' | 'normal_go' | 'cautious_go';
   recommendationCap: 'full' | 'limited';
+  attackPermissionStatus?: 'open' | 'recovering' | 'paused' | null;
+  attackPermissionLabel?: string | null;
+}
+
+export interface MomentumDecisionAttackPermission {
+  status: 'open' | 'recovering' | 'paused';
+  statusLabel: string;
+  label: string;
+  score: number;
+  window: 'short_20d';
+  windowLabel: string;
+  validSampleCount: number;
+  hitRate: number;
+  avgProfitWindowPct: number;
+  avgMaxDrawdownPct: number;
+  reason: string;
+  summary: string;
+}
+
+export interface MomentumDecisionThemeConfidence {
+  status: 'credible' | 'recovering' | 'questionable';
+  statusLabel: string;
+  label: string;
+  score: number;
+  window: 'long_60d';
+  windowLabel: string;
+  validSampleCount: number;
+  coreHitRate: number;
+  reason: string;
+  summary: string;
+}
+
+export interface MomentumDecisionRiskBanner {
+  tone: 'warning';
+  title: string;
+  message: string;
 }
 
 export interface MomentumActionChecklistStep {
@@ -263,6 +309,9 @@ export interface MomentumSecondaryDecision {
   opportunityQuality: MomentumDecisionOpportunityQuality;
   historicalValidity: MomentumDecisionHistoricalValidity;
   strategyHealth: MomentumStrategyHealth;
+  attackPermission: MomentumDecisionAttackPermission;
+  themeConfidence: MomentumDecisionThemeConfidence;
+  riskBanner?: MomentumDecisionRiskBanner | null;
   themes: MomentumDecisionTheme[];
   portfolio: MomentumDecisionPortfolioSlot[];
   candidateDiagnostics?: MomentumDecisionCandidateDiagnostic[];
