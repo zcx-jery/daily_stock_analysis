@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Schemas for momentum screener AI commentary."""
 
-from typing import List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -69,3 +69,4 @@ class MomentumScreenerAIReviewRequest(BaseModel):
     screening: MomentumScreenerResponse = Field(..., description="当前页面筛选结果快照")
     decision: Optional[MomentumSecondaryDecision] = Field(None, description="当前页面二次决策快照")
     intraday_signal: Optional[MomentumIntradaySignal] = Field(None, description="当前页面盘中信号快照")
+    snapshot_assist: Optional[Dict[str, Any]] = Field(None, description="V1.3 低置信度盘中快照辅助")

@@ -73,12 +73,17 @@ export interface MomentumDecisionThemeRepresentative {
   role: string;
   buyPointLabel: string;
   rankScore: number;
+  v13MainlineScore?: number | null;
 }
 
 export interface MomentumDecisionTheme {
   name: string;
   score: number;
   strengthLabel: string;
+  ruleThemeScore?: number | null;
+  v13ThemeId?: string | null;
+  v13MainlineScore?: number | null;
+  v13Summary?: string | null;
   candidateCount: number;
   clearBuyPointCount: number;
   leaderCount: number;
@@ -93,6 +98,10 @@ export interface MomentumDecisionPortfolioSlot {
   tsCode: string;
   name: string;
   theme: string;
+  v13ThemeId?: string | null;
+  v13MainlineScore?: number | null;
+  v13MainlineLevel?: string | null;
+  v13MainlineLevelLabel?: string | null;
   role: string;
   score: number;
   rankScore: number;
@@ -130,6 +139,10 @@ export interface MomentumDecisionCandidateDiagnostic {
   name: string;
   theme: string;
   themeScore: number;
+  v13ThemeId?: string | null;
+  v13MainlineScore?: number | null;
+  v13MainlineLevel?: string | null;
+  v13MainlineLevelLabel?: string | null;
   roleKey: string;
   role: string;
   buyPointStatus: MomentumBuyPointStatus;
@@ -234,6 +247,46 @@ export interface MomentumDecisionRiskBanner {
   message: string;
 }
 
+export interface MomentumMainlineRadarItem {
+  themeId: string;
+  themeName: string;
+  score: number;
+  level: string;
+  levelLabel: string;
+  candidateCount?: number;
+  top10Count?: number;
+  limitUpCount?: number;
+  brokenLimitCount?: number;
+  hotRank?: number | null;
+  representatives?: Record<string, unknown>[];
+  evidence?: Record<string, unknown>[];
+  isDegraded?: boolean;
+  degradedReasons?: string[];
+  summary?: string;
+}
+
+export interface MomentumShortTermSentiment {
+  level: string;
+  label: string;
+  score: number;
+  summary: string;
+  modules?: Record<string, unknown>[];
+  confidence?: 'high' | 'medium' | 'low' | string;
+  isDegraded?: boolean;
+  degradedReasons?: string[];
+}
+
+export interface MomentumV13DataStatus {
+  enabled: boolean;
+  status: 'ok' | 'degraded' | 'failed' | 'skipped' | 'not_applicable' | string;
+  reason: string;
+  dataAsOf?: string | null;
+  sourceStatus?: Record<string, string>;
+  degradedReasons?: string[];
+  mainlineCount?: number;
+  shortTermSentimentLevel?: string | null;
+}
+
 export interface MomentumActionChecklistStep {
   phase: 'pre_open' | 'first_30m' | 'first_60m';
   phaseLabel: string;
@@ -312,6 +365,9 @@ export interface MomentumSecondaryDecision {
   attackPermission: MomentumDecisionAttackPermission;
   themeConfidence: MomentumDecisionThemeConfidence;
   riskBanner?: MomentumDecisionRiskBanner | null;
+  mainlineRadar?: MomentumMainlineRadarItem[];
+  shortTermSentiment?: MomentumShortTermSentiment | null;
+  v13DataStatus?: MomentumV13DataStatus | null;
   themes: MomentumDecisionTheme[];
   portfolio: MomentumDecisionPortfolioSlot[];
   candidateDiagnostics?: MomentumDecisionCandidateDiagnostic[];
@@ -387,6 +443,32 @@ export interface MomentumIntradaySignal {
   portfolioItems: MomentumIntradayPortfolioItem[];
 }
 
+export interface MomentumSnapshotAssistItem {
+  slot?: MomentumDecisionSlot | string | null;
+  slotLabel?: string | null;
+  tsCode?: string | null;
+  name?: string | null;
+  status: 'near_watch_zone' | 'overextended' | 'quote_missing' | 'observe_only' | 'neutral' | string;
+  statusLabel: string;
+  currentPrice?: number | null;
+  changePercent?: number | null;
+  entryRangeLow?: number | null;
+  entryRangeHigh?: number | null;
+  priceVsEntryHighPct?: number | null;
+  manualCheck: string;
+}
+
+export interface MomentumSnapshotAssist {
+  label: string;
+  confidence: 'low' | string;
+  dataAsOf?: string | null;
+  isDegraded?: boolean;
+  degradedReasons?: string[];
+  summary: string;
+  items: MomentumSnapshotAssistItem[];
+}
+
 export interface MomentumScreenerIntradayResponse extends MomentumScreenerDecisionResponse {
   intradaySignal: MomentumIntradaySignal;
+  snapshotAssist?: MomentumSnapshotAssist | null;
 }

@@ -240,12 +240,17 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
 
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["profile"], "standard")
+        self.assertEqual(result["strategy_health_mode"], "cached_only")
         self.assertEqual(result["total_trade_dates"], 3)
         self.assertEqual(result["processed_trade_dates"], 3)
         self.assertEqual(result["failed_trade_dates"], 0)
         self.assertIsNotNone(result["summary"])
+        self.assertEqual(result["summary"]["strategy_health_mode"], "cached_only")
         self.assertEqual(result["summary"]["completed_trade_dates"], 3)
         self.assertIn("action_breakdown", result["summary"])
+        self.assertIn("strategy_health_validation_status_breakdown", result["summary"])
+        self.assertIn("attack_permission_breakdown", result["summary"])
+        self.assertIn("theme_confidence_breakdown", result["summary"])
 
         daily = self.service.list_daily(result["run_id"])
         self.assertEqual(len(daily["items"]), 3)
@@ -255,11 +260,13 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
 
         summary = self.service.get_summary(result["run_id"])
         self.assertEqual(summary["run_id"], result["run_id"])
+        self.assertEqual(summary["strategy_health_mode"], "cached_only")
         self.assertIn("decision_top3_buy_trigger_rate", summary["summary"])
         self.assertIn("benchmark_comparison", summary["summary"])
         self.assertIn("layer_diagnostics", summary["summary"])
         self.assertIn("gate_module_breakdown", summary["summary"])
         self.assertIn("regime_breakdown", summary["summary"])
+        self.assertIn("v13_diagnostics", summary["summary"])
         self.assertTrue(any(item["key"] == "buy_point_clarity" for item in summary["summary"]["gate_module_breakdown"]))
 
         detail = self.service.get_daily_detail(result["run_id"], "2026-04-10")
@@ -270,11 +277,40 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
         self.assertIn("forward_alpha_score", detail["candidate_top10"][0]["decision_diagnostics"])
         self.assertIn("gate_snapshot", detail["diagnosis"])
         self.assertIn("gate_blockers", detail["diagnosis"])
+        self.assertIn("v13_diagnostics", detail)
 
         issues = self.service.get_issues(result["run_id"])
         self.assertEqual(issues["run_id"], result["run_id"])
         self.assertIn("severity_breakdown", issues)
         self.assertIn("issue_key_breakdown", issues)
+
+    def test_v13_diagnostics_are_extracted_from_frozen_decision_payload(self) -> None:
+        row = self._build_daily_summary_fixture()
+        row.decision_payload_json = self.service._dump_json(
+            {
+                "mainline_radar": [
+                    {
+                        "theme_id": "T001",
+                        "theme_name": "机器人",
+                        "score": 82.5,
+                        "level": "strong",
+                    }
+                ],
+                "short_term_sentiment": {
+                    "level": "tradable",
+                    "level_label": "可交易",
+                    "score": 71.0,
+                },
+                "v13_data_status": {"status": "ok", "is_degraded": False},
+            }
+        )
+
+        diagnostics = self.service._extract_v13_diagnostics_from_daily_row(row)
+
+        self.assertEqual(diagnostics["mainline_count"], 1)
+        self.assertEqual(diagnostics["top_mainline"]["theme_name"], "机器人")
+        self.assertEqual(diagnostics["short_term_sentiment"]["level"], "tradable")
+        self.assertTrue(any("机器人" in line for line in diagnostics["summary_lines"]))
 
     def test_create_run_rejects_invalid_date_range(self) -> None:
         with self.assertRaises(ValueError):
@@ -283,6 +319,49 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
                 end_trade_date="2026-04-08",
                 profile="standard",
             )
+
+    def test_gate_blockers_include_action_matrix_restriction_when_no_weak_modules_exist(self) -> None:
+        blockers = self.service._build_gate_blockers_from_snapshot(
+            [
+                {
+                    "key": "market_environment",
+                    "label": "市场环境",
+                    "level": "medium",
+                    "modules": [
+                        {"key": "core_premium", "label": "强", "level": "strong", "score": 78.0, "summary": ""},
+                        {"key": "breadth_premium", "label": "中", "level": "medium", "score": 60.0, "summary": ""},
+                    ],
+                },
+                {
+                    "key": "opportunity_quality",
+                    "label": "机会质量",
+                    "level": "medium",
+                    "modules": [
+                        {"key": "buy_point_clarity", "label": "中", "level": "medium", "score": 60.0, "summary": ""},
+                    ],
+                },
+                {
+                    "key": "historical_validity",
+                    "label": "20日进攻许可",
+                    "level": "healthy",
+                    "reason": "",
+                    "modules": [],
+                },
+            ],
+            decision={
+                "action": {
+                    "level": "observe_only",
+                    "base_level": "observe_only",
+                    "gate_context": {
+                        "restriction_reason": "市场环境为中、机会质量为中位，基础动作矩阵先收口到“仅观察”。",
+                    },
+                }
+            },
+        )
+
+        matrix_blocker = next(item for item in blockers if item["key"] == "action_matrix")
+        self.assertEqual(matrix_blocker["group_key"], "opportunity_quality")
+        self.assertIn("基础动作矩阵", matrix_blocker["summary"])
 
     def test_daily_diagnosis_flags_main_slot_issue_for_same_theme_outperformer(self) -> None:
         diagnosis = self.service._build_daily_diagnosis(
@@ -467,6 +546,38 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
         self.assertFalse(issue["metrics"]["best_candidate_same_theme"])
         self.assertTrue(issue["metrics"]["best_candidate_in_selected_top3"])
 
+    def test_regime_breakdown_normalizes_medium_to_general(self) -> None:
+        row = self._build_daily_summary_fixture()
+        row.market_environment_level = "medium"
+        row.action_level = "normal_go"
+        diagnosis_by_date = {
+            row.trade_date: {
+                "issues": [],
+                "decision_metrics": {
+                    "positive_t2_rate_pct": 100.0,
+                },
+            }
+        }
+        outcomes = [
+            self._build_outcome_record(
+                view_scope="decision_top3",
+                slot="main",
+                ts_code="600001.SH",
+                name="主仓股",
+                t2_profit_window_pct=5.0,
+            )
+        ]
+
+        breakdown = self.service._build_regime_breakdown(
+            daily_rows=[row],
+            decision_outcomes=outcomes,
+            diagnosis_by_date=diagnosis_by_date,
+        )
+
+        general_row = next(item for item in breakdown if item["level"] == "general")
+        self.assertEqual(general_row["trade_days"], 1)
+        self.assertEqual(general_row["decision_positive_t2_rate_pct"], 100.0)
+
     def test_async_create_reuses_same_params_and_queues_different_tasks(self) -> None:
         self._slow_down_freeze()
 
@@ -605,10 +716,12 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
 
     def test_backtest_replay_uses_cached_only_strategy_health_mode(self) -> None:
         captured_modes: list[str | None] = []
+        captured_waits: list[bool] = []
         original_build_from_screening = self.service.decision_service.build_from_screening
 
         def wrapped_build_from_screening(screening, *args, **kwargs):
             captured_modes.append(kwargs.get("strategy_health_mode"))
+            captured_waits.append(bool(kwargs.get("wait_for_strategy_health")))
             return original_build_from_screening(screening, *args, **kwargs)
 
         self.service.decision_service.build_from_screening = wrapped_build_from_screening  # type: ignore[method-assign]
@@ -624,6 +737,58 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
         self.assertGreaterEqual(len(captured_modes), 3)
         self.assertTrue(captured_modes)
         self.assertTrue(all(mode == "cached_only" for mode in captured_modes))
+        self.assertTrue(all(wait is False for wait in captured_waits))
+
+    def test_backtest_replay_can_force_strict_final_strategy_health_mode(self) -> None:
+        captured_modes: list[str | None] = []
+        captured_waits: list[bool] = []
+        original_build_from_screening = self.service.decision_service.build_from_screening
+
+        def wrapped_build_from_screening(screening, *args, **kwargs):
+            captured_modes.append(kwargs.get("strategy_health_mode"))
+            captured_waits.append(bool(kwargs.get("wait_for_strategy_health")))
+            return original_build_from_screening(screening, *args, **kwargs)
+
+        self.service.decision_service.build_from_screening = wrapped_build_from_screening  # type: ignore[method-assign]
+
+        result = self.service.create_run(
+            start_trade_date="2026-04-08",
+            end_trade_date="2026-04-10",
+            profile="standard",
+            top_n=20,
+            strict_strategy_health=True,
+        )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["strategy_health_mode"], "strict_final")
+        self.assertEqual(result["summary"]["strategy_health_mode"], "strict_final")
+        self.assertGreaterEqual(len(captured_modes), 3)
+        self.assertTrue(all(mode == "strict_final" for mode in captured_modes))
+        self.assertTrue(all(wait is True for wait in captured_waits))
+        validation_breakdown = result["summary"]["strategy_health_validation_status_breakdown"]
+        self.assertEqual(sum(validation_breakdown.values()), result["summary"]["completed_trade_dates"])
+        self.assertNotIn("proxy", validation_breakdown)
+        self.assertGreaterEqual(validation_breakdown.get("final", 0), 1)
+        self.assertTrue(set(validation_breakdown).issubset({"final", "failed"}))
+
+    def test_async_run_reuse_isolated_by_strategy_health_mode(self) -> None:
+        cached = self.service.create_run_async(
+            start_trade_date="2026-04-08",
+            end_trade_date="2026-04-10",
+            profile="standard",
+            top_n=20,
+        )
+        strict = self.service.create_run_async(
+            start_trade_date="2026-04-08",
+            end_trade_date="2026-04-10",
+            profile="standard",
+            top_n=20,
+            strict_strategy_health=True,
+        )
+
+        self.assertNotEqual(cached["run"]["run_id"], strict["run"]["run_id"])
+        self.assertEqual(cached["run"]["strategy_health_mode"], "cached_only")
+        self.assertEqual(strict["run"]["strategy_health_mode"], "strict_final")
 
     def test_async_run_refreshes_heartbeat_during_long_secondary_decision(self) -> None:
         self.service.stage_heartbeat_interval_seconds = 0.05
@@ -763,7 +928,8 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
         original_screen = self.service.screener_service.screen
 
         def wrapped_screen(*args, **kwargs):
-            replayed_trade_dates.append(kwargs.get("trade_date"))
+            if "min_change_pct" not in kwargs:
+                replayed_trade_dates.append(kwargs.get("trade_date"))
             return original_screen(*args, **kwargs)
 
         self.service.screener_service.screen = wrapped_screen  # type: ignore[method-assign]
@@ -778,6 +944,7 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
             ],
             profile="standard",
             top_n=20,
+            strategy_health_mode="cached_only",
         )
 
         latest = self.service.get_run("momentum_bt_resume")

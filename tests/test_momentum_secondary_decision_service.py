@@ -75,6 +75,75 @@ class _FakeGateScreenerService:
         self.fetcher = fetcher
 
 
+class _FakeV13DecisionDataService:
+    def build_context(self, *, trade_date: str, ts_codes: list[str]):
+        del trade_date, ts_codes
+        return {
+            "trade_date": "2026-04-10",
+            "data_as_of": "2026-04-10T15:00:00Z",
+            "is_degraded": False,
+            "degraded_reasons": [],
+            "source_status": {
+                "stk_limit": "ok",
+                "limit_list_d": "ok",
+                "ths_member": "ok",
+                "ths_hot": "ok",
+            },
+            "stock_theme_map": {
+                "600301.SH": [
+                    {
+                        "con_code": "600301.SH",
+                        "theme_code": "THS001",
+                        "theme_name": "机器人主线",
+                    }
+                ],
+                "600302.SH": [
+                    {
+                        "con_code": "600302.SH",
+                        "theme_code": "THS002",
+                        "theme_name": "医药弱线",
+                    }
+                ],
+            },
+        }
+
+    def build_mainline_radar(self, *, candidates, context):
+        del candidates, context
+        return [
+            {
+                "theme_id": "THS001",
+                "theme_name": "机器人主线",
+                "score": 90.0,
+                "level": "strong",
+                "level_label": "强",
+                "summary": "机器人主线热度、涨停强度和候选密度同步占优。",
+                "evidence": [],
+            },
+            {
+                "theme_id": "THS002",
+                "theme_name": "医药弱线",
+                "score": 35.0,
+                "level": "weak",
+                "level_label": "弱",
+                "summary": "医药弱线只有孤立候选，缺少主线确认。",
+                "evidence": [],
+            },
+        ]
+
+    def build_short_term_sentiment(self, *, mainline_radar, context):
+        del mainline_radar, context
+        return {
+            "level": "tradable",
+            "label": "可做",
+            "score": 72.0,
+            "summary": "主线热度集中，短线情绪可做。",
+            "modules": [],
+            "confidence": "high",
+            "is_degraded": False,
+            "degraded_reasons": [],
+        }
+
+
 class _FakeHistoricalScreenerService:
     def __init__(self, screens_by_date):
         self.screens_by_date = screens_by_date
@@ -272,16 +341,25 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         decision_score: float,
         forward_alpha_score: float,
         risk_score: float = 0.0,
+        entry_range_low: float | None = None,
+        entry_range_high: float | None = None,
+        risk_tags: list[str] | None = None,
     ) -> dict:
         return {
             "ts_code": ts_code,
             "name": name,
             "_theme": theme,
             "_role_key": role_key,
+            "_role_label": {"leader": "龙头核心", "front": "前排换手", "mid": "观察备选", "back": "观察备选"}[role_key],
             "_buy_point_status": buy_point_status,
+            "_buy_point_label": {"clear": "买点清晰", "waiting": "等待触发", "unclear": "买点不清晰"}[buy_point_status],
+            "_primary_reason": f"{theme} {name}",
             "_decision_score": decision_score,
             "_forward_alpha_score": forward_alpha_score,
             "risk_score": risk_score,
+            "entry_range_low": entry_range_low,
+            "entry_range_high": entry_range_high,
+            "risk_tags": risk_tags or [],
         }
 
     def test_build_from_screening_returns_action_themes_and_portfolio(self) -> None:
@@ -409,6 +487,68 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         self.assertEqual(result["action_checklist"]["steps"][0]["phase"], "pre_open")
         self.assertTrue(result["excluded_candidates"])
         self.assertEqual(result["excluded_candidates"][0]["reason"], "非主线 / 主线过弱")
+
+    def test_build_from_screening_uses_v13_mainline_radar_for_portfolio(self) -> None:
+        service = MomentumSecondaryDecisionService(
+            screener_service=None,
+            v13_data_service=_FakeV13DecisionDataService(),
+        )
+        screening = {
+            "profile": "standard",
+            "trade_date": "2026-04-10",
+            "candidate_count": 2,
+            "results": [
+                {
+                    "rank": 1,
+                    "ts_code": "600302.SH",
+                    "name": "旧分高弱线",
+                    "pct_chg": 7.4,
+                    "continuation_score": 88.0,
+                    "extension_score": 80.0,
+                    "risk_score": 12.0,
+                    "buyability_score": None,
+                    "entry_range_low": 20.1,
+                    "entry_range_high": 20.5,
+                    "final_score": 88.0,
+                    "rank_score": 88.0,
+                    "themes": ["旧医药"],
+                    "leader_level": "leader",
+                    "top_reasons": ["原始排序更高"],
+                    "risk_tags": [],
+                    "score_breakdown": {},
+                },
+                {
+                    "rank": 2,
+                    "ts_code": "600301.SH",
+                    "name": "主线前排",
+                    "pct_chg": 7.1,
+                    "continuation_score": 84.0,
+                    "extension_score": 79.0,
+                    "risk_score": 12.0,
+                    "buyability_score": None,
+                    "entry_range_low": 10.1,
+                    "entry_range_high": 10.4,
+                    "final_score": 84.0,
+                    "rank_score": 84.0,
+                    "themes": ["旧机器人"],
+                    "leader_level": "leader",
+                    "top_reasons": ["主线证据更强"],
+                    "risk_tags": [],
+                    "score_breakdown": {},
+                },
+            ],
+        }
+
+        result = service.build_from_screening(screening)
+
+        self.assertEqual(result["v13_data_status"]["status"], "ok")
+        self.assertEqual(result["mainline_radar"][0]["theme_name"], "机器人主线")
+        self.assertEqual(result["short_term_sentiment"]["level"], "tradable")
+        self.assertEqual(result["portfolio"][0]["ts_code"], "600301.SH")
+        self.assertEqual(result["portfolio"][0]["theme"], "机器人主线")
+        self.assertEqual(result["portfolio"][0]["v13_mainline_score"], 90.0)
+        diagnostic = next(item for item in result["candidate_diagnostics"] if item["ts_code"] == "600301.SH")
+        self.assertEqual(diagnostic["v13_theme_id"], "THS001")
 
     def test_build_from_screening_disables_strategy_when_both_windows_are_weak(self) -> None:
         service = MomentumSecondaryDecisionService(screener_service=None)
@@ -1636,6 +1776,270 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
 
         self.assertEqual(result["level"], "cautious_go")
 
+    def test_build_action_promotes_medium_market_mid_opportunity_when_market_has_strong_submodule(self) -> None:
+        service = MomentumSecondaryDecisionService(screener_service=None)
+
+        result = service._build_action(
+            "standard",
+            market_environment={
+                "level": "medium",
+                "modules": [
+                    {"key": "core_premium", "level": "strong"},
+                    {"key": "breadth_premium", "level": "medium"},
+                ],
+            },
+            opportunity_quality={
+                "level": "medium",
+                "matrix_level": "mid",
+                "clear_count": 1,
+                "main_risk_reward_pass": True,
+                "theme_concentration_pass": False,
+                "modules": [{"key": "buy_point_clarity", "level": "medium", "clear_count": 1}],
+            },
+            historical_validity={"level": "healthy", "attack_permission_status": "open"},
+            portfolio=[
+                {"slot": "main", "buy_point_status": "waiting", "risk_tags": [], "risk_score": 18.0},
+                {"slot": "secondary", "buy_point_status": "unclear", "risk_tags": [], "risk_score": 26.0},
+            ],
+        )
+
+        self.assertEqual(result["base_level"], "observe_only")
+        self.assertEqual(result["level"], "cautious_go")
+        self.assertTrue(result["gate_context"]["promotion_applied"])
+
+    def test_build_action_keeps_medium_market_mid_opportunity_observe_when_historical_validity_is_weak(self) -> None:
+        service = MomentumSecondaryDecisionService(screener_service=None)
+
+        result = service._build_action(
+            "standard",
+            market_environment={
+                "level": "medium",
+                "modules": [
+                    {"key": "core_premium", "level": "strong"},
+                    {"key": "breadth_premium", "level": "medium"},
+                ],
+            },
+            opportunity_quality={
+                "level": "medium",
+                "matrix_level": "mid",
+                "clear_count": 1,
+                "main_risk_reward_pass": True,
+                "theme_concentration_pass": False,
+                "modules": [{"key": "buy_point_clarity", "level": "medium", "clear_count": 1}],
+            },
+            historical_validity={"level": "weak", "attack_permission_status": "paused"},
+            portfolio=[
+                {"slot": "main", "buy_point_status": "waiting", "risk_tags": [], "risk_score": 18.0},
+                {"slot": "secondary", "buy_point_status": "unclear", "risk_tags": [], "risk_score": 26.0},
+            ],
+        )
+
+        self.assertEqual(result["base_level"], "observe_only")
+        self.assertEqual(result["level"], "observe_only")
+        self.assertFalse(result["gate_context"]["promotion_applied"])
+
+    def test_build_attack_permission_recovers_on_high_profit_controlled_drawdown(self) -> None:
+        service = MomentumSecondaryDecisionService(screener_service=None)
+
+        result = service._build_attack_permission(
+            {
+                "short_window": {
+                    "sample_count": 20,
+                    "score": 34.9,
+                    "success_rate": 15.0,
+                    "avg_profit_window_pct": 6.34,
+                    "avg_max_drawdown_pct": 4.91,
+                }
+            }
+        )
+
+        self.assertEqual(result["status"], "recovering")
+        self.assertEqual(result["short_window_score"], 34.9)
+        self.assertIn("利润窗口和回撤已回到可跟进区间", result["summary"])
+
+    def test_build_attack_permission_stays_paused_when_drawdown_is_too_high(self) -> None:
+        service = MomentumSecondaryDecisionService(screener_service=None)
+
+        result = service._build_attack_permission(
+            {
+                "short_window": {
+                    "sample_count": 20,
+                    "score": 34.9,
+                    "success_rate": 15.0,
+                    "avg_profit_window_pct": 6.34,
+                    "avg_max_drawdown_pct": 5.21,
+                }
+            }
+        )
+
+        self.assertEqual(result["status"], "paused")
+        self.assertEqual(result["short_window_score"], 34.9)
+
+    def test_pick_main_candidate_prefers_clear_front_with_better_execution(self) -> None:
+        service = MomentumSecondaryDecisionService(screener_service=None)
+        candidates = [
+            self._selected_candidate_fixture(
+                ts_code="600101.SH",
+                name="等待龙头",
+                theme="电子",
+                role_key="leader",
+                buy_point_status="waiting",
+                decision_score=92.0,
+                forward_alpha_score=80.0,
+                risk_score=18.0,
+            ),
+            self._selected_candidate_fixture(
+                ts_code="600102.SH",
+                name="清晰前排",
+                theme="电子",
+                role_key="front",
+                buy_point_status="clear",
+                decision_score=88.0,
+                forward_alpha_score=82.0,
+                risk_score=20.0,
+                entry_range_low=10.2,
+                entry_range_high=10.5,
+            ),
+        ]
+
+        picked = service._pick_main_candidate(candidates, {"电子": 82.0})
+
+        self.assertEqual(picked["ts_code"], "600102.SH")
+
+    def test_build_portfolio_slot_normalizes_nan_forward_alpha_score(self) -> None:
+        service = MomentumSecondaryDecisionService(screener_service=None)
+        candidate = self._selected_candidate_fixture(
+            ts_code="600103.SH",
+            name="缺口候选",
+            theme="电子",
+            role_key="leader",
+            buy_point_status="clear",
+            decision_score=88.0,
+            forward_alpha_score=float("nan"),
+            risk_score=18.0,
+            entry_range_low=10.2,
+            entry_range_high=10.5,
+        )
+
+        slot = service._build_portfolio_slot("main", candidate, {"电子": 82.0})
+
+        self.assertIsInstance(slot["score"], float)
+        self.assertEqual(slot["forward_alpha_score"], 50.0)
+
+    def test_pick_secondary_candidate_prefers_same_theme_confirmation_when_main_not_clear(self) -> None:
+        service = MomentumSecondaryDecisionService(screener_service=None)
+        main_candidate = self._selected_candidate_fixture(
+            ts_code="600111.SH",
+            name="等待前排",
+            theme="电子",
+            role_key="front",
+            buy_point_status="waiting",
+            decision_score=92.0,
+            forward_alpha_score=80.0,
+            risk_score=18.0,
+        )
+        candidates = [
+            main_candidate,
+            self._selected_candidate_fixture(
+                ts_code="600112.SH",
+                name="同主线确认龙头",
+                theme="电子",
+                role_key="leader",
+                buy_point_status="clear",
+                decision_score=88.0,
+                forward_alpha_score=81.0,
+                risk_score=20.0,
+                entry_range_low=10.6,
+                entry_range_high=10.9,
+            ),
+            self._selected_candidate_fixture(
+                ts_code="600113.SH",
+                name="跨主线龙头",
+                theme="医药",
+                role_key="leader",
+                buy_point_status="clear",
+                decision_score=89.0,
+                forward_alpha_score=83.0,
+                risk_score=18.0,
+                entry_range_low=12.1,
+                entry_range_high=12.4,
+            ),
+        ]
+
+        picked = service._pick_secondary_candidate(
+            candidates,
+            {"600111.SH"},
+            main_candidate,
+            [{"name": "电子", "score": 88.0}, {"name": "医药", "score": 84.0}],
+            {"电子": 88.0, "医药": 84.0},
+        )
+
+        self.assertIsNotNone(picked)
+        self.assertEqual(picked["ts_code"], "600112.SH")
+
+    def test_pick_watch_candidate_prefers_mainline_front_confirmation_with_high_forward_alpha(self) -> None:
+        service = MomentumSecondaryDecisionService(screener_service=None)
+        candidates = [
+            self._selected_candidate_fixture(
+                ts_code="600201.SH",
+                name="主仓",
+                theme="电子",
+                role_key="leader",
+                buy_point_status="clear",
+                decision_score=90.0,
+                forward_alpha_score=82.0,
+                risk_score=18.0,
+                entry_range_low=10.0,
+                entry_range_high=10.3,
+            ),
+            self._selected_candidate_fixture(
+                ts_code="600202.SH",
+                name="次仓",
+                theme="有色",
+                role_key="leader",
+                buy_point_status="clear",
+                decision_score=86.0,
+                forward_alpha_score=78.0,
+                risk_score=20.0,
+                entry_range_low=18.0,
+                entry_range_high=18.4,
+            ),
+            self._selected_candidate_fixture(
+                ts_code="600203.SH",
+                name="主线高弹前排",
+                theme="电子",
+                role_key="front",
+                buy_point_status="waiting",
+                decision_score=84.0,
+                forward_alpha_score=94.0,
+                risk_score=22.0,
+                entry_range_low=12.2,
+                entry_range_high=12.5,
+            ),
+            self._selected_candidate_fixture(
+                ts_code="600204.SH",
+                name="主线龙头观察",
+                theme="电子",
+                role_key="leader",
+                buy_point_status="clear",
+                decision_score=86.0,
+                forward_alpha_score=72.0,
+                risk_score=26.0,
+                entry_range_low=11.2,
+                entry_range_high=11.5,
+            ),
+        ]
+
+        picked = service._pick_watch_candidate(
+            candidates,
+            selected_codes={"600201.SH", "600202.SH"},
+            selected_themes=["电子", "有色"],
+            theme_score_map={"电子": 84.0, "有色": 72.0},
+        )
+
+        self.assertIsNotNone(picked)
+        self.assertEqual(picked["ts_code"], "600203.SH")
+
     def test_rebalance_same_theme_main_slot_promotes_clear_leader_over_mid_waiting(self) -> None:
         service = MomentumSecondaryDecisionService(screener_service=None)
         selected = [
@@ -1671,6 +2075,82 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         self.assertEqual(rebalanced[0][1]["ts_code"], "600002.SH")
         self.assertEqual(rebalanced[1][0], "watch")
         self.assertEqual(rebalanced[1][1]["ts_code"], "600001.SH")
+
+    def test_rebalance_same_theme_main_slot_promotes_clear_front_over_waiting_leader(self) -> None:
+        service = MomentumSecondaryDecisionService(screener_service=None)
+        selected = [
+            (
+                "main",
+                self._selected_candidate_fixture(
+                    ts_code="600011.SH",
+                    name="等待龙头",
+                    theme="电子",
+                    role_key="leader",
+                    buy_point_status="waiting",
+                    decision_score=91.0,
+                    forward_alpha_score=80.0,
+                    risk_score=18.0,
+                ),
+            ),
+            (
+                "watch",
+                self._selected_candidate_fixture(
+                    ts_code="600012.SH",
+                    name="清晰前排",
+                    theme="电子",
+                    role_key="front",
+                    buy_point_status="clear",
+                    decision_score=87.0,
+                    forward_alpha_score=84.0,
+                    risk_score=20.0,
+                    entry_range_low=10.6,
+                    entry_range_high=10.9,
+                ),
+            ),
+        ]
+
+        rebalanced = service._rebalance_same_theme_main_slot(selected, {"电子": 84.0})
+
+        self.assertEqual(rebalanced[0][1]["ts_code"], "600012.SH")
+        self.assertEqual(rebalanced[1][1]["ts_code"], "600011.SH")
+
+    def test_rebalance_same_theme_main_slot_promotes_clear_leader_over_waiting_front(self) -> None:
+        service = MomentumSecondaryDecisionService(screener_service=None)
+        selected = [
+            (
+                "main",
+                self._selected_candidate_fixture(
+                    ts_code="600013.SH",
+                    name="等待前排",
+                    theme="电子",
+                    role_key="front",
+                    buy_point_status="waiting",
+                    decision_score=91.0,
+                    forward_alpha_score=80.0,
+                    risk_score=18.0,
+                ),
+            ),
+            (
+                "secondary",
+                self._selected_candidate_fixture(
+                    ts_code="600014.SH",
+                    name="清晰龙头",
+                    theme="电子",
+                    role_key="leader",
+                    buy_point_status="clear",
+                    decision_score=88.5,
+                    forward_alpha_score=81.0,
+                    risk_score=20.0,
+                    entry_range_low=10.8,
+                    entry_range_high=11.1,
+                ),
+            ),
+        ]
+
+        rebalanced = service._rebalance_same_theme_main_slot(selected, {"电子": 84.0})
+
+        self.assertEqual(rebalanced[0][1]["ts_code"], "600014.SH")
+        self.assertEqual(rebalanced[1][1]["ts_code"], "600013.SH")
 
     def test_rebalance_same_theme_main_slot_keeps_leader_clear_as_main(self) -> None:
         service = MomentumSecondaryDecisionService(screener_service=None)

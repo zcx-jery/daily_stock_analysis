@@ -90,6 +90,9 @@ V1 建议最少落 5 张表。
 - `entry_baseline_version`
 - `market_scope_version`
 - `real_strength_label_version`
+- `strategy_health_mode`
+  - `cached_only`
+  - `strict_final`
 - `sample_trade_days`
 - `notes`
 - `created_by`
@@ -97,6 +100,9 @@ V1 建议最少落 5 张表。
 说明：
 
 - 这张表回答“这轮回测到底是在什么规则版本上跑出来的”。
+- `strategy_health_mode` 用于区分：
+  - `cached_only`：生产兼容口径，优先读缓存，允许 `proxy / partial / final`
+  - `strict_final`：严格研究口径，逐日强制等待 20/60 历史窗跑完；若当日拿不到可用历史样本，日级结果记为 `failed`，不再回退到 `proxy`
 
 ## 5.2 `momentum_backtest_daily_summary`
 
@@ -348,6 +354,9 @@ V1 接口建议拆成 5 类：
 - `entry_baseline_version`
 - `market_scope_version`
 - `real_strength_label_version`
+- `strict_strategy_health`
+  - `false`：默认生产兼容口径
+  - `true`：严格 20/60 回测口径
 
 建议响应字段：
 
@@ -357,11 +366,14 @@ V1 接口建议拆成 5 类：
 - `date_to`
 - `engine_profile`
 - `engine_version`
+- `strategy_health_mode`
+- `strategy_health_mode_label`
 
 V1 原则：
 
 - 只允许跑固定生产基线
 - 不开放自定义最小涨幅 / 成交额 / 换手率
+- 严格 20/60 回测模式只切换“历史窗验证口径”，不改变候选池、排序、二次决策主链路
 
 ## 10. 回测任务详情接口
 
@@ -386,6 +398,8 @@ V1 原则：
 - `entry_baseline_version`
 - `market_scope_version`
 - `real_strength_label_version`
+- `strategy_health_mode`
+- `strategy_health_mode_label`
 
 ## 11. 区间摘要接口
 
@@ -406,6 +420,12 @@ V1 原则：
 - 官方组合胜率
 - 劝退准确率
 - 错杀率
+- `strategy_health_validation_status_breakdown`
+  - `final`
+  - `failed`
+  - 兼容口径下允许出现 `proxy / partial`
+- `attack_permission_breakdown`
+- `theme_confidence_breakdown`
 
 ### `benchmark_comparison`
 
@@ -421,6 +441,17 @@ V1 原则：
 - 执行层
 - 总闸门层
 - 环境适配层
+
+### 严格 20/60 模式补充约束
+
+- `strict_final` 只用于研究和诊断，不面向默认页面主链路。
+- 在该模式下，每个交易日都必须：
+  1. 只使用该日之前的历史交易日样本
+  2. 强制把 20 日 / 60 日窗口计算推进到 `final` 或 `failed`
+  3. 禁止把 `failed` 日静默回退成 `proxy`
+- 因此前端或报告在解读严格模式结果时，应把 `strategy_health_validation_status_breakdown` 视为一等指标：
+  - `final` 越多，说明该区间内 20/60 逻辑被真实验证的覆盖度越高
+  - `failed` 越多，说明该区间前段或数据链路仍存在样本缺口，不能把这部分日子和 `final` 混为一谈
 
 ## 12. 日级列表接口
 
@@ -602,6 +633,28 @@ V1 落地时建议加 5 条约束：
 
 - 本次是新建任务
 - 还是复用了同参旧任务
+
+### 20.1 启动脚本
+
+仓库内提供了一个轻量启动脚本：
+
+- [start_momentum_backtest_task.py](D:/AI_Project/_remote_edit/daily_stock_analysis/scripts/start_momentum_backtest_task.py)
+
+用途：
+
+- 直接向后端 `POST /api/v1/stocks/screener/momentum/backtests`
+- 适合从本地命令行快速发起一条新的 V1 回测任务
+- 只负责启动，不负责轮询监控
+
+示例：
+
+```bash
+python scripts/start_momentum_backtest_task.py \
+  --base-url http://163.7.12.193 \
+  --start-trade-date 2026-01-19 \
+  --end-trade-date 2026-04-21 \
+  --strict-strategy-health
+```
 
 ## 21. 新增任务操作接口
 

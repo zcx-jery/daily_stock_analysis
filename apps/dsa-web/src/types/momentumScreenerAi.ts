@@ -6,6 +6,7 @@ import type {
   MomentumScreenerRequest,
   MomentumScreenerResponse,
   MomentumSecondaryDecision,
+  MomentumSnapshotAssist,
 } from './momentumScreener';
 
 export type MomentumScreenerAiReviewType = 'candidate' | 'decision' | 'intraday' | 'excluded';
@@ -50,6 +51,7 @@ export interface MomentumScreenerAiReviewRequest {
   screening: MomentumScreenerResponse;
   decision?: MomentumSecondaryDecision | null;
   intradaySignal?: MomentumIntradaySignal | null;
+  snapshotAssist?: MomentumSnapshotAssist | null;
 }
 
 export interface MomentumScreenerAiStageEvent {
@@ -94,6 +96,7 @@ export interface MomentumScreenerAiReviewTarget {
   screening: MomentumScreenerResponse;
   decision?: MomentumSecondaryDecision | null;
   intradaySignal?: MomentumIntradaySignal | null;
+  snapshotAssist?: MomentumSnapshotAssist | null;
 }
 
 export type MomentumScreenerPageSnapshot =

@@ -101,8 +101,13 @@ function buildRequest(payload: MomentumScreenerAiReviewRequest) {
             reason: payload.decision.historicalValidity.reason,
             max_action_level: payload.decision.historicalValidity.maxActionLevel,
             recommendation_cap: payload.decision.historicalValidity.recommendationCap,
+            attack_permission_status: payload.decision.historicalValidity.attackPermissionStatus ?? undefined,
+            attack_permission_label: payload.decision.historicalValidity.attackPermissionLabel ?? undefined,
           },
           strategy_health: payload.decision.strategyHealth,
+          attack_permission: payload.decision.attackPermission,
+          theme_confidence: payload.decision.themeConfidence,
+          risk_banner: payload.decision.riskBanner ?? undefined,
           themes: payload.decision.themes,
           portfolio: payload.decision.portfolio.map((item) => ({
             slot: item.slot,
@@ -153,6 +158,9 @@ function buildRequest(payload: MomentumScreenerAiReviewRequest) {
               expected_outcome: step.expectedOutcome,
             })),
           },
+          mainline_radar: payload.decision.mainlineRadar ?? undefined,
+          short_term_sentiment: payload.decision.shortTermSentiment ?? undefined,
+          v13_data_status: payload.decision.v13DataStatus ?? undefined,
         }
       : undefined,
     intraday_signal: payload.intradaySignal
@@ -196,6 +204,7 @@ function buildRequest(payload: MomentumScreenerAiReviewRequest) {
           })),
         }
       : undefined,
+    snapshot_assist: payload.snapshotAssist ?? undefined,
   });
 }
 

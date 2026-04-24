@@ -141,6 +141,8 @@ class _FakeMomentumBacktestService:
             "status": "completed",
             "profile": "standard",
             "engine_version": "v1",
+            "strategy_health_mode": "cached_only",
+            "strategy_health_mode_label": "兼容缓存口径",
             "entry_baseline_version": "v1_4_2_2",
             "market_scope_version": "v1_a_share_main_chinext_star",
             "top_n": 30,
@@ -157,6 +159,11 @@ class _FakeMomentumBacktestService:
             "finished_at": "2026-04-17T10:01:00",
             "cancel_requested": False,
             "summary": {
+                "strategy_health_mode": "cached_only",
+                "strategy_health_mode_label": "兼容缓存口径",
+                "strategy_health_validation_status_breakdown": {"proxy": 3},
+                "attack_permission_breakdown": {"recovering": 2, "paused": 1},
+                "theme_confidence_breakdown": {"credible": 2, "questionable": 1},
                 "completed_trade_dates": 3,
                 "action_breakdown": {"normal_go": 2, "cautious_go": 1},
                 "market_environment_breakdown": {"strong": 2, "general": 1},
@@ -344,6 +351,8 @@ class _FakeMomentumBacktestService:
             "run_id": run_id,
             "profile": self.run["profile"],
             "engine_version": self.run["engine_version"],
+            "strategy_health_mode": self.run["strategy_health_mode"],
+            "strategy_health_mode_label": self.run["strategy_health_mode_label"],
             "summary": self.run["summary"],
         }
 
@@ -1315,6 +1324,7 @@ def test_momentum_backtest_create_endpoint_returns_run(client):
     assert data["message"] == "已创建回测任务，正在后台计算"
     assert data["run"]["run_id"] == "momentum_bt_running"
     assert data["run"]["status"] == "running"
+    assert data["run"]["strategy_health_mode"] == "cached_only"
     assert data["run"]["current_stage_key"] == "candidate_pool"
 
 
@@ -1381,6 +1391,7 @@ def test_momentum_backtest_summary_endpoint_returns_summary(client):
     assert response.status_code == 200
     data = response.json()
     assert data["run_id"] == "momentum_bt_test_001"
+    assert data["strategy_health_mode"] == "cached_only"
     assert data["summary"]["decision_top3_buy_trigger_rate"] == 66.67
     assert "benchmark_comparison" in data["summary"]
     assert "layer_diagnostics" in data["summary"]

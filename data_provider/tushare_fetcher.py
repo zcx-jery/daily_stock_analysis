@@ -263,6 +263,381 @@ class TushareFetcher(BaseFetcher):
         method = getattr(self._api, method_name)
         return method(**kwargs)
 
+    @staticmethod
+    def _format_tushare_date(value: Optional[str]) -> Optional[str]:
+        """Normalize a user-facing date into Tushare's YYYYMMDD format."""
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        return text.replace("-", "").replace("/", "")
+
+    @staticmethod
+    def _format_display_trade_date(value: Any) -> Optional[str]:
+        """Normalize Tushare trade_date values to YYYY-MM-DD for downstream APIs."""
+        if value is None:
+            return None
+        try:
+            if pd.isna(value):
+                return None
+        except (TypeError, ValueError):
+            pass
+        text = str(value).strip()
+        if not text:
+            return None
+        compact = text.replace("-", "").replace("/", "")
+        if len(compact) == 8 and compact.isdigit():
+            return f"{compact[:4]}-{compact[4:6]}-{compact[6:]}"
+        return text
+
+    @staticmethod
+    def _safe_v13_value(value: Any) -> Any:
+        """Convert pandas NaN values into JSON-safe None values."""
+        try:
+            if pd.isna(value):
+                return None
+        except (TypeError, ValueError):
+            pass
+        return value
+
+    @classmethod
+    def _safe_v13_float(cls, value: Any) -> Optional[float]:
+        value = cls._safe_v13_value(value)
+        if value is None or value == "":
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _safe_v13_int(cls, value: Any) -> Optional[int]:
+        value = cls._safe_v13_value(value)
+        if value is None or value == "":
+            return None
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _safe_v13_str(cls, value: Any) -> Optional[str]:
+        value = cls._safe_v13_value(value)
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @classmethod
+    def _parse_ths_concepts(cls, value: Any) -> List[str]:
+        """Parse ths_hot concept labels, preserving a stable list output."""
+        value = cls._safe_v13_value(value)
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        text = str(value).strip()
+        if not text:
+            return []
+        try:
+            parsed = _json.loads(text)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, list):
+            return [str(item).strip() for item in parsed if str(item).strip()]
+        return [part.strip() for part in re.split(r"[,，、]", text) if part.strip()]
+
+    def _v13_data_as_of(self) -> str:
+        return self._get_china_now().isoformat()
+
+    @staticmethod
+    def _v13_payload(
+        *,
+        source: str,
+        trade_date: Optional[str],
+        rows: Optional[List[Dict[str, Any]]] = None,
+        status: str = "ok",
+        data_as_of: Optional[str] = None,
+        degraded_reasons: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        reasons = degraded_reasons or []
+        return {
+            "source": source,
+            "status": status,
+            "trade_date": trade_date,
+            "data_as_of": data_as_of,
+            "is_degraded": status != "ok" or bool(reasons),
+            "degraded_reasons": reasons,
+            "rows": rows or [],
+        }
+
+    def _v13_unavailable_payload(self, *, source: str, trade_date: Optional[str], reason: str) -> Dict[str, Any]:
+        logger.warning("[Tushare V1.3] %s unavailable: %s", source, reason)
+        return self._v13_payload(
+            source=source,
+            trade_date=trade_date,
+            rows=[],
+            status="unavailable",
+            data_as_of=self._v13_data_as_of(),
+            degraded_reasons=[reason],
+        )
+
+    def get_stock_limit_prices(self, trade_date: str, ts_code: Optional[str] = None) -> Dict[str, Any]:
+        """
+        获取每日涨跌停价格，供 V1.3 追高边界和跌停风险使用。
+
+        Tushare 接口：stk_limit。
+        """
+        source = "tushare.stk_limit"
+        ts_trade_date = self._format_tushare_date(trade_date)
+        display_trade_date = self._format_display_trade_date(trade_date)
+        if self._api is None:
+            return self._v13_unavailable_payload(source=source, trade_date=display_trade_date, reason="api_not_initialized")
+
+        params: Dict[str, Any] = {
+            "trade_date": ts_trade_date,
+            "fields": "trade_date,ts_code,pre_close,up_limit,down_limit",
+        }
+        if ts_code:
+            params["ts_code"] = self._convert_stock_code(ts_code)
+
+        try:
+            df = self._call_api_with_rate_limit("stk_limit", **params)
+        except Exception as exc:
+            return self._v13_unavailable_payload(source=source, trade_date=display_trade_date, reason=str(exc))
+
+        data_as_of = self._v13_data_as_of()
+        if df is None or df.empty:
+            return self._v13_payload(
+                source=source,
+                trade_date=display_trade_date,
+                rows=[],
+                status="partial",
+                data_as_of=data_as_of,
+                degraded_reasons=["empty_result"],
+            )
+
+        rows: List[Dict[str, Any]] = []
+        for _, row in df.iterrows():
+            row_trade_date = self._format_display_trade_date(row.get("trade_date")) or display_trade_date
+            rows.append(
+                {
+                    "ts_code": self._safe_v13_str(row.get("ts_code")),
+                    "trade_date": row_trade_date,
+                    "pre_close": self._safe_v13_float(row.get("pre_close")),
+                    "up_limit": self._safe_v13_float(row.get("up_limit")),
+                    "down_limit": self._safe_v13_float(row.get("down_limit")),
+                    "data_source": source,
+                    "data_as_of": data_as_of,
+                    "is_degraded": False,
+                }
+            )
+
+        return self._v13_payload(source=source, trade_date=display_trade_date, rows=rows, data_as_of=data_as_of)
+
+    def get_limit_list(self, trade_date: str, limit_type: Optional[str] = None) -> Dict[str, Any]:
+        """
+        获取每日涨跌停和炸板数据，供 V1.3 短线情绪使用。
+
+        Tushare 接口：limit_list_d。limit_type 可传 U / D / Z。
+        """
+        source = "tushare.limit_list_d"
+        ts_trade_date = self._format_tushare_date(trade_date)
+        display_trade_date = self._format_display_trade_date(trade_date)
+        if self._api is None:
+            return self._v13_unavailable_payload(source=source, trade_date=display_trade_date, reason="api_not_initialized")
+
+        params: Dict[str, Any] = {
+            "trade_date": ts_trade_date,
+            "fields": (
+                "trade_date,ts_code,industry,name,close,pct_chg,amount,limit_amount,"
+                "float_mv,total_mv,turnover_ratio,fd_amount,first_time,last_time,"
+                "open_times,up_stat,limit_times,limit"
+            ),
+        }
+        if limit_type:
+            params["limit_type"] = str(limit_type).strip().upper()
+
+        try:
+            df = self._call_api_with_rate_limit("limit_list_d", **params)
+        except Exception as exc:
+            return self._v13_unavailable_payload(source=source, trade_date=display_trade_date, reason=str(exc))
+
+        data_as_of = self._v13_data_as_of()
+        if df is None or df.empty:
+            return self._v13_payload(
+                source=source,
+                trade_date=display_trade_date,
+                rows=[],
+                status="partial",
+                data_as_of=data_as_of,
+                degraded_reasons=["empty_result"],
+            )
+
+        rows: List[Dict[str, Any]] = []
+        for _, row in df.iterrows():
+            row_trade_date = self._format_display_trade_date(row.get("trade_date")) or display_trade_date
+            rows.append(
+                {
+                    "ts_code": self._safe_v13_str(row.get("ts_code")),
+                    "trade_date": row_trade_date,
+                    "industry": self._safe_v13_str(row.get("industry")),
+                    "name": self._safe_v13_str(row.get("name")),
+                    "close": self._safe_v13_float(row.get("close")),
+                    "pct_chg": self._safe_v13_float(row.get("pct_chg")),
+                    "amount": self._safe_v13_float(row.get("amount")),
+                    "limit_amount": self._safe_v13_float(row.get("limit_amount")),
+                    "float_mv": self._safe_v13_float(row.get("float_mv")),
+                    "total_mv": self._safe_v13_float(row.get("total_mv")),
+                    "turnover_ratio": self._safe_v13_float(row.get("turnover_ratio")),
+                    "fd_amount": self._safe_v13_float(row.get("fd_amount")),
+                    "first_time": self._safe_v13_str(row.get("first_time")),
+                    "last_time": self._safe_v13_str(row.get("last_time")),
+                    "open_times": self._safe_v13_int(row.get("open_times")),
+                    "up_stat": self._safe_v13_str(row.get("up_stat")),
+                    "limit_times": self._safe_v13_int(row.get("limit_times")),
+                    "limit": self._safe_v13_str(row.get("limit")),
+                    "data_source": source,
+                    "data_as_of": data_as_of,
+                    "is_degraded": False,
+                }
+            )
+
+        return self._v13_payload(source=source, trade_date=display_trade_date, rows=rows, data_as_of=data_as_of)
+
+    def get_ths_members(
+        self,
+        *,
+        ts_code: Optional[str] = None,
+        theme_code: Optional[str] = None,
+        con_code: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        获取同花顺概念板块成分，供 V1.3 股票到题材映射使用。
+
+        Tushare 接口：ths_member。ts_code/theme_code 表示板块指数代码，
+        con_code 表示股票代码。
+        """
+        source = "tushare.ths_member"
+        if self._api is None:
+            return self._v13_unavailable_payload(source=source, trade_date=None, reason="api_not_initialized")
+
+        params: Dict[str, Any] = {
+            "fields": "ts_code,con_code,con_name,weight,in_date,out_date,is_new",
+        }
+        board_code = theme_code or ts_code
+        if board_code:
+            params["ts_code"] = str(board_code).strip().upper()
+        if con_code:
+            params["con_code"] = self._convert_stock_code(con_code)
+
+        try:
+            df = self._call_api_with_rate_limit("ths_member", **params)
+        except Exception as exc:
+            return self._v13_unavailable_payload(source=source, trade_date=None, reason=str(exc))
+
+        data_as_of = self._v13_data_as_of()
+        if df is None or df.empty:
+            return self._v13_payload(
+                source=source,
+                trade_date=None,
+                rows=[],
+                status="partial",
+                data_as_of=data_as_of,
+                degraded_reasons=["empty_result"],
+            )
+
+        rows: List[Dict[str, Any]] = []
+        for _, row in df.iterrows():
+            rows.append(
+                {
+                    "theme_code": self._safe_v13_str(row.get("ts_code")),
+                    "con_code": self._safe_v13_str(row.get("con_code")),
+                    "con_name": self._safe_v13_str(row.get("con_name")),
+                    "weight": self._safe_v13_float(row.get("weight")),
+                    "in_date": self._format_display_trade_date(row.get("in_date")),
+                    "out_date": self._format_display_trade_date(row.get("out_date")),
+                    "is_new": self._safe_v13_str(row.get("is_new")),
+                    "data_source": source,
+                    "data_as_of": data_as_of,
+                    "is_degraded": False,
+                }
+            )
+
+        return self._v13_payload(source=source, trade_date=None, rows=rows, data_as_of=data_as_of)
+
+    def get_ths_hot(
+        self,
+        trade_date: str,
+        *,
+        market: str = "热股",
+        is_new: str = "Y",
+        ts_code: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        获取同花顺 App 热榜数据，供 V1.3 热榜集中度辅助判断。
+
+        Tushare 接口：ths_hot。
+        """
+        source = "tushare.ths_hot"
+        ts_trade_date = self._format_tushare_date(trade_date)
+        display_trade_date = self._format_display_trade_date(trade_date)
+        if self._api is None:
+            return self._v13_unavailable_payload(source=source, trade_date=display_trade_date, reason="api_not_initialized")
+
+        params: Dict[str, Any] = {
+            "trade_date": ts_trade_date,
+            "market": market,
+            "is_new": is_new,
+            "fields": (
+                "trade_date,data_type,ts_code,ts_name,rank,pct_change,current_price,"
+                "concept,rank_reason,hot,rank_time"
+            ),
+        }
+        if ts_code:
+            params["ts_code"] = self._convert_stock_code(ts_code)
+
+        try:
+            df = self._call_api_with_rate_limit("ths_hot", **params)
+        except Exception as exc:
+            return self._v13_unavailable_payload(source=source, trade_date=display_trade_date, reason=str(exc))
+
+        data_as_of = self._v13_data_as_of()
+        if df is None or df.empty:
+            return self._v13_payload(
+                source=source,
+                trade_date=display_trade_date,
+                rows=[],
+                status="partial",
+                data_as_of=data_as_of,
+                degraded_reasons=["empty_result"],
+            )
+
+        rows: List[Dict[str, Any]] = []
+        for _, row in df.iterrows():
+            row_trade_date = self._format_display_trade_date(row.get("trade_date")) or display_trade_date
+            rows.append(
+                {
+                    "ts_code": self._safe_v13_str(row.get("ts_code")),
+                    "trade_date": row_trade_date,
+                    "data_type": self._safe_v13_str(row.get("data_type")),
+                    "ts_name": self._safe_v13_str(row.get("ts_name")),
+                    "rank": self._safe_v13_int(row.get("rank")),
+                    "pct_change": self._safe_v13_float(row.get("pct_change")),
+                    "current_price": self._safe_v13_float(row.get("current_price")),
+                    "concepts": self._parse_ths_concepts(row.get("concept")),
+                    "rank_reason": self._safe_v13_str(row.get("rank_reason")),
+                    "hot": self._safe_v13_float(row.get("hot")),
+                    "rank_time": self._safe_v13_str(row.get("rank_time")),
+                    "data_source": source,
+                    "data_as_of": data_as_of,
+                    "is_degraded": False,
+                }
+            )
+
+        return self._v13_payload(source=source, trade_date=display_trade_date, rows=rows, data_as_of=data_as_of)
+
     def _get_china_now(self) -> datetime:
         """返回上海时区当前时间，方便测试覆盖跨日刷新逻辑。"""
         return datetime.now(ZoneInfo("Asia/Shanghai"))

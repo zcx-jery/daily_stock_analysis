@@ -195,6 +195,7 @@ class MomentumDecisionThemeRepresentative(BaseModel):
     role: str = Field(..., description="在主线中的角色")
     buy_point_label: str = Field(..., description="买点状态标签")
     rank_score: float = Field(..., description="排序分")
+    v13_mainline_score: Optional[float] = Field(None, description="V1.3 主线雷达分")
 
 
 class MomentumDecisionTheme(BaseModel):
@@ -203,6 +204,10 @@ class MomentumDecisionTheme(BaseModel):
     name: str = Field(..., description="主线名称")
     score: float = Field(..., description="主线综合评分")
     strength_label: str = Field(..., description="主线强弱标签")
+    rule_theme_score: Optional[float] = Field(None, description="原规则主线分")
+    v13_theme_id: Optional[str] = Field(None, description="V1.3 同花顺概念/主线 ID")
+    v13_mainline_score: Optional[float] = Field(None, description="V1.3 主线雷达分")
+    v13_summary: Optional[str] = Field(None, description="V1.3 主线雷达摘要")
     candidate_count: int = Field(..., description="该主线下的候选股数量")
     clear_buy_point_count: int = Field(..., description="买点清晰的数量")
     leader_count: int = Field(..., description="龙头核心数量")
@@ -222,6 +227,10 @@ class MomentumDecisionPortfolioSlot(BaseModel):
     ts_code: str = Field(..., description="股票代码")
     name: str = Field(..., description="股票名称")
     theme: str = Field(..., description="所属主线")
+    v13_theme_id: Optional[str] = Field(None, description="V1.3 同花顺概念/主线 ID")
+    v13_mainline_score: Optional[float] = Field(None, description="V1.3 主线雷达分")
+    v13_mainline_level: Optional[str] = Field(None, description="V1.3 主线强弱枚举")
+    v13_mainline_level_label: Optional[str] = Field(None, description="V1.3 主线强弱文案")
     role: str = Field(..., description="角色标签")
     score: float = Field(..., description="组合优先级分")
     rank_score: float = Field(..., description="原始排序分")
@@ -266,6 +275,10 @@ class MomentumDecisionCandidateDiagnostic(BaseModel):
     name: str = Field(..., description="股票名称")
     theme: str = Field(..., description="所属主线")
     theme_score: float = Field(..., description="主线评分")
+    v13_theme_id: Optional[str] = Field(None, description="V1.3 同花顺概念/主线 ID")
+    v13_mainline_score: Optional[float] = Field(None, description="V1.3 主线雷达分")
+    v13_mainline_level: Optional[str] = Field(None, description="V1.3 主线强弱枚举")
+    v13_mainline_level_label: Optional[str] = Field(None, description="V1.3 主线强弱文案")
     role_key: str = Field(..., description="角色枚举")
     role: str = Field(..., description="角色标签")
     buy_point_status: str = Field(..., description="买点状态枚举")
@@ -492,6 +505,9 @@ class MomentumSecondaryDecision(BaseModel):
     attack_permission: MomentumDecisionAttackPermission = Field(..., description="20 日进攻许可")
     theme_confidence: MomentumDecisionThemeConfidence = Field(..., description="60 日主线可信度")
     risk_banner: Optional[MomentumDecisionRiskBanner] = Field(None, description="顶部风险提示条")
+    mainline_radar: List[Dict[str, Any]] = Field(default_factory=list, description="V1.3 主线雷达证据")
+    short_term_sentiment: Optional[Dict[str, Any]] = Field(None, description="V1.3 短线情绪评分")
+    v13_data_status: Optional[Dict[str, Any]] = Field(None, description="V1.3 数据接入与降级状态")
     themes: List[MomentumDecisionTheme] = Field(default_factory=list, description="主线识别结果")
     portfolio: List[MomentumDecisionPortfolioSlot] = Field(default_factory=list, description="默认 1-3 票组合")
     candidate_diagnostics: List[MomentumDecisionCandidateDiagnostic] = Field(
@@ -594,6 +610,7 @@ class MomentumSecondaryDecisionIntradayResponse(BaseModel):
     screening: MomentumScreenerResponse = Field(..., description="原始筛选结果")
     decision: MomentumSecondaryDecision = Field(..., description="二次决策结果")
     intraday_signal: MomentumIntradaySignal = Field(..., description="盘中信号结果")
+    snapshot_assist: Optional[Dict[str, Any]] = Field(None, description="V1.3 低置信度盘中快照辅助")
 
 
 class MomentumBacktestCreateRequest(BaseModel):
@@ -606,11 +623,20 @@ class MomentumBacktestCreateRequest(BaseModel):
         description="兼容旧请求字段；V1 官方回测固定归一化为 Standard 主引擎",
     )
     top_n: int = Field(30, ge=1, le=100, description="兼容旧请求字段；V1 官方回测固定归一化为 Top30")
+    strict_strategy_health: bool = Field(
+        False,
+        description="是否启用严格 20/60 窗口回测口径；开启后会逐日等待真实窗口验证完成再冻结当日结论。",
+    )
 
 
 class MomentumBacktestSummary(BaseModel):
     """V1 回测区间摘要。"""
 
+    strategy_health_mode: str = Field("cached_only", description="20/60 窗口验证口径")
+    strategy_health_mode_label: str = Field("兼容缓存口径", description="20/60 窗口验证口径文案")
+    strategy_health_validation_status_breakdown: Dict[str, int] = Field(default_factory=dict, description="20/60 窗口验证状态分布")
+    attack_permission_breakdown: Dict[str, int] = Field(default_factory=dict, description="20 日进攻许可状态分布")
+    theme_confidence_breakdown: Dict[str, int] = Field(default_factory=dict, description="60 日主线可信度状态分布")
     completed_trade_dates: int = Field(..., description="已成功完成回放的交易日数量")
     action_breakdown: Dict[str, int] = Field(default_factory=dict, description="各今日出手级别分布")
     market_environment_breakdown: Dict[str, int] = Field(default_factory=dict, description="市场环境分桶分布")
@@ -633,6 +659,7 @@ class MomentumBacktestSummary(BaseModel):
     layer_diagnostics: List["MomentumBacktestLayerDiagnostic"] = Field(default_factory=list, description="候选池/排序/执行/总闸门/环境适配五层诊断")
     gate_module_breakdown: List["MomentumBacktestGateModuleBreakdownItem"] = Field(default_factory=list, description="总闸门细分模块的区间聚合诊断")
     regime_breakdown: List["MomentumBacktestRegimeBreakdownItem"] = Field(default_factory=list, description="强/中/弱市场分桶指标")
+    v13_diagnostics: Dict[str, Any] = Field(default_factory=dict, description="V1.3 主线雷达、短线情绪和数据降级聚合诊断")
 
 
 class MomentumBacktestBenchmarkItem(BaseModel):
@@ -728,6 +755,8 @@ class MomentumBacktestRunResponse(BaseModel):
     status: Literal["queued", "running", "completed", "failed", "cancelled"] = Field(..., description="回测任务状态")
     profile: Literal["standard", "aggressive"] = Field(..., description="回放使用的画像")
     engine_version: str = Field(..., description="回测引擎版本")
+    strategy_health_mode: str = Field("cached_only", description="20/60 窗口验证口径")
+    strategy_health_mode_label: str = Field("兼容缓存口径", description="20/60 窗口验证口径文案")
     entry_baseline_version: str = Field(..., description="候选池入口基线版本")
     market_scope_version: str = Field(..., description="候选池市场范围版本")
     top_n: int = Field(..., description="回放时保留的展示结果数量")
@@ -788,6 +817,8 @@ class MomentumBacktestSummaryResponse(BaseModel):
     run_id: str = Field(..., description="回测任务 ID")
     profile: Literal["standard", "aggressive"] = Field(..., description="回放使用的画像")
     engine_version: str = Field(..., description="回测引擎版本")
+    strategy_health_mode: str = Field("cached_only", description="20/60 窗口验证口径")
+    strategy_health_mode_label: str = Field("兼容缓存口径", description="20/60 窗口验证口径文案")
     summary: MomentumBacktestSummary = Field(..., description="区间摘要")
 
 
@@ -937,6 +968,7 @@ class MomentumBacktestDailyDetailResponse(BaseModel):
     slot_view: List[MomentumBacktestDecisionDetailItem] = Field(default_factory=list, description="按槽位排序的默认组合视图")
     outcomes: Dict[str, MomentumBacktestOutcomeGroup] = Field(default_factory=dict, description="候选池与默认组合的结果验证分组")
     diagnosis: MomentumBacktestDailyDiagnosis = Field(..., description="单日问题诊断")
+    v13_diagnostics: Dict[str, Any] = Field(default_factory=dict, description="V1.3 单日主线雷达、短线情绪和数据降级诊断")
 
 
 class MomentumBacktestIssueListItem(MomentumBacktestIssueItem):

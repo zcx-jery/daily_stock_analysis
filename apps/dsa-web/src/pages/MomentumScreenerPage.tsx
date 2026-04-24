@@ -16,6 +16,7 @@ import type {
   MomentumIntradaySignal,
   MomentumProfile,
   MomentumSecondaryDecision,
+  MomentumSnapshotAssist,
   MomentumScreenerRequest,
   MomentumScreenerResponse,
   MomentumScreenerResult,
@@ -252,6 +253,21 @@ function themeConfidenceBadgeVariant(
   return 'danger';
 }
 
+function v13DataStatusBadgeVariant(status?: string): 'success' | 'warning' | 'danger' | 'default' {
+  if (status === 'ok') return 'success';
+  if (status === 'degraded' || status === 'skipped' || status === 'not_applicable') return 'warning';
+  if (status === 'failed') return 'danger';
+  return 'default';
+}
+
+function shortTermSentimentBadgeVariant(level?: string): 'success' | 'info' | 'warning' | 'danger' | 'default' {
+  if (level === 'hot') return 'success';
+  if (level === 'tradable') return 'info';
+  if (level === 'divergent') return 'warning';
+  if (level === 'ebb') return 'danger';
+  return 'default';
+}
+
 function decisionSlotBadgeVariant(slot: MomentumDecisionPortfolioSlot['slot']): 'success' | 'info' | 'warning' {
   if (slot === 'main') return 'success';
   if (slot === 'secondary') return 'info';
@@ -339,6 +355,13 @@ function intradayItemStatusBadgeVariant(
   if (status === 'triggered') return 'success';
   if (status === 'watching') return 'warning';
   if (status === 'do_not_chase') return 'danger';
+  return 'default';
+}
+
+function snapshotAssistBadgeVariant(status: string): 'success' | 'warning' | 'danger' | 'default' {
+  if (status === 'near_watch_zone') return 'success';
+  if (status === 'overextended') return 'danger';
+  if (status === 'quote_missing') return 'warning';
   return 'default';
 }
 
@@ -781,8 +804,14 @@ const DecisionThemeCard: React.FC<{ theme: MomentumDecisionTheme }> = ({ theme }
       <div className="flex items-center gap-2">
         <Badge variant="info">{theme.strengthLabel}</Badge>
         <Badge variant="default">{theme.score.toFixed(1)}</Badge>
+        {theme.v13MainlineScore != null ? (
+          <Badge variant="success">雷达 {theme.v13MainlineScore.toFixed(1)}</Badge>
+        ) : null}
       </div>
     </div>
+    {theme.v13Summary ? (
+      <p className="mt-3 text-xs leading-5 text-secondary-text">{theme.v13Summary}</p>
+    ) : null}
     <div className="mt-4 flex flex-wrap gap-2 text-xs text-secondary-text">
       <Badge variant="default">候选 {theme.candidateCount}</Badge>
       <Badge variant="success">清晰 {theme.clearBuyPointCount}</Badge>
@@ -838,6 +867,9 @@ const PortfolioDecisionCard: React.FC<{ item: MomentumDecisionPortfolioSlot }> =
       <Badge variant={decisionActionBadgeVariant(item.suggestedAction)}>{item.suggestedActionLabel}</Badge>
       <Badge variant="info">排序分 {item.rankScore.toFixed(1)}</Badge>
       <Badge variant="warning">风险分 {item.riskScore.toFixed(1)}</Badge>
+      {item.v13MainlineScore != null ? (
+        <Badge variant="success">主线雷达 {item.v13MainlineScore.toFixed(1)}</Badge>
+      ) : null}
       {item.opportunityTag ? <Badge variant="warning">{item.opportunityTag}</Badge> : null}
     </div>
 
@@ -940,6 +972,102 @@ const GateLayerPanel: React.FC<{
           ))}
         </div>
       ) : null}
+    </div>
+  );
+};
+
+const V13MainlineInsightPanel: React.FC<{ decision: MomentumSecondaryDecision }> = ({ decision }) => {
+  const radarItems = decision.mainlineRadar ?? [];
+  const sentiment = decision.shortTermSentiment;
+  const dataStatus = decision.v13DataStatus;
+
+  if (!dataStatus && radarItems.length === 0 && !sentiment) {
+    return null;
+  }
+
+  return (
+    <div className="rounded-2xl border border-cyan/20 bg-cyan/5 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Flame className="h-4 w-4 text-cyan" />
+            <p className="text-sm font-semibold text-foreground">V1.3 主线雷达</p>
+            {dataStatus ? (
+              <Badge variant={v13DataStatusBadgeVariant(dataStatus.status)}>
+                {dataStatus.status === 'ok' ? '数据完整' : dataStatus.status}
+              </Badge>
+            ) : null}
+            {sentiment ? (
+              <Badge variant={shortTermSentimentBadgeVariant(sentiment.level)}>
+                情绪 {sentiment.label}
+              </Badge>
+            ) : null}
+          </div>
+          <p className="mt-2 text-sm leading-6 text-secondary-text">
+            用 6000 积分可用数据补强主线识别：题材成分、涨停/炸板、热榜集中度和候选池密度只做规则增强，不替代总闸门。
+          </p>
+        </div>
+        {sentiment ? (
+          <div className="rounded-2xl border border-border/40 bg-card/60 px-4 py-3 text-right">
+            <p className={`text-lg font-semibold ${scoreTone(sentiment.score)}`}>{sentiment.score.toFixed(1)}</p>
+            <p className="mt-1 text-xs text-secondary-text">短线情绪分</p>
+          </div>
+        ) : null}
+      </div>
+
+      {dataStatus?.reason ? (
+        <p className="mt-3 text-sm leading-6 text-secondary-text">{dataStatus.reason}</p>
+      ) : null}
+
+      {sentiment?.summary ? (
+        <div className="mt-4 rounded-2xl border border-border/40 bg-card/40 p-3">
+          <p className="text-sm font-medium text-foreground">短线情绪结论</p>
+          <p className="mt-2 text-sm leading-6 text-secondary-text">{sentiment.summary}</p>
+        </div>
+      ) : null}
+
+      {radarItems.length > 0 ? (
+        <div className="mt-4 grid gap-3 lg:grid-cols-2">
+          {radarItems.map((item) => (
+            <div key={item.themeId || item.themeName} className="rounded-2xl border border-border/40 bg-card/45 p-4">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <p className="text-sm font-semibold text-foreground">{item.themeName}</p>
+                  <p className="mt-1 text-xs text-secondary-text">{item.summary ?? '等待更多主线证据。'}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Badge variant={gateLevelBadgeVariant(item.level === 'strong' ? 'strong' : item.level === 'medium' ? 'medium' : 'weak')}>
+                    {item.levelLabel}
+                  </Badge>
+                  <Badge variant="default">{item.score.toFixed(1)}</Badge>
+                </div>
+              </div>
+
+              <div className="mt-4 grid gap-2 text-xs text-secondary-text sm:grid-cols-2">
+                <p>候选密度 {item.candidateCount ?? '--'}</p>
+                <p>Top10 {item.top10Count ?? '--'}</p>
+                <p>涨停 {item.limitUpCount ?? '--'}</p>
+                <p>炸板 {item.brokenLimitCount ?? '--'}</p>
+                <p>热榜 {item.hotRank != null ? `#${item.hotRank}` : '--'}</p>
+              </div>
+
+              {item.evidence && item.evidence.length > 0 ? (
+                <div className="mt-4 space-y-2">
+                  {item.evidence.slice(0, 3).map((evidence, index) => (
+                    <p key={`${item.themeId}-${index}`} className="text-xs leading-5 text-secondary-text">
+                      {String(evidence.label ?? evidence.key ?? '证据')}：{String(evidence.summary ?? '--')}
+                    </p>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="mt-4 rounded-2xl border border-border/40 bg-card/40 p-4 text-sm leading-6 text-secondary-text">
+          当前还没有形成可展示的 V1.3 主线雷达，系统继续使用旧主线规则输出二次决策。
+        </div>
+      )}
     </div>
   );
 };
@@ -1265,6 +1393,8 @@ const SecondaryDecisionPanel: React.FC<SecondaryDecisionPanelProps> = ({
             />
           </div>
 
+          <V13MainlineInsightPanel decision={decision} />
+
           <DecisionConfidencePanel
             decision={decision}
             onRefresh={onRefresh}
@@ -1402,9 +1532,65 @@ const IntradaySignalItemCard: React.FC<{ item: MomentumIntradayPortfolioItem }> 
   </div>
 );
 
+const SnapshotAssistPanel: React.FC<{ snapshotAssist: MomentumSnapshotAssist | null }> = ({ snapshotAssist }) => {
+  if (!snapshotAssist) {
+    return null;
+  }
+
+  return (
+    <div className="rounded-2xl border border-cyan/20 bg-cyan/5 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Radar className="h-4 w-4 text-cyan" />
+            <p className="text-sm font-semibold text-foreground">{snapshotAssist.label}</p>
+            <Badge variant="warning">低置信度</Badge>
+            {snapshotAssist.isDegraded ? <Badge variant="warning">数据降级</Badge> : null}
+          </div>
+          <p className="mt-2 text-sm leading-6 text-secondary-text">{snapshotAssist.summary}</p>
+          {snapshotAssist.dataAsOf ? (
+            <p className="mt-2 text-xs text-secondary-text">
+              数据时间：{new Date(snapshotAssist.dataAsOf).toLocaleString('zh-CN', { hour12: false })}
+            </p>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-3 lg:grid-cols-3">
+        {snapshotAssist.items.map((item) => (
+          <div key={`${item.slot}-${item.tsCode}`} className="rounded-2xl border border-border/40 bg-card/45 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="text-sm font-medium text-foreground">{item.name ?? '--'}</p>
+                <p className="mt-1 text-xs text-secondary-text">
+                  {item.slotLabel ?? '--'} · {item.tsCode ?? '--'}
+                </p>
+              </div>
+              <Badge variant={snapshotAssistBadgeVariant(item.status)}>{item.statusLabel}</Badge>
+            </div>
+            <div className="mt-3 grid gap-2 text-xs text-secondary-text">
+              <p>现价 {item.currentPrice != null ? item.currentPrice.toFixed(2) : '--'}</p>
+              <p>涨跌 {formatSignedPercent(item.changePercent)}</p>
+              <p>
+                观察区{' '}
+                {item.entryRangeLow != null && item.entryRangeHigh != null
+                  ? `${item.entryRangeLow.toFixed(2)} - ${item.entryRangeHigh.toFixed(2)}`
+                  : '--'}
+              </p>
+              <p>相对区间上沿 {formatSignedPercent(item.priceVsEntryHighPct)}</p>
+            </div>
+            <p className="mt-3 text-xs leading-5 text-secondary-text">{item.manualCheck}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
 type IntradaySignalPanelProps = {
   decision: MomentumSecondaryDecision | null;
   intradaySignal: MomentumIntradaySignal | null;
+  snapshotAssist: MomentumSnapshotAssist | null;
   loading: boolean;
   error: ParsedApiError | null;
   onRefresh: () => void;
@@ -1415,6 +1601,7 @@ type IntradaySignalPanelProps = {
 const IntradaySignalPanel: React.FC<IntradaySignalPanelProps> = ({
   decision,
   intradaySignal,
+  snapshotAssist,
   loading,
   error,
   onRefresh,
@@ -1499,6 +1686,8 @@ const IntradaySignalPanel: React.FC<IntradaySignalPanelProps> = ({
               </p>
             </div>
 
+            <SnapshotAssistPanel snapshotAssist={snapshotAssist} />
+
             <div className="grid gap-4">
               {intradaySignal.portfolioItems.map((item) => (
                 <IntradaySignalItemCard key={`${item.slot}-${item.tsCode}`} item={item} />
@@ -1561,6 +1750,7 @@ const MomentumScreenerPage: React.FC = () => {
   const [aggressiveResponse, setAggressiveResponse] = useState<MomentumScreenerResponse | null>(null);
   const [decision, setDecision] = useState<MomentumSecondaryDecision | null>(null);
   const [intradaySignal, setIntradaySignal] = useState<MomentumIntradaySignal | null>(null);
+  const [snapshotAssist, setSnapshotAssist] = useState<MomentumSnapshotAssist | null>(null);
   const [lastSubmittedPayload, setLastSubmittedPayload] = useState<MomentumScreenerRequest | null>(null);
   const [selectedResult, setSelectedResult] = useState<SelectedResultState | null>(null);
   const [loading, setLoading] = useState(false);
@@ -1605,6 +1795,7 @@ const MomentumScreenerPage: React.FC = () => {
     setError(null);
     setDecision(null);
     setIntradaySignal(null);
+    setSnapshotAssist(null);
     setIntradayError(null);
     setSelectedResult(null);
     setAggressiveResponse(null);
@@ -1643,6 +1834,7 @@ const MomentumScreenerPage: React.FC = () => {
       setResponse(data.screening);
       setDecision(data.decision);
       setIntradaySignal(null);
+      setSnapshotAssist(null);
       setIntradayError(null);
       void loadAggressiveSupplement(lastSubmittedPayload);
     } catch (err) {
@@ -1665,8 +1857,10 @@ const MomentumScreenerPage: React.FC = () => {
       setResponse(data.screening);
       setDecision(data.decision);
       setIntradaySignal(data.intradaySignal);
+      setSnapshotAssist(data.snapshotAssist ?? null);
     } catch (err) {
       setIntradaySignal(null);
+      setSnapshotAssist(null);
       setIntradayError(getParsedApiError(err));
     } finally {
       setIntradayLoading(false);
@@ -1768,7 +1962,7 @@ const MomentumScreenerPage: React.FC = () => {
 
   const buildAiTargetBase = (): Pick<
     MomentumScreenerAiReviewTarget,
-    'payload' | 'screening' | 'decision' | 'intradaySignal'
+    'payload' | 'screening' | 'decision' | 'intradaySignal' | 'snapshotAssist'
   > | null => {
     if (!lastSubmittedPayload || !response) {
       return null;
@@ -1778,6 +1972,7 @@ const MomentumScreenerPage: React.FC = () => {
       screening: response,
       decision,
       intradaySignal,
+      snapshotAssist,
     };
   };
 
@@ -2071,6 +2266,7 @@ const MomentumScreenerPage: React.FC = () => {
           <IntradaySignalPanel
             decision={decision}
             intradaySignal={intradaySignal}
+            snapshotAssist={snapshotAssist}
             loading={intradayLoading}
             error={intradayError}
             onRefresh={() => void handleRefreshIntradaySignal()}

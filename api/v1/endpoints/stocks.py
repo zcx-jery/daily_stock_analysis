@@ -227,6 +227,7 @@ def create_momentum_backtest_run(
                 end_trade_date=payload.end_trade_date,
                 profile="standard",
                 top_n=MOMENTUM_DEFAULT_TOP_N,
+                strict_strategy_health=payload.strict_strategy_health,
             )
         else:
             run = service.create_run(
@@ -234,6 +235,7 @@ def create_momentum_backtest_run(
                 end_trade_date=payload.end_trade_date,
                 profile="standard",
                 top_n=MOMENTUM_DEFAULT_TOP_N,
+                strict_strategy_health=payload.strict_strategy_health,
             )
             result = {
                 "created_new": True,

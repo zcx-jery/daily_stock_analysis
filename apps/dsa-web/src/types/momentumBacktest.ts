@@ -1,6 +1,7 @@
 export interface MomentumBacktestCreateRequest {
   startTradeDate: string;
   endTradeDate: string;
+  strictStrategyHealth?: boolean;
 }
 
 export interface MomentumBacktestTaskSection {
@@ -10,6 +11,11 @@ export interface MomentumBacktestTaskSection {
 }
 
 export interface MomentumBacktestSummary {
+  strategyHealthMode?: string;
+  strategyHealthModeLabel?: string;
+  strategyHealthValidationStatusBreakdown?: Record<string, number>;
+  attackPermissionBreakdown?: Record<string, number>;
+  themeConfidenceBreakdown?: Record<string, number>;
   completedTradeDates: number;
   actionBreakdown: Record<string, number>;
   marketEnvironmentBreakdown: Record<string, number>;
@@ -32,6 +38,7 @@ export interface MomentumBacktestSummary {
   layerDiagnostics: MomentumBacktestLayerDiagnostic[];
   gateModuleBreakdown: MomentumBacktestGateModuleBreakdownItem[];
   regimeBreakdown: MomentumBacktestRegimeBreakdownItem[];
+  v13Diagnostics?: Record<string, unknown>;
 }
 
 export interface MomentumBacktestBenchmarkItem {
@@ -113,6 +120,8 @@ export interface MomentumBacktestRunResponse {
   status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
   profile: 'standard' | 'aggressive';
   engineVersion: string;
+  strategyHealthMode?: string;
+  strategyHealthModeLabel?: string;
   entryBaselineVersion: string;
   marketScopeVersion: string;
   topN: number;
@@ -157,6 +166,8 @@ export interface MomentumBacktestSummaryResponse {
   runId: string;
   profile: 'standard' | 'aggressive';
   engineVersion: string;
+  strategyHealthMode?: string;
+  strategyHealthModeLabel?: string;
   summary: MomentumBacktestSummary;
 }
 
@@ -285,6 +296,7 @@ export interface MomentumBacktestDailyDetailResponse {
   slotView: MomentumBacktestDecisionDetailItem[];
   outcomes: Record<string, MomentumBacktestOutcomeGroup>;
   diagnosis: MomentumBacktestDailyDiagnosis;
+  v13Diagnostics?: Record<string, unknown>;
 }
 
 export interface MomentumBacktestIssueListItem extends MomentumBacktestIssueItem {

@@ -407,6 +407,7 @@ class MomentumBacktestRun(Base):
     status = Column(String(16), nullable=False, default='running', index=True)
     profile = Column(String(16), nullable=False, default='standard', index=True)
     engine_version = Column(String(32), nullable=False, default='v1')
+    strategy_health_mode = Column(String(24), nullable=False, default='cached_only')
     entry_baseline_version = Column(String(32), nullable=False)
     market_scope_version = Column(String(64), nullable=False)
     top_n = Column(Integer, nullable=False, default=30)
@@ -946,6 +947,7 @@ class DatabaseManager:
             'started_at': "ALTER TABLE momentum_backtest_runs ADD COLUMN started_at DATETIME",
             'finished_at': "ALTER TABLE momentum_backtest_runs ADD COLUMN finished_at DATETIME",
             'cancel_requested': "ALTER TABLE momentum_backtest_runs ADD COLUMN cancel_requested BOOLEAN NOT NULL DEFAULT 0",
+            'strategy_health_mode': "ALTER TABLE momentum_backtest_runs ADD COLUMN strategy_health_mode VARCHAR(24) NOT NULL DEFAULT 'cached_only'",
         }
         missing_columns = [
             statement

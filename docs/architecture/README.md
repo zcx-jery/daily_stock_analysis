@@ -13,7 +13,7 @@
 用途：
 
 - 记录产品目标
-- 记录 `V1 / V1.5 / V2` 版本规划
+- 记录 `V1 / V1.3 / V1.5 / V2` 版本规划
 - 记录 Tushare 权限映射
 - 记录升级路线和维护规则
 
@@ -21,6 +21,9 @@
 
 - [次日强势股筛选 PRD](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-prd.md)
 - [强势筛选 V1 产品原则 + 总闸门规则](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-v1-product-principles-and-gate-rules.md)
+- [强势筛选 V1.3 主线增强版产品设计](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-v1-3-mainline-enhancement-product-design.md)
+- [强势筛选 V1.3 主线增强版技术开发文档](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-v1-3-mainline-enhancement-technical-design.md)
+- [强势筛选 V1.3 主线增强版开发任务清单](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-v1-3-development-tasks.md)
 
 用途：
 
@@ -29,6 +32,9 @@
 - 记录输入输出设计
 - 记录核心交互流程
 - 记录 V1 入口标准、画像边界与总闸门规则
+- 记录 V1.3 在 6000 积分数据权限下的主线增强、短线情绪、盘中快照辅助和回测诊断边界
+- 记录 V1.3 的数据适配、缓存、服务层、API、前端、回测和 AI 点评实现方案
+- 记录 V1.3 的里程碑拆分、文件落点、测试验收和最小可交付范围
 
 ### 3. Standard 评分规则
 
@@ -108,6 +114,7 @@
 - `V1` 普通用户不可调整入口参数，不保留研究模式
 - `V1` 官方回测只回放 `Standard` 生产链路
 - `V1` 总闸门采用 `市场环境 × 当日机会质量` 主矩阵，并由 `20日进攻许可` 做动作封顶；`60日主线可信度` 只做结构提示
+- `V1.3` 基于 6000 积分升级主线增强能力，接入题材成分、涨停炸板、涨跌停价和热榜证据，但不承诺分钟级买点
 
 ## 维护建议
 
@@ -144,3 +151,6 @@
 - [Momentum Screener Secondary Decision PRD](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-secondary-decision-prd.md)
 - [Momentum Screener Secondary Decision Technical Design](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-secondary-decision-technical-design.md)
 - [Momentum Screener Secondary Decision Development Tasks](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-secondary-decision-development-tasks.md)
+- [Momentum Screener V1.3 Mainline Enhancement Product Design](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-v1-3-mainline-enhancement-product-design.md)
+- [Momentum Screener V1.3 Mainline Enhancement Technical Design](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-v1-3-mainline-enhancement-technical-design.md)
+- [Momentum Screener V1.3 Development Tasks](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-v1-3-development-tasks.md)

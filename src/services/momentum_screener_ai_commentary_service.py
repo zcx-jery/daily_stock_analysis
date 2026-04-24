@@ -288,9 +288,11 @@ class MomentumScreenerAICommentaryService:
 1. 所有回答都必须先复述规则结论，再解释为什么会得到这个结论。
 2. 规则结论和规则边界高于 AI 判断；你不能推翻“今日不做 / 保留观察但不建议执行 / 不建议追入”等硬边界。
 3. 盘中解读不能改写昨晚已经确定的主仓 / 次仓 / 观察仓顺序。
-4. 你可以调用工具补充外部验证，但只能作为补充说明，不能改判规则层结论。
-5. 如果没有必要，不要为了“显得聪明”强行调用工具；优先解释当前规则快照。
-6. 只用中文回答，避免空泛结论，必须围绕具体股票、主线、风险和触发条件。
+4. 不能输出“建议买入 / 立即买入 / 现在买”这类替代用户下单的表达，只能说“规则层显示/未显示触发”“可继续观察/不建议追入”。
+5. 盘中快照辅助是低置信度提示，不能被描述成分钟级正式买点，也不能覆盖盘中信号的最终收口。
+6. 你可以调用工具补充外部验证，但只能作为补充说明，不能改判规则层结论。
+7. 如果没有必要，不要为了“显得聪明”强行调用工具；优先解释当前规则快照。
+8. 只用中文回答，避免空泛结论，必须围绕具体股票、主线、风险和触发条件。
 
 本次回答必须使用以下结构：
 {self._build_answer_contract(request.review_type)}
@@ -410,6 +412,22 @@ class MomentumScreenerAICommentaryService:
                     }
                     for item in request.decision.portfolio[:3]
                 ],
+                "v13_mainline_radar": [
+                    {
+                        "theme_id": item.get("theme_id"),
+                        "theme_name": item.get("theme_name"),
+                        "score": item.get("score"),
+                        "level": item.get("level"),
+                        "summary": item.get("summary"),
+                        "candidate_count": item.get("candidate_count"),
+                        "limit_up_count": item.get("limit_up_count"),
+                        "break_limit_count": item.get("break_limit_count"),
+                    }
+                    for item in (request.decision.mainline_radar or [])[:5]
+                    if isinstance(item, dict)
+                ],
+                "v13_short_term_sentiment": request.decision.short_term_sentiment,
+                "v13_data_status": request.decision.v13_data_status,
             }
 
         if request.review_type == "candidate":
@@ -474,6 +492,13 @@ class MomentumScreenerAICommentaryService:
                         ],
                     }
                     if request.intraday_signal
+                    else None
+                ),
+                "snapshot_assist": request.snapshot_assist,
+                "snapshot_assist_guardrail": (
+                    "盘中快照辅助只提示是否接近观察区、是否偏离过大和还需人工确认什么；"
+                    "它不是正式买点，不允许覆盖盘中信号最终收口。"
+                    if request.snapshot_assist
                     else None
                 ),
             }
@@ -557,9 +582,15 @@ class MomentumScreenerAICommentaryService:
 
     def _build_rule_guardrail(self, request: MomentumScreenerAIReviewRequest) -> str:
         if request.review_type == "intraday" and request.intraday_signal:
-            return f"{request.intraday_signal.final_recommendation_label} / {request.intraday_signal.status_label}"
+            parts = [request.intraday_signal.final_recommendation_label, request.intraday_signal.status_label]
+            if request.snapshot_assist:
+                parts.append("快照辅助不等于正式买点")
+            return " / ".join(part for part in parts if part)
         if request.decision:
             parts = [request.decision.action.label, request.decision.strategy_health.label]
+            data_status = request.decision.v13_data_status or {}
+            if isinstance(data_status, dict) and data_status.get("status") not in {None, "", "ok"}:
+                parts.append("V1.3 数据降级")
             if request.review_type == "candidate":
                 candidate = self._find_candidate(request)
                 slot = self._find_portfolio_slot(request, candidate["ts_code"])
@@ -569,6 +600,8 @@ class MomentumScreenerAICommentaryService:
         return "当前以规则快照为准，不可越界提升结论"
 
     def _resolve_market_data_as_of(self, request: MomentumScreenerAIReviewRequest) -> Optional[str]:
+        if request.snapshot_assist and request.snapshot_assist.get("data_as_of"):
+            return str(request.snapshot_assist["data_as_of"])
         if request.intraday_signal and request.intraday_signal.updated_at:
             return request.intraday_signal.updated_at
         return request.screening.trade_date
@@ -584,16 +617,16 @@ class MomentumScreenerAICommentaryService:
         if review_type == "decision":
             return [
                 "为什么今天是这 1-3 只？",
-                "为什么没选其他票？",
+                "主线雷达支持这个组合吗？",
+                "短线情绪最大的风险是什么？",
                 "什么情况下应该直接劝退？",
-                "如果主线转弱，先砍谁的优先级？",
             ]
         if review_type == "intraday":
             return [
                 "主仓现在还差哪些条件？",
                 "为什么当前不建议追入？",
-                "如果主仓触发，次仓怎么处理？",
-                "接下来 30 分钟最该看什么？",
+                "快照辅助里哪个条件最关键？",
+                "接下来 30 分钟最该人工确认什么？",
             ]
         return [
             "哪只票最可惜？",

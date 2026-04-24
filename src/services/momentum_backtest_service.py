@@ -19,7 +19,12 @@ from src.services.momentum_screener_service import (
     MOMENTUM_MARKET_SCOPE_VERSION,
     MomentumScreenerService,
 )
-from src.services.momentum_secondary_decision_service import MomentumSecondaryDecisionService
+from src.services.momentum_secondary_decision_service import (
+    STRATEGY_HEALTH_MODE_CACHED_ONLY,
+    STRATEGY_HEALTH_MODE_DEFAULT,
+    STRATEGY_HEALTH_MODE_STRICT_FINAL,
+    MomentumSecondaryDecisionService,
+)
 from src.storage import (
     MomentumBacktestCandidateRecord,
     MomentumBacktestDailySummary,
@@ -33,6 +38,12 @@ logger = logging.getLogger(__name__)
 MOMENTUM_BACKTEST_ENGINE_VERSION = "v1"
 MOMENTUM_BACKTEST_OFFICIAL_PROFILE = "standard"
 MOMENTUM_BACKTEST_OFFICIAL_TOP_N = MOMENTUM_DEFAULT_TOP_N
+MOMENTUM_BACKTEST_STRATEGY_HEALTH_MODE_CACHED_ONLY = STRATEGY_HEALTH_MODE_CACHED_ONLY
+MOMENTUM_BACKTEST_STRATEGY_HEALTH_MODE_STRICT_FINAL = STRATEGY_HEALTH_MODE_STRICT_FINAL
+MOMENTUM_BACKTEST_STRATEGY_HEALTH_MODE_LABELS = {
+    MOMENTUM_BACKTEST_STRATEGY_HEALTH_MODE_CACHED_ONLY: "兼容缓存口径",
+    MOMENTUM_BACKTEST_STRATEGY_HEALTH_MODE_STRICT_FINAL: "严格 final 口径",
+}
 REGIME_LABELS = {
     "strong": "强市",
     "general": "中性市",
@@ -61,6 +72,7 @@ GATE_MODULE_LABELS = {
     "role_structure": "角色结构",
     "risk_control": "风险可控度",
     "historical_validity": "20日进攻许可",
+    "action_matrix": "鍔ㄤ綔鐭╅樀鏀跺彛",
 }
 RESTRICTED_ACTION_LEVELS = {"observe_only", "stand_aside"}
 ACTIVE_RUN_STATUSES = {"queued", "running"}
@@ -128,14 +140,17 @@ class MomentumBacktestService:
         end_trade_date: str,
         profile: str = MOMENTUM_BACKTEST_OFFICIAL_PROFILE,
         top_n: int = MOMENTUM_BACKTEST_OFFICIAL_TOP_N,
+        strict_strategy_health: bool = False,
     ) -> Dict[str, Any]:
         profile = MOMENTUM_BACKTEST_OFFICIAL_PROFILE
         top_n = MOMENTUM_BACKTEST_OFFICIAL_TOP_N
+        strategy_health_mode = self._normalize_strategy_health_mode(strict_strategy_health)
         run, trade_dates, _meta = self._create_or_reuse_run(
             start_trade_date=start_trade_date,
             end_trade_date=end_trade_date,
             profile=profile,
             top_n=top_n,
+            strategy_health_mode=strategy_health_mode,
             allow_reuse=False,
             prefer_running=False,
         )
@@ -155,6 +170,7 @@ class MomentumBacktestService:
             trade_dates=trade_dates,
             profile=profile,
             top_n=top_n,
+            strategy_health_mode=strategy_health_mode,
         )
         return self.get_run(run.run_id)
 
@@ -165,14 +181,17 @@ class MomentumBacktestService:
         end_trade_date: str,
         profile: str = MOMENTUM_BACKTEST_OFFICIAL_PROFILE,
         top_n: int = MOMENTUM_BACKTEST_OFFICIAL_TOP_N,
+        strict_strategy_health: bool = False,
     ) -> Dict[str, Any]:
         profile = MOMENTUM_BACKTEST_OFFICIAL_PROFILE
         top_n = MOMENTUM_BACKTEST_OFFICIAL_TOP_N
+        strategy_health_mode = self._normalize_strategy_health_mode(strict_strategy_health)
         run, _trade_dates, meta = self._create_or_reuse_run(
             start_trade_date=start_trade_date,
             end_trade_date=end_trade_date,
             profile=profile,
             top_n=top_n,
+            strategy_health_mode=strategy_health_mode,
             allow_reuse=True,
             prefer_running=True,
         )
@@ -191,11 +210,15 @@ class MomentumBacktestService:
         end_trade_date: str,
         profile: str,
         top_n: int,
+        strategy_health_mode: str,
         allow_reuse: bool,
         prefer_running: bool,
     ) -> Tuple[MomentumBacktestRun, List[date], Dict[str, Any]]:
         profile = MOMENTUM_BACKTEST_OFFICIAL_PROFILE
         top_n = MOMENTUM_BACKTEST_OFFICIAL_TOP_N
+        strategy_health_mode = self._normalize_strategy_health_mode(
+            strategy_health_mode=strategy_health_mode,
+        )
 
         start_dt = self._parse_trade_date(start_trade_date)
         end_dt = self._parse_trade_date(end_trade_date)
@@ -213,6 +236,7 @@ class MomentumBacktestService:
                     end_trade_date=end_dt,
                     profile=profile,
                     top_n=top_n,
+                    strategy_health_mode=strategy_health_mode,
                 )
                 if existing is not None:
                     return (
@@ -237,6 +261,7 @@ class MomentumBacktestService:
                 status=initial_status,
                 profile=profile,
                 engine_version=MOMENTUM_BACKTEST_ENGINE_VERSION,
+                strategy_health_mode=strategy_health_mode,
                 entry_baseline_version=MOMENTUM_ENTRY_BASELINE_VERSION,
                 market_scope_version=MOMENTUM_MARKET_SCOPE_VERSION,
                 top_n=top_n,
@@ -259,6 +284,43 @@ class MomentumBacktestService:
                 else "已创建回测任务，正在后台计算"
             )
             return created, trade_dates, {"created_new": True, "message": message}
+
+    @staticmethod
+    def _normalize_strategy_health_mode(
+        strict_strategy_health: Optional[bool] = None,
+        strategy_health_mode: Optional[str] = None,
+    ) -> str:
+        if strict_strategy_health is True:
+            return MOMENTUM_BACKTEST_STRATEGY_HEALTH_MODE_STRICT_FINAL
+        if strategy_health_mode in {
+            MOMENTUM_BACKTEST_STRATEGY_HEALTH_MODE_CACHED_ONLY,
+            MOMENTUM_BACKTEST_STRATEGY_HEALTH_MODE_STRICT_FINAL,
+        }:
+            return str(strategy_health_mode)
+        return MOMENTUM_BACKTEST_STRATEGY_HEALTH_MODE_CACHED_ONLY
+
+    @staticmethod
+    def _strategy_health_mode_label(strategy_health_mode: Optional[str]) -> str:
+        normalized = MomentumBacktestService._normalize_strategy_health_mode(
+            strategy_health_mode=strategy_health_mode,
+        )
+        return MOMENTUM_BACKTEST_STRATEGY_HEALTH_MODE_LABELS[normalized]
+
+    @staticmethod
+    def _should_wait_for_strategy_health(strategy_health_mode: Optional[str]) -> bool:
+        normalized = MomentumBacktestService._normalize_strategy_health_mode(
+            strategy_health_mode=strategy_health_mode,
+        )
+        return normalized == MOMENTUM_BACKTEST_STRATEGY_HEALTH_MODE_STRICT_FINAL
+
+    @staticmethod
+    def _decision_strategy_health_mode(strategy_health_mode: Optional[str]) -> str:
+        normalized = MomentumBacktestService._normalize_strategy_health_mode(
+            strategy_health_mode=strategy_health_mode,
+        )
+        if normalized == MOMENTUM_BACKTEST_STRATEGY_HEALTH_MODE_STRICT_FINAL:
+            return STRATEGY_HEALTH_MODE_STRICT_FINAL
+        return STRATEGY_HEALTH_MODE_CACHED_ONLY
 
     def _worker_loop(self) -> None:
         while not self._shutdown_event.is_set():
@@ -286,6 +348,9 @@ class MomentumBacktestService:
                     trade_dates=trade_dates,
                     profile=run.profile,
                     top_n=run.top_n,
+                    strategy_health_mode=self._normalize_strategy_health_mode(
+                        strategy_health_mode=getattr(run, "strategy_health_mode", None),
+                    ),
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Momentum backtest worker crashed on run %s: %s", run.run_id, exc)
@@ -320,10 +385,14 @@ class MomentumBacktestService:
         trade_dates: List[date],
         profile: str,
         top_n: int,
+        strategy_health_mode: str,
     ) -> None:
         existing_run = self.repository.get_run(run_id)
         if existing_run is None:
             raise ValueError(f"Backtest run not found: {run_id}")
+        strategy_health_mode = self._normalize_strategy_health_mode(
+            strategy_health_mode=strategy_health_mode or getattr(existing_run, "strategy_health_mode", None),
+        )
 
         attempted_count = min(
             max((existing_run.processed_trade_dates or 0) + (existing_run.failed_trade_dates or 0), 0),
@@ -340,6 +409,7 @@ class MomentumBacktestService:
             self.repository.update_run(
                 run_id,
                 status="running",
+                strategy_health_mode=strategy_health_mode,
                 total_trade_dates=effective_total_trade_dates,
                 processed_trade_dates=processed_count,
                 failed_trade_dates=failed_count,
@@ -403,8 +473,8 @@ class MomentumBacktestService:
                         decision = self.decision_service.build_from_screening(
                             screening,
                             request_params=request_params,
-                            wait_for_strategy_health=False,
-                            strategy_health_mode="cached_only",
+                            wait_for_strategy_health=self._should_wait_for_strategy_health(strategy_health_mode),
+                            strategy_health_mode=self._decision_strategy_health_mode(strategy_health_mode),
                             strategy_health_progress_callback=self._build_secondary_decision_progress_callback(
                                 run_id=run_id,
                                 trade_dt=trade_dt,
@@ -614,6 +684,12 @@ class MomentumBacktestService:
             "run_id": run.run_id,
             "profile": run.profile,
             "engine_version": run.engine_version,
+            "strategy_health_mode": self._normalize_strategy_health_mode(
+                strategy_health_mode=getattr(run, "strategy_health_mode", None),
+            ),
+            "strategy_health_mode_label": self._strategy_health_mode_label(
+                getattr(run, "strategy_health_mode", None),
+            ),
             "summary": summary,
         }
 
@@ -714,6 +790,7 @@ class MomentumBacktestService:
                 "decision_top3": self._build_outcome_group(decision_outcomes),
             },
             "diagnosis": diagnosis,
+            "v13_diagnostics": self._extract_v13_diagnostics_from_daily_row(daily_row),
         }
 
     def get_issues(self, run_id: str) -> Dict[str, Any]:
@@ -788,7 +865,7 @@ class MomentumBacktestService:
             if isinstance(item, dict) and item.get("ts_code")
         }
         gate_snapshot = self._extract_gate_snapshot(decision)
-        gate_blockers = self._build_gate_blockers_from_snapshot(gate_snapshot)
+        gate_blockers = self._build_gate_blockers_from_snapshot(gate_snapshot, decision=decision)
 
         daily_summary = MomentumBacktestDailySummary(
             run_id="",
@@ -1090,7 +1167,12 @@ class MomentumBacktestService:
             "modules": modules,
         }
 
-    def _build_gate_blockers_from_snapshot(self, gate_snapshot: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _build_gate_blockers_from_snapshot(
+        self,
+        gate_snapshot: List[Dict[str, Any]],
+        *,
+        decision: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
         blockers: List[Dict[str, Any]] = []
         for group in gate_snapshot:
             if not isinstance(group, dict):
@@ -1115,6 +1197,9 @@ class MomentumBacktestService:
                         "summary": str(group.get("reason") or ""),
                     }
                 )
+        matrix_blocker = self._build_action_matrix_blocker(decision)
+        if matrix_blocker and not any(item.get("key") == matrix_blocker["key"] for item in blockers):
+            blockers.append(matrix_blocker)
         blockers.sort(
             key=lambda item: (
                 item.get("score") if item.get("score") is not None else 999.0,
@@ -1123,6 +1208,33 @@ class MomentumBacktestService:
             )
         )
         return blockers
+
+    def _build_action_matrix_blocker(self, decision: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not isinstance(decision, dict):
+            return None
+        action = decision.get("action")
+        if not isinstance(action, dict):
+            return None
+        gate_context = action.get("gate_context")
+        if not isinstance(gate_context, dict):
+            return None
+        base_level = str(action.get("base_level") or gate_context.get("base_level") or "")
+        final_level = str(action.get("level") or gate_context.get("final_level") or "")
+        if base_level not in RESTRICTED_ACTION_LEVELS and final_level not in RESTRICTED_ACTION_LEVELS:
+            return None
+        restriction_reason = str(gate_context.get("restriction_reason") or "").strip()
+        if not restriction_reason:
+            return None
+        return {
+            "key": "action_matrix",
+            "label": GATE_MODULE_LABELS["action_matrix"],
+            "group_key": "opportunity_quality",
+            "group_label": GATE_GROUP_LABELS["opportunity_quality"],
+            "level": "weak",
+            "level_label": self._gate_level_label("weak"),
+            "score": 35.0,
+            "summary": restriction_reason,
+        }
 
     def _load_daily_gate_snapshot(self, daily_row: MomentumBacktestDailySummary) -> List[Dict[str, Any]]:
         diagnosis_payload = self._load_json(daily_row.diagnosis_json) or {}
@@ -1135,7 +1247,11 @@ class MomentumBacktestService:
         diagnosis_payload = self._load_json(daily_row.diagnosis_json) or {}
         if isinstance(diagnosis_payload.get("gate_blockers"), list):
             return list(diagnosis_payload["gate_blockers"])
-        return self._build_gate_blockers_from_snapshot(self._load_daily_gate_snapshot(daily_row))
+        decision_payload = self._load_json(daily_row.decision_payload_json) or {}
+        return self._build_gate_blockers_from_snapshot(
+            self._load_daily_gate_snapshot(daily_row),
+            decision=decision_payload,
+        )
 
     def _build_daily_diagnosis(
         self,
@@ -1398,6 +1514,7 @@ class MomentumBacktestService:
         )
 
     def _build_run_summary(self, run_id: str) -> Dict[str, Any]:
+        run = self.repository.get_run(run_id)
         daily_rows = self.repository.list_daily_summaries(run_id)
         candidate_rows = self.repository.list_candidate_records_for_run(run_id, view_scope="candidate_top10")
         decision_rows = self.repository.list_decision_records_for_run(run_id)
@@ -1405,10 +1522,16 @@ class MomentumBacktestService:
         candidate_outcomes = [row for row in outcome_rows if row.view_scope == "candidate_top10"]
         decision_outcomes = [row for row in outcome_rows if row.view_scope == "decision_top3"]
 
+        strategy_health_mode = self._normalize_strategy_health_mode(
+            strategy_health_mode=getattr(run, "strategy_health_mode", None),
+        )
         action_breakdown: Dict[str, int] = {}
         market_environment_breakdown: Dict[str, int] = {}
         opportunity_quality_breakdown: Dict[str, int] = {}
         historical_validity_breakdown: Dict[str, int] = {}
+        strategy_health_validation_status_breakdown: Dict[str, int] = {}
+        attack_permission_breakdown: Dict[str, int] = {}
+        theme_confidence_breakdown: Dict[str, int] = {}
         for row in daily_rows:
             action_breakdown[row.action_level] = action_breakdown.get(row.action_level, 0) + 1
             market_environment_breakdown[row.market_environment_level] = (
@@ -1420,6 +1543,22 @@ class MomentumBacktestService:
             historical_validity_breakdown[row.historical_validity_level] = (
                 historical_validity_breakdown.get(row.historical_validity_level, 0) + 1
             )
+            strategy_health_meta = self._extract_strategy_health_meta_from_daily_row(row)
+            validation_status = strategy_health_meta.get("validation_status")
+            if validation_status:
+                strategy_health_validation_status_breakdown[validation_status] = (
+                    strategy_health_validation_status_breakdown.get(validation_status, 0) + 1
+                )
+            attack_permission_status = strategy_health_meta.get("attack_permission_status")
+            if attack_permission_status:
+                attack_permission_breakdown[attack_permission_status] = (
+                    attack_permission_breakdown.get(attack_permission_status, 0) + 1
+                )
+            theme_confidence_status = strategy_health_meta.get("theme_confidence_status")
+            if theme_confidence_status:
+                theme_confidence_breakdown[theme_confidence_status] = (
+                    theme_confidence_breakdown.get(theme_confidence_status, 0) + 1
+                )
 
         candidate_metrics = self._summarize_outcomes(candidate_outcomes)
         decision_metrics = self._summarize_outcomes(decision_outcomes)
@@ -1496,8 +1635,14 @@ class MomentumBacktestService:
             gate_module_breakdown=gate_module_breakdown,
             regime_breakdown=regime_breakdown,
         )
+        v13_diagnostics = self._build_v13_run_diagnostics(daily_rows)
 
         return {
+            "strategy_health_mode": strategy_health_mode,
+            "strategy_health_mode_label": self._strategy_health_mode_label(strategy_health_mode),
+            "strategy_health_validation_status_breakdown": strategy_health_validation_status_breakdown,
+            "attack_permission_breakdown": attack_permission_breakdown,
+            "theme_confidence_breakdown": theme_confidence_breakdown,
             "completed_trade_dates": len(daily_rows),
             "action_breakdown": action_breakdown,
             "market_environment_breakdown": market_environment_breakdown,
@@ -1520,6 +1665,7 @@ class MomentumBacktestService:
             "layer_diagnostics": layer_diagnostics,
             "gate_module_breakdown": gate_module_breakdown,
             "regime_breakdown": regime_breakdown,
+            "v13_diagnostics": v13_diagnostics,
         }
 
     def _load_complete_summary(self, run_id: str, payload: Optional[str]) -> Dict[str, Any]:
@@ -1527,6 +1673,123 @@ class MomentumBacktestService:
         if self._summary_requires_refresh(summary):
             return self._build_run_summary(run_id)
         return summary
+
+    def _build_v13_run_diagnostics(self, daily_rows: List[MomentumBacktestDailySummary]) -> Dict[str, Any]:
+        sentiment_breakdown: Dict[str, int] = {}
+        data_status_breakdown: Dict[str, int] = {}
+        top_theme_breakdown: Dict[str, int] = {}
+        top_mainline_scores: List[float] = []
+        radar_available_days = 0
+        degraded_days = 0
+
+        for row in daily_rows:
+            diagnostics = self._extract_v13_diagnostics_from_daily_row(row)
+            data_status = diagnostics.get("v13_data_status") or {}
+            status = str(data_status.get("status") or "missing")
+            data_status_breakdown[status] = data_status_breakdown.get(status, 0) + 1
+            if data_status.get("is_degraded") or status in {"degraded", "failed"}:
+                degraded_days += 1
+
+            sentiment = diagnostics.get("short_term_sentiment") or {}
+            sentiment_level = str(sentiment.get("level") or "missing")
+            sentiment_breakdown[sentiment_level] = sentiment_breakdown.get(sentiment_level, 0) + 1
+
+            radar = diagnostics.get("mainline_radar") or []
+            if radar:
+                radar_available_days += 1
+                top_item = radar[0]
+                top_theme = str(top_item.get("theme_name") or top_item.get("theme_id") or "unknown")
+                top_theme_breakdown[top_theme] = top_theme_breakdown.get(top_theme, 0) + 1
+                score = self._to_float(top_item.get("score"))
+                if score is not None:
+                    top_mainline_scores.append(score)
+
+        top_themes = [
+            {"theme": theme, "days": days}
+            for theme, days in sorted(top_theme_breakdown.items(), key=lambda item: item[1], reverse=True)[:8]
+        ]
+        coverage = self._safe_ratio(radar_available_days, len(daily_rows))
+        avg_score = self._avg_metric(top_mainline_scores)
+        return {
+            "evaluated_trade_dates": len(daily_rows),
+            "radar_available_days": radar_available_days,
+            "radar_coverage_pct": coverage,
+            "avg_top_mainline_score": avg_score,
+            "sentiment_breakdown": sentiment_breakdown,
+            "data_status_breakdown": data_status_breakdown,
+            "degraded_days": degraded_days,
+            "top_theme_breakdown": top_themes,
+            "summary": (
+                f"V1.3 主线雷达覆盖 {radar_available_days}/{len(daily_rows)} 个交易日"
+                f"（{self._format_pct(coverage)}），Top 主线均分 {self._format_number(avg_score)}，"
+                f"数据降级 {degraded_days} 天。"
+            ),
+        }
+
+    def _extract_v13_diagnostics_from_daily_row(
+        self,
+        row: MomentumBacktestDailySummary,
+    ) -> Dict[str, Any]:
+        decision = self._load_json(row.decision_payload_json)
+        if not isinstance(decision, dict):
+            return {
+                "mainline_radar": [],
+                "short_term_sentiment": None,
+                "v13_data_status": {"status": "missing", "reason": "当日决策快照不可用。"},
+                "top_mainline": None,
+                "mainline_count": 0,
+                "summary_lines": ["当日决策快照不可用，无法提取 V1.3 主线诊断。"],
+            }
+        radar = decision.get("mainline_radar")
+        if not isinstance(radar, list):
+            radar = []
+        radar = [item for item in radar if isinstance(item, dict)]
+        sentiment = decision.get("short_term_sentiment")
+        if not isinstance(sentiment, dict):
+            sentiment = None
+        data_status = decision.get("v13_data_status")
+        if not isinstance(data_status, dict):
+            data_status = {"status": "missing"}
+        top_mainline = radar[0] if radar else None
+        summary_lines = []
+        if top_mainline:
+            summary_lines.append(
+                f"Top 主线为 {top_mainline.get('theme_name') or top_mainline.get('theme_id') or '未命名主线'}，"
+                f"主线雷达分 {self._format_number(self._to_float(top_mainline.get('score')))}。"
+            )
+        else:
+            summary_lines.append("当日没有可用的 V1.3 主线雷达结果。")
+        if sentiment:
+            summary_lines.append(
+                f"短线情绪为 {sentiment.get('level_label') or sentiment.get('level') or '未知'}，"
+                f"分数 {self._format_number(self._to_float(sentiment.get('score')))}。"
+            )
+        if data_status.get("status") and data_status.get("status") != "ok":
+            summary_lines.append(f"数据状态为 {data_status.get('status')}，需要关注降级或缺失。")
+        return {
+            "mainline_radar": radar,
+            "short_term_sentiment": sentiment,
+            "v13_data_status": data_status,
+            "top_mainline": top_mainline,
+            "mainline_count": len(radar),
+            "summary_lines": summary_lines,
+        }
+
+    def _extract_strategy_health_meta_from_daily_row(
+        self,
+        row: MomentumBacktestDailySummary,
+    ) -> Dict[str, str]:
+        decision = self._load_json(row.decision_payload_json)
+        if not isinstance(decision, dict):
+            return {}
+        strategy_health = decision.get("strategy_health") or {}
+        attack_permission = decision.get("attack_permission") or {}
+        theme_confidence = decision.get("theme_confidence") or {}
+        return {
+            "validation_status": str(strategy_health.get("validation_status") or ""),
+            "attack_permission_status": str(attack_permission.get("status") or ""),
+            "theme_confidence_status": str(theme_confidence.get("status") or ""),
+        }
 
     @staticmethod
     def _summary_requires_refresh(summary: Optional[Dict[str, Any]]) -> bool:
@@ -1537,6 +1800,11 @@ class MomentumBacktestService:
             "regime_breakdown",
             "candidate_top10_positive_t2_rate",
             "market_environment_breakdown",
+            "strategy_health_mode",
+            "strategy_health_validation_status_breakdown",
+            "attack_permission_breakdown",
+            "theme_confidence_breakdown",
+            "v13_diagnostics",
         }
         if not isinstance(summary, dict):
             return True
@@ -1934,7 +2202,11 @@ class MomentumBacktestService:
     ) -> List[Dict[str, Any]]:
         breakdown: List[Dict[str, Any]] = []
         for level in ("strong", "general", "weak"):
-            rows = [row for row in daily_rows if row.market_environment_level == level]
+            rows = [
+                row
+                for row in daily_rows
+                if self._normalize_market_regime(row.market_environment_level) == level
+            ]
             trade_dates = {row.trade_date for row in rows}
             outcomes = [row for row in decision_outcomes if row.trade_date in trade_dates]
             metrics = self._summarize_outcomes(outcomes)
@@ -2037,6 +2309,7 @@ class MomentumBacktestService:
             "bull": "strong",
             "general": "general",
             "neutral": "general",
+            "medium": "general",
             "mid": "general",
             "weak": "weak",
             "bear": "weak",
@@ -2339,6 +2612,12 @@ class MomentumBacktestService:
         return f"{value:.2f}%"
 
     @staticmethod
+    def _format_number(value: Optional[float]) -> str:
+        if value is None:
+            return "--"
+        return f"{value:.1f}"
+
+    @staticmethod
     def _slot_sort_key(row: MomentumBacktestDecisionRecord) -> int:
         order = {"main": 0, "secondary": 1, "watch": 2}
         return order.get(row.slot, 99)
@@ -2517,6 +2796,12 @@ class MomentumBacktestService:
             "status": run.status,
             "profile": run.profile,
             "engine_version": run.engine_version,
+            "strategy_health_mode": self._normalize_strategy_health_mode(
+                strategy_health_mode=getattr(run, "strategy_health_mode", None),
+            ),
+            "strategy_health_mode_label": self._strategy_health_mode_label(
+                getattr(run, "strategy_health_mode", None),
+            ),
             "entry_baseline_version": run.entry_baseline_version,
             "market_scope_version": run.market_scope_version,
             "top_n": run.top_n,

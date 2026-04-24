@@ -10,7 +10,7 @@ from datetime import date, datetime, time, timedelta
 import hashlib
 import json
 import logging
-from math import ceil
+from math import ceil, isfinite
 from pathlib import Path
 import pandas as pd
 from statistics import mean
@@ -26,6 +26,7 @@ from src.services.momentum_screener_service import (
     MOMENTUM_DEFAULT_TOP_N,
     MomentumScreenerService,
 )
+from src.services.momentum_v13_data_service import MomentumV13DataService
 from src.services.stock_service import StockService
 
 ACTION_LEVEL_SEQUENCE = [
@@ -125,6 +126,9 @@ BUY_POINT_TIEBREAKER_PRIORITY = {
 }
 
 DIVERSIFICATION_PRIORITY_TOLERANCE = 2.0
+MAIN_SLOT_REBALANCE_PRIORITY_TOLERANCE = 2.5
+MAINLINE_CONFIRMATION_PRIORITY_TOLERANCE = 3.0
+SAME_THEME_CONFIRMATION_PRIORITY_TOLERANCE = 3.0
 
 BUY_SIGNAL_ACTION_LEVELS = {"strong_go", "normal_go", "cautious_go"}
 ACTION_CHECKLIST_ENABLED_LEVELS = {"strong_go", "normal_go", "cautious_go"}
@@ -203,6 +207,18 @@ ATTACK_PERMISSION_HIT_RATE_THRESHOLDS = {
     "open": 55.0,
     "recovering": 40.0,
 }
+ATTACK_PERMISSION_SCORE_THRESHOLDS = {
+    "open": 44.0,
+    "recovering": 34.0,
+}
+ATTACK_PERMISSION_PROFIT_WINDOW_THRESHOLDS = {
+    "open": 5.8,
+    "recovering": 5.8,
+}
+ATTACK_PERMISSION_DRAWDOWN_THRESHOLDS = {
+    "open": 4.4,
+    "recovering": 5.0,
+}
 THEME_CONFIDENCE_MIN_SAMPLES = {
     "credible": 12,
     "recovering": 8,
@@ -216,6 +232,7 @@ STRATEGY_HEALTH_WARMING_REASON = (
 )
 STRATEGY_HEALTH_MODE_DEFAULT = "default"
 STRATEGY_HEALTH_MODE_CACHED_ONLY = "cached_only"
+STRATEGY_HEALTH_MODE_STRICT_FINAL = "strict_final"
 
 StrategyHealthProgressCallback = Callable[[Dict[str, Any]], None]
 
@@ -288,7 +305,10 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
         if value is None or value == "":
             return default
-        return float(value)
+        parsed = float(value)
+        if not isfinite(parsed):
+            return default
+        return parsed
     except (TypeError, ValueError):
         return default
 
@@ -322,6 +342,8 @@ class MomentumSecondaryDecisionService:
         screener_service: Optional[MomentumScreenerService] = None,
         stock_service: Optional[StockService] = None,
         stock_repo: Optional[StockRepository] = None,
+        v13_data_service: Optional[MomentumV13DataService] = None,
+        enable_v13_mainline: bool = True,
         strategy_health_async: bool = False,
         strategy_health_async_delay_seconds: float = 0.0,
         strategy_health_cache_dir: Optional[Path] = None,
@@ -329,6 +351,8 @@ class MomentumSecondaryDecisionService:
         self.screener_service = screener_service
         self.stock_service = stock_service
         self.stock_repo = stock_repo or getattr(stock_service, "repo", None) or StockRepository()
+        self.v13_data_service = v13_data_service
+        self.enable_v13_mainline = enable_v13_mainline
         self.strategy_health_async = strategy_health_async
         self.strategy_health_async_delay_seconds = max(0.0, float(strategy_health_async_delay_seconds))
         self._strategy_health_cache: Dict[str, Dict[str, Any]] = {}
@@ -421,6 +445,9 @@ class MomentumSecondaryDecisionService:
             result["decision"],
             now=now,
         )
+        result["snapshot_assist"] = self._build_snapshot_assist_from_intraday_signal(
+            result["intraday_signal"],
+        )
         return result
 
     def build_from_screening(
@@ -435,7 +462,11 @@ class MomentumSecondaryDecisionService:
         results = self._extract_decision_source_results(screening)
         profile = _safe_str(screening.get("profile"), "standard")
         trade_date = _safe_str(screening.get("trade_date"))
-        if strategy_health_mode not in {STRATEGY_HEALTH_MODE_DEFAULT, STRATEGY_HEALTH_MODE_CACHED_ONLY}:
+        if strategy_health_mode not in {
+            STRATEGY_HEALTH_MODE_DEFAULT,
+            STRATEGY_HEALTH_MODE_CACHED_ONLY,
+            STRATEGY_HEALTH_MODE_STRICT_FINAL,
+        }:
             strategy_health_mode = STRATEGY_HEALTH_MODE_DEFAULT
         request_params = dict(screening.get("_request_params") or request_params or self._build_request_params(profile=profile))
 
@@ -489,6 +520,13 @@ class MomentumSecondaryDecisionService:
                 "attack_permission": attack_permission,
                 "theme_confidence": theme_confidence,
                 "risk_banner": None,
+                "mainline_radar": [],
+                "short_term_sentiment": None,
+                "v13_data_status": {
+                    "enabled": bool(self.enable_v13_mainline),
+                    "status": "not_applicable",
+                    "reason": "当前没有候选池，跳过 V1.3 主线增强数据。",
+                },
                 "themes": [],
                 "portfolio": [],
                 "candidate_diagnostics": [],
@@ -506,6 +544,15 @@ class MomentumSecondaryDecisionService:
             }
 
         enriched_candidates = [self._build_candidate_view(item) for item in results]
+        v13_context, mainline_radar, short_term_sentiment, v13_data_status = self._build_v13_mainline_context(
+            trade_date=trade_date,
+            candidates=enriched_candidates,
+        )
+        enriched_candidates = self._apply_v13_mainline_to_candidates(
+            enriched_candidates,
+            context=v13_context,
+            mainline_radar=mainline_radar,
+        )
         themes = self._build_theme_summaries(enriched_candidates)
         theme_score_map = {theme["name"]: theme["score"] for theme in themes}
         portfolio = self._build_portfolio(enriched_candidates, themes, theme_score_map)
@@ -586,6 +633,9 @@ class MomentumSecondaryDecisionService:
             "attack_permission": attack_permission,
             "theme_confidence": theme_confidence,
             "risk_banner": risk_banner,
+            "mainline_radar": mainline_radar,
+            "short_term_sentiment": short_term_sentiment,
+            "v13_data_status": v13_data_status,
             "themes": themes,
             "portfolio": portfolio,
             "candidate_diagnostics": candidate_diagnostics,
@@ -623,6 +673,152 @@ class MomentumSecondaryDecisionService:
         if isinstance(ranked_results, list) and ranked_results:
             return [dict(item) for item in ranked_results]
         return [dict(item) for item in screening.get("results", [])]
+
+    def _get_v13_data_service(self) -> Optional[MomentumV13DataService]:
+        if not self.enable_v13_mainline:
+            return None
+        if self.v13_data_service is not None:
+            return self.v13_data_service
+        if self.screener_service is None:
+            return None
+
+        fetcher = getattr(self.screener_service, "fetcher", None)
+        try:
+            self.v13_data_service = MomentumV13DataService(fetcher=fetcher) if fetcher is not None else MomentumV13DataService()
+        except Exception as exc:  # pragma: no cover - defensive guard for env/config drift
+            logger.warning("Failed to initialize V1.3 data service: %s", exc)
+            return None
+        return self.v13_data_service
+
+    def _build_v13_mainline_context(
+        self,
+        *,
+        trade_date: str,
+        candidates: List[Dict[str, Any]],
+    ) -> Tuple[Dict[str, Any], List[Dict[str, Any]], Optional[Dict[str, Any]], Dict[str, Any]]:
+        status = {
+            "enabled": bool(self.enable_v13_mainline),
+            "status": "skipped",
+            "reason": "V1.3 主线增强未启用或当前没有可用数据服务。",
+            "source_status": {},
+            "degraded_reasons": [],
+        }
+        if not self.enable_v13_mainline:
+            status["reason"] = "V1.3 主线增强已关闭。"
+            return {}, [], None, status
+
+        ts_codes = [
+            _safe_str(candidate.get("ts_code") or candidate.get("code"))
+            for candidate in candidates
+            if candidate.get("ts_code") or candidate.get("code")
+        ]
+        if not trade_date or not ts_codes:
+            status["status"] = "not_applicable"
+            status["reason"] = "交易日或候选股代码为空，跳过 V1.3 主线增强。"
+            return {}, [], None, status
+
+        v13_service = self._get_v13_data_service()
+        if v13_service is None:
+            return {}, [], None, status
+
+        try:
+            context = v13_service.build_context(trade_date=trade_date, ts_codes=ts_codes)
+            mainline_radar = v13_service.build_mainline_radar(candidates=candidates, context=context)
+            short_term_sentiment = v13_service.build_short_term_sentiment(
+                mainline_radar=mainline_radar,
+                context=context,
+            )
+        except Exception as exc:  # pragma: no cover - keep old decision path alive on data-source bugs
+            logger.warning("Failed to build V1.3 mainline context: %s", exc)
+            status.update(
+                {
+                    "status": "failed",
+                    "reason": f"V1.3 主线增强计算失败，已回退旧二次决策链路：{exc}",
+                }
+            )
+            return {}, [], None, status
+
+        source_status = dict(context.get("source_status") or {})
+        degraded_reasons = list(context.get("degraded_reasons") or [])
+        status.update(
+            {
+                "status": "degraded" if context.get("is_degraded") else "ok",
+                "reason": (
+                    "V1.3 主线增强数据已接入，但部分数据源降级。"
+                    if context.get("is_degraded")
+                    else "V1.3 主线增强数据已接入二次决策。"
+                ),
+                "data_as_of": context.get("data_as_of"),
+                "source_status": source_status,
+                "degraded_reasons": degraded_reasons,
+                "mainline_count": len(mainline_radar),
+                "short_term_sentiment_level": (
+                    short_term_sentiment.get("level")
+                    if isinstance(short_term_sentiment, dict)
+                    else None
+                ),
+            }
+        )
+        return context, mainline_radar, short_term_sentiment, status
+
+    def _apply_v13_mainline_to_candidates(
+        self,
+        candidates: List[Dict[str, Any]],
+        *,
+        context: Dict[str, Any],
+        mainline_radar: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        if not candidates or not context or not mainline_radar:
+            return candidates
+
+        stock_theme_map = context.get("stock_theme_map") or {}
+        if not any(stock_theme_map.get(_safe_str(candidate.get("ts_code"))) for candidate in candidates):
+            return candidates
+
+        radar_by_id = {
+            _safe_str(item.get("theme_id")): item
+            for item in mainline_radar
+            if item.get("theme_id")
+        }
+        radar_by_name = {
+            _safe_str(item.get("theme_name")): item
+            for item in mainline_radar
+            if item.get("theme_name")
+        }
+        enhanced: List[Dict[str, Any]] = []
+        for candidate in candidates:
+            updated = dict(candidate)
+            ts_code = _safe_str(updated.get("ts_code"))
+            theme_rows = stock_theme_map.get(ts_code) or []
+            best_radar: Optional[Dict[str, Any]] = None
+            best_theme_id = ""
+            best_theme_name = ""
+
+            for row in theme_rows:
+                theme_id = _safe_str(row.get("theme_code") or row.get("ths_code"))
+                theme_name = _safe_str(row.get("theme_name") or row.get("ths_name") or theme_id)
+                radar = radar_by_id.get(theme_id) or radar_by_name.get(theme_name)
+                if radar is None:
+                    continue
+                if best_radar is None or _safe_float(radar.get("score")) > _safe_float(best_radar.get("score")):
+                    best_radar = radar
+                    best_theme_id = theme_id
+                    best_theme_name = theme_name or _safe_str(radar.get("theme_name"))
+
+            if best_radar is not None:
+                theme_name = _safe_str(best_radar.get("theme_name"), best_theme_name)
+                updated["_theme"] = theme_name
+                updated["_v13_theme_id"] = _safe_str(best_radar.get("theme_id"), best_theme_id)
+                updated["_v13_theme_name"] = theme_name
+                updated["_v13_mainline_score"] = round(_safe_float(best_radar.get("score")), 2)
+                updated["_v13_mainline_level"] = _safe_str(best_radar.get("level"))
+                updated["_v13_mainline_level_label"] = _safe_str(best_radar.get("level_label"))
+                updated["_v13_mainline_summary"] = _safe_str(best_radar.get("summary"))
+                themes = list(updated.get("themes") or [])
+                if theme_name and theme_name not in themes:
+                    updated["themes"] = [theme_name, *themes]
+            enhanced.append(updated)
+        return enhanced
 
     def build_intraday_from_decision(
         self,
@@ -805,7 +1001,7 @@ class MomentumSecondaryDecisionService:
             leader_count = sum(item["_role_key"] == "leader" for item in sorted_items)
             front_count = sum(item["_role_key"] == "front" for item in sorted_items)
             avg_rank_score = mean(_safe_float(item.get("rank_score")) for item in sorted_items)
-            theme_score = min(
+            rule_theme_score = min(
                 100.0,
                 avg_rank_score * 0.60
                 + min(len(sorted_items), 3) * 7.0
@@ -813,12 +1009,23 @@ class MomentumSecondaryDecisionService:
                 + front_count * 3.0
                 + clear_count * 4.0,
             )
+            v13_mainline_score = max(_safe_float(item.get("_v13_mainline_score")) for item in sorted_items)
+            theme_score = max(rule_theme_score, v13_mainline_score)
             strength_label = self._theme_strength_label(theme_score)
+            v13_theme_id = next((_safe_str(item.get("_v13_theme_id")) for item in sorted_items if item.get("_v13_theme_id")), "")
+            v13_summary = next(
+                (_safe_str(item.get("_v13_mainline_summary")) for item in sorted_items if item.get("_v13_mainline_summary")),
+                "",
+            )
             summaries.append(
                 {
                     "name": theme,
                     "score": round(theme_score, 1),
                     "strength_label": strength_label,
+                    "rule_theme_score": round(rule_theme_score, 1),
+                    "v13_theme_id": v13_theme_id or None,
+                    "v13_mainline_score": round(v13_mainline_score, 1) if v13_mainline_score > 0 else None,
+                    "v13_summary": v13_summary or None,
                     "candidate_count": len(sorted_items),
                     "clear_buy_point_count": clear_count,
                     "leader_count": leader_count,
@@ -834,6 +1041,11 @@ class MomentumSecondaryDecisionService:
                             "role": item["_role_label"],
                             "buy_point_label": item["_buy_point_label"],
                             "rank_score": round(_safe_float(item.get("rank_score")), 1),
+                            "v13_mainline_score": (
+                                round(_safe_float(item.get("_v13_mainline_score")), 1)
+                                if item.get("_v13_mainline_score")
+                                else None
+                            ),
                         }
                         for item in sorted_items[:3]
                     ],
@@ -963,6 +1175,14 @@ class MomentumSecondaryDecisionService:
                     "name": _safe_str(candidate.get("name")),
                     "theme": candidate["_theme"],
                     "theme_score": round(_safe_float(theme_score_map.get(candidate["_theme"]), 50.0), 2),
+                    "v13_theme_id": candidate.get("_v13_theme_id"),
+                    "v13_mainline_score": (
+                        round(_safe_float(candidate.get("_v13_mainline_score")), 2)
+                        if candidate.get("_v13_mainline_score")
+                        else None
+                    ),
+                    "v13_mainline_level": candidate.get("_v13_mainline_level"),
+                    "v13_mainline_level_label": candidate.get("_v13_mainline_level_label"),
                     "role_key": candidate["_role_key"],
                     "role": candidate["_role_label"],
                     "buy_point_status": candidate["_buy_point_status"],
@@ -998,6 +1218,7 @@ class MomentumSecondaryDecisionService:
     def _build_attack_permission(self, strategy_health: Dict[str, Any]) -> Dict[str, Any]:
         short_window = strategy_health.get("short_window", {})
         sample_count = int(_safe_float(short_window.get("sample_count"), 0))
+        short_window_score = round(_safe_float(short_window.get("score"), 0.0), 1)
         hit_rate = round(_safe_float(short_window.get("success_rate"), 0.0), 1)
         avg_profit_window_pct = round(_safe_float(short_window.get("avg_profit_window_pct"), 0.0), 2)
         avg_max_drawdown_pct = round(_safe_float(short_window.get("avg_max_drawdown_pct"), 0.0), 2)
@@ -1009,19 +1230,39 @@ class MomentumSecondaryDecisionService:
             ),
             1,
         )
-
-        if (
+        meets_open_hit_rate = (
             sample_count >= ATTACK_PERMISSION_MIN_SAMPLES["open"]
             and hit_rate >= ATTACK_PERMISSION_HIT_RATE_THRESHOLDS["open"]
-        ):
-            status = "open"
-            summary = "最近 20 日里，系统仍能稳定打出可执行的核心票，当前可继续进攻。"
-        elif (
+        )
+        meets_recovering_hit_rate = (
             sample_count >= ATTACK_PERMISSION_MIN_SAMPLES["recovering"]
             and hit_rate >= ATTACK_PERMISSION_HIT_RATE_THRESHOLDS["recovering"]
-        ):
+        )
+        meets_open_quality_recovery = (
+            sample_count >= 8
+            and short_window_score >= ATTACK_PERMISSION_SCORE_THRESHOLDS["open"]
+            and avg_profit_window_pct >= ATTACK_PERMISSION_PROFIT_WINDOW_THRESHOLDS["open"]
+            and avg_max_drawdown_pct <= ATTACK_PERMISSION_DRAWDOWN_THRESHOLDS["open"]
+        )
+        meets_recovering_quality_recovery = (
+            sample_count >= 8
+            and short_window_score >= ATTACK_PERMISSION_SCORE_THRESHOLDS["recovering"]
+            and avg_profit_window_pct >= ATTACK_PERMISSION_PROFIT_WINDOW_THRESHOLDS["recovering"]
+            and avg_max_drawdown_pct <= ATTACK_PERMISSION_DRAWDOWN_THRESHOLDS["recovering"]
+        )
+
+        if meets_open_hit_rate or meets_open_quality_recovery:
+            status = "open"
+            if meets_open_quality_recovery and not meets_open_hit_rate:
+                summary = "最近 20 日命中率还没完全回到高位，但利润窗口与回撤结构已回到可进攻区间，当前可恢复进攻。"
+            else:
+                summary = "最近 20 日里，系统仍能稳定打出可执行的核心票，当前可继续进攻。"
+        elif meets_recovering_hit_rate or meets_recovering_quality_recovery:
             status = "recovering"
-            summary = "最近 20 日的进攻命中开始修复，但还没恢复到完整进攻节奏。"
+            if meets_recovering_quality_recovery and not meets_recovering_hit_rate:
+                summary = "最近 20 日命中率仍偏低，但利润窗口和回撤已回到可跟进区间，进攻许可先恢复到谨慎放行。"
+            else:
+                summary = "最近 20 日的进攻命中开始修复，但还没恢复到完整进攻节奏。"
         else:
             status = "paused"
             summary = "最近 20 日的进攻命中仍不足，今天不适合把进攻节奏开满。"
@@ -1034,6 +1275,7 @@ class MomentumSecondaryDecisionService:
             "window": "short_20d",
             "window_label": "20 日进攻许可",
             "valid_sample_count": sample_count,
+            "short_window_score": short_window_score,
             "hit_rate": hit_rate,
             "avg_profit_window_pct": avg_profit_window_pct,
             "avg_max_drawdown_pct": avg_max_drawdown_pct,
@@ -1794,7 +2036,7 @@ class MomentumSecondaryDecisionService:
         if not isinstance(item, dict):
             return False
 
-        status = _safe_str(item.get("buy_point_status"))
+        status = _safe_str(item.get("buy_point_status"), item.get("_buy_point_status"))
         if status == "clear":
             return True
         if status != "waiting":
@@ -1880,7 +2122,7 @@ class MomentumSecondaryDecisionService:
     @staticmethod
     def _is_static_overextended_item(item: Dict[str, Any]) -> bool:
         risk_tags = {str(tag) for tag in (item.get("risk_tags") or [])}
-        buy_point_status = _safe_str(item.get("buy_point_status"))
+        buy_point_status = _safe_str(item.get("buy_point_status"), item.get("_buy_point_status"))
         risk_score = _safe_float(item.get("risk_score"))
         return "high_acceleration" in risk_tags and (
             buy_point_status != "clear" or risk_score >= 35.0
@@ -1943,7 +2185,21 @@ class MomentumSecondaryDecisionService:
         portfolio: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
         if not portfolio:
-            level = "stand_aside"
+            gate_context = {
+                "market_level": _safe_str(market_environment.get("level"), "weak"),
+                "opportunity_matrix_level": _safe_str(opportunity_quality.get("matrix_level"), "weak"),
+                "historical_validity_level": _safe_str(historical_validity.get("level"), "weak"),
+                "clear_count": 0,
+                "main_risk_reward_pass": False,
+                "theme_concentration_pass": False,
+                "core_premium_level": "",
+                "breadth_premium_level": "",
+                "base_level": "stand_aside",
+                "resolved_level": "stand_aside",
+                "promotion_applied": False,
+                "promotion_reason": "",
+                "restriction_reason": "当前没有默认组合，基础动作矩阵直接收口为今日不做。",
+            }
         else:
             matrix = {
                 ("strong", "strong"): "strong_go",
@@ -1959,7 +2215,11 @@ class MomentumSecondaryDecisionService:
                 ("weak", "mid"): "stand_aside",
                 ("weak", "weak"): "stand_aside",
             }
+            market_level = _safe_str(market_environment.get("level"))
             opportunity_matrix_level = _safe_str(opportunity_quality.get("matrix_level"))
+            clear_count = int(_safe_float(opportunity_quality.get("clear_count"), 0))
+            main_risk_reward_pass = bool(opportunity_quality.get("main_risk_reward_pass"))
+            theme_concentration_pass = bool(opportunity_quality.get("theme_concentration_pass"))
             if not opportunity_matrix_level:
                 opportunity_modules = {
                     _safe_str(module.get("key")): module
@@ -1973,10 +2233,8 @@ class MomentumSecondaryDecisionService:
                     )
                 )
                 main_item = next((item for item in portfolio if item.get("slot") == "main"), None)
-                main_risk_reward_pass = bool(opportunity_quality.get("main_risk_reward_pass"))
                 if "main_risk_reward_pass" not in opportunity_quality:
                     main_risk_reward_pass = self._opportunity_main_risk_reward_pass(main_item)
-                theme_concentration_pass = bool(opportunity_quality.get("theme_concentration_pass"))
                 if "theme_concentration_pass" not in opportunity_quality:
                     theme_counts: Dict[str, int] = defaultdict(int)
                     for item in portfolio:
@@ -1996,22 +2254,85 @@ class MomentumSecondaryDecisionService:
                     opportunity_matrix_level = "mid" if main_risk_reward_pass else "weak"
                 else:
                     opportunity_matrix_level = "weak"
-            level = matrix.get(
-                (_safe_str(market_environment.get("level")), opportunity_matrix_level),
+            market_modules = {
+                _safe_str(module.get("key")): _safe_str(module.get("level"))
+                for module in market_environment.get("modules", [])
+                if isinstance(module, dict)
+            }
+            core_premium_level = market_modules.get("core_premium", "")
+            breadth_premium_level = market_modules.get("breadth_premium", "")
+            base_level = matrix.get(
+                (market_level, opportunity_matrix_level),
                 "observe_only",
             )
+            promotion_applied = False
+            promotion_reason = ""
+            if (
+                market_level == "medium"
+                and opportunity_matrix_level == "mid"
+                and base_level == "observe_only"
+                and clear_count >= 1
+                and main_risk_reward_pass
+                and _safe_str(historical_validity.get("level")) in {"healthy", "general"}
+                and "strong" in {core_premium_level, breadth_premium_level}
+            ):
+                base_labels = (
+                    GATE_LEVEL_LABELS.get(market_level, market_level),
+                    OPPORTUNITY_MATRIX_LEVEL_LABELS.get(
+                        opportunity_matrix_level,
+                        opportunity_matrix_level,
+                    ),
+                )
+                promotion_applied = True
+                promotion_reason = (
+                    f"市场环境虽为{base_labels[0]}，但核心溢价/广度溢价至少一项仍强，"
+                    f"且主仓盈亏比过线、组合已有 {clear_count} 只计划买点，"
+                    "所以把基础矩阵从“仅观察”上调到“谨慎出手”。"
+                )
+                resolved_level = "cautious_go"
+            else:
+                resolved_level = base_level
+            restriction_reason = ""
+            if resolved_level in {"observe_only", "stand_aside"}:
+                restriction_reason = (
+                    f"市场环境为{GATE_LEVEL_LABELS.get(market_level, market_level)}、"
+                    f"机会质量为{OPPORTUNITY_MATRIX_LEVEL_LABELS.get(opportunity_matrix_level, opportunity_matrix_level)}，"
+                    f"基础动作矩阵先收口到“{ACTION_LEVEL_LABELS[resolved_level]}”。"
+                )
+            gate_context = {
+                "market_level": market_level,
+                "opportunity_matrix_level": opportunity_matrix_level,
+                "historical_validity_level": _safe_str(historical_validity.get("level"), "weak"),
+                "clear_count": clear_count,
+                "main_risk_reward_pass": bool(main_risk_reward_pass),
+                "theme_concentration_pass": bool(theme_concentration_pass),
+                "core_premium_level": core_premium_level,
+                "breadth_premium_level": breadth_premium_level,
+                "base_level": base_level,
+                "resolved_level": resolved_level,
+                "promotion_applied": promotion_applied,
+                "promotion_reason": promotion_reason,
+                "restriction_reason": restriction_reason,
+            }
 
         reason = self._build_action_reason(
-            level,
+            gate_context["resolved_level"],
             market_environment=market_environment,
             opportunity_quality=opportunity_quality,
             historical_validity=historical_validity,
         )
+        if gate_context.get("promotion_applied") and gate_context.get("promotion_reason"):
+            reason = f"{reason} {gate_context['promotion_reason']}"
+        elif gate_context.get("restriction_reason"):
+            reason = f"{reason} {gate_context['restriction_reason']}"
         return {
-            "level": level,
-            "label": ACTION_LEVEL_LABELS[level],
+            "level": gate_context["resolved_level"],
+            "label": ACTION_LEVEL_LABELS[gate_context["resolved_level"]],
             "reason": reason,
             "source_profile": profile,
+            "base_level": gate_context["base_level"],
+            "base_label": ACTION_LEVEL_LABELS[gate_context["base_level"]],
+            "gate_context": gate_context,
         }
 
     def _build_empty_strategy_health(self) -> Dict[str, Any]:
@@ -2234,6 +2555,21 @@ class MomentumSecondaryDecisionService:
                 validation_status=_safe_str(runtime_metadata.get("validation_status"), "final"),
                 progress=runtime_metadata.get("progress"),
             )
+        if (
+            strategy_health_mode == STRATEGY_HEALTH_MODE_STRICT_FINAL
+            and _safe_str(runtime_metadata.get("validation_status")) == "failed"
+        ):
+            return self._attach_strategy_health_runtime_metadata(
+                self._build_unavailable_strategy_health(
+                    reason=self._format_strategy_health_failure_reason(
+                        _safe_str(runtime_metadata.get("failure_reason"))
+                    )
+                ),
+                data_source="historical",
+                is_warming=False,
+                validation_status="failed",
+                progress=runtime_metadata.get("progress"),
+            )
         if not themes or not portfolio:
             return self._attach_strategy_health_runtime_metadata(
                 self._build_empty_strategy_health(),
@@ -2276,6 +2612,16 @@ class MomentumSecondaryDecisionService:
             return health, runtime_metadata
         if strategy_health_mode == STRATEGY_HEALTH_MODE_CACHED_ONLY:
             return health, runtime_metadata
+
+        if wait_for_strategy_health and strategy_health_mode == STRATEGY_HEALTH_MODE_STRICT_FINAL:
+            state = self._compute_strategy_health_to_completion(
+                cache_key=cache_key,
+                trade_date=normalized_trade_date,
+                request_params=request_params,
+                progress_callback=strategy_health_progress_callback,
+            )
+            runtime_metadata = self._build_strategy_health_runtime_metadata(state)
+            return self._extract_strategy_health_from_state(state), runtime_metadata
 
         if wait_for_strategy_health:
             if self.strategy_health_async:
@@ -2417,6 +2763,9 @@ class MomentumSecondaryDecisionService:
         if status == "final":
             validation_status = "final"
             is_warming = False
+        elif status == "failed":
+            validation_status = "failed"
+            is_warming = False
         elif has_partial:
             validation_status = "partial"
             is_warming = True
@@ -2426,6 +2775,7 @@ class MomentumSecondaryDecisionService:
         return {
             "validation_status": validation_status,
             "is_warming": is_warming,
+            "failure_reason": _safe_str(state.get("last_error")),
             "progress": self._build_strategy_health_progress(state, validation_status=validation_status),
         }
 
@@ -3120,6 +3470,26 @@ class MomentumSecondaryDecisionService:
             return normalized_dates
 
         fetcher = getattr(self.screener_service, "fetcher", None)
+        raw_trade_dates = getattr(fetcher, "trade_dates", None)
+        if isinstance(raw_trade_dates, list) and raw_trade_dates:
+            normalized_dates = []
+            for item in raw_trade_dates:
+                normalized = self._normalize_trade_date(item)
+                if normalized and normalized < end_trade_date:
+                    normalized_dates.append(normalized)
+            if normalized_dates:
+                return sorted(set(normalized_dates), reverse=True)[:limit]
+
+        raw_trade_snapshots = getattr(fetcher, "trade_snapshots", None)
+        if isinstance(raw_trade_snapshots, dict) and raw_trade_snapshots:
+            normalized_dates = []
+            for item in raw_trade_snapshots.keys():
+                normalized = self._normalize_trade_date(item)
+                if normalized and normalized < end_trade_date:
+                    normalized_dates.append(normalized)
+            if normalized_dates:
+                return sorted(set(normalized_dates), reverse=True)[:limit]
+
         call_api = getattr(fetcher, "_call_api_with_rate_limit", None)
         if call_api is None:
             return []
@@ -3143,6 +3513,24 @@ class MomentumSecondaryDecisionService:
             reverse=True,
         )
         return [item for item in trade_dates if item < end_trade_date][:limit]
+
+    def _build_unavailable_strategy_health(self, *, reason: str) -> Dict[str, Any]:
+        health = self._build_empty_strategy_health()
+        health["reason"] = reason
+        health["blockers"] = [reason, *health.get("blockers", [])][:3]
+        health["recovery_conditions"] = [
+            "先补齐该交易日前的历史样本，再重新评估 20/60 窗口。",
+            *health.get("recovery_conditions", []),
+        ][:4]
+        return health
+
+    @staticmethod
+    def _format_strategy_health_failure_reason(last_error: str) -> str:
+        if last_error == "no_trade_dates":
+            return "严格 20/60 历史验证未拿到该交易日前的有效交易日样本，本日不回退代理健康度。"
+        if last_error:
+            return f"严格 20/60 历史验证失败（{last_error}），本日不回退代理健康度。"
+        return "严格 20/60 历史验证失败，本日不回退代理健康度。"
 
     def _evaluate_strategy_health_trade_date(
         self,
@@ -3445,11 +3833,23 @@ class MomentumSecondaryDecisionService:
                 f"{reason} 当前 20 日进攻许可为“{_safe_str(historical_validity.get('attack_permission_label'), '暂停进攻')}”，"
                 f"所以今日最高只放到“{ACTION_LEVEL_LABELS[capped_level]}”。"
             )
+        gate_context = action.get("gate_context") if isinstance(action.get("gate_context"), dict) else {}
+        gate_context = dict(gate_context)
+        gate_context["historical_cap_applied"] = capped_level != level
+        gate_context["final_level"] = capped_level
+        gate_context["historical_cap_reason"] = (
+            _safe_str(historical_validity.get("reason"))
+            if capped_level != level
+            else ""
+        )
         return {
             "level": capped_level,
             "label": ACTION_LEVEL_LABELS[capped_level],
             "reason": reason,
             "source_profile": _safe_str(action.get("source_profile"), "standard"),
+            "base_level": _safe_str(action.get("base_level"), level),
+            "base_label": _safe_str(action.get("base_label"), ACTION_LEVEL_LABELS.get(level, level)),
+            "gate_context": gate_context,
         }
 
     def _apply_action_permissions_to_portfolio(
@@ -3809,12 +4209,71 @@ class MomentumSecondaryDecisionService:
         return _clamp_float(score)
 
     def _portfolio_priority(self, item: Dict[str, Any], theme_score_map: Dict[str, float]) -> float:
-        return (
+        priority = (
             _safe_float(item["_decision_score"])
             + (_safe_float(item.get("_forward_alpha_score"), 50.0) - 50.0) * 0.55
             + _safe_float(theme_score_map.get(item["_theme"]), 50.0) * 0.08
             - _safe_float(item.get("risk_score")) * 0.02
         )
+        v13_mainline_score = _safe_float(item.get("_v13_mainline_score"))
+        if v13_mainline_score > 0:
+            priority += (v13_mainline_score - 50.0) * 0.12
+        role_key = _safe_str(item.get("_role_key"))
+        buy_point_status = _safe_str(item.get("_buy_point_status"), item.get("buy_point_status"))
+        priority += {
+            "leader": 0.8,
+            "front": 2.0,
+            "mid": 0.6,
+            "back": -3.0,
+        }.get(role_key, 0.0)
+        if self._has_planned_buy_point(item):
+            priority += 1.2
+        elif buy_point_status == "unclear":
+            priority -= 2.0
+        return priority
+
+    def _main_slot_priority(self, item: Dict[str, Any], theme_score_map: Dict[str, float]) -> float:
+        priority = self._portfolio_priority(item, theme_score_map)
+        role_key = _safe_str(item.get("_role_key"))
+        buy_point_status = _safe_str(item.get("_buy_point_status"), item.get("buy_point_status"))
+        v13_mainline_score = _safe_float(item.get("_v13_mainline_score"))
+        if v13_mainline_score > 0:
+            priority += (v13_mainline_score - 50.0) * 0.08
+        priority += {
+            "leader": 2.5,
+            "front": 4.0,
+            "mid": 0.5,
+            "back": -5.0,
+        }.get(role_key, 0.0)
+        if buy_point_status == "clear":
+            priority += 4.0
+        elif self._has_planned_buy_point(item):
+            priority += 2.0
+        elif buy_point_status == "waiting":
+            priority -= 1.5
+        else:
+            priority -= 8.0
+        return priority
+
+    def _watch_slot_priority(
+        self,
+        item: Dict[str, Any],
+        theme_score_map: Dict[str, float],
+        *,
+        main_theme: str,
+    ) -> float:
+        priority = self._portfolio_priority(item, theme_score_map)
+        role_key = _safe_str(item.get("_role_key"))
+        if _safe_str(item.get("_theme")) == main_theme:
+            priority += 2.5
+        if role_key == "front":
+            priority += 2.0
+        elif role_key == "leader":
+            priority += 0.8
+        if self._has_planned_buy_point(item):
+            priority += 1.0
+        priority += max(_safe_float(item.get("_forward_alpha_score")) - 75.0, 0.0) * 0.12
+        return priority
 
     def _rebalance_same_theme_main_slot(
         self,
@@ -3829,11 +4288,6 @@ class MomentumSecondaryDecisionService:
             return selected
 
         main_slot, main_candidate = selected[main_slot_index]
-        if _safe_str(main_candidate.get("_role_key")) not in {"mid", "back"}:
-            return selected
-        if _safe_str(main_candidate.get("_buy_point_status")) == "clear":
-            return selected
-
         same_theme_candidates = [
             (index, slot, candidate)
             for index, (slot, candidate) in enumerate(selected)
@@ -3841,16 +4295,59 @@ class MomentumSecondaryDecisionService:
                 slot != "main"
                 and candidate.get("_theme") == main_candidate.get("_theme")
                 and _safe_str(candidate.get("_role_key")) in {"leader", "front"}
-                and _safe_str(candidate.get("_buy_point_status")) == "clear"
+                and self._has_planned_buy_point(candidate)
             )
         ]
         if not same_theme_candidates:
             return selected
 
+        main_priority = self._main_slot_priority(main_candidate, theme_score_map)
         best_index, best_slot, best_candidate = max(
             same_theme_candidates,
-            key=lambda item: self._portfolio_priority(item[2], theme_score_map),
+            key=lambda item: self._main_slot_priority(item[2], theme_score_map),
         )
+        best_priority = self._main_slot_priority(best_candidate, theme_score_map)
+        main_has_plan = self._has_planned_buy_point(main_candidate)
+        main_role_key = _safe_str(main_candidate.get("_role_key"))
+        main_buy_point_status = _safe_str(
+            main_candidate.get("_buy_point_status"),
+            main_candidate.get("buy_point_status"),
+        )
+        best_role_key = _safe_str(best_candidate.get("_role_key"))
+        best_buy_point_status = _safe_str(
+            best_candidate.get("_buy_point_status"),
+            best_candidate.get("buy_point_status"),
+        )
+        should_swap = (
+            (
+                main_role_key in {"mid", "back"}
+                and not main_has_plan
+            )
+            or
+            (not main_has_plan and best_priority >= main_priority + MAIN_SLOT_REBALANCE_PRIORITY_TOLERANCE)
+            or (
+                main_role_key in {"mid", "back"}
+                and best_priority >= main_priority - MAIN_SLOT_REBALANCE_PRIORITY_TOLERANCE
+            )
+            or (
+                main_role_key == "leader"
+                and main_buy_point_status != "clear"
+                and best_role_key == "front"
+                and best_buy_point_status == "clear"
+                and best_priority >= main_priority
+            )
+            or (
+                main_role_key in {"front", "mid", "back"}
+                and main_buy_point_status != "clear"
+                and best_role_key == "leader"
+                and best_buy_point_status == "clear"
+                and best_priority >= main_priority - MAIN_SLOT_REBALANCE_PRIORITY_TOLERANCE
+                and _safe_float(main_candidate.get("_forward_alpha_score"), 50.0)
+                <= _safe_float(best_candidate.get("_forward_alpha_score"), 50.0) + 2.0
+            )
+        )
+        if not should_swap:
+            return selected
 
         rebalanced = list(selected)
         rebalanced[main_slot_index] = (main_slot, best_candidate)
@@ -3862,7 +4359,7 @@ class MomentumSecondaryDecisionService:
         candidates: List[Dict[str, Any]],
         theme_score_map: Dict[str, float],
     ) -> Dict[str, Any]:
-        return max(candidates, key=lambda item: self._portfolio_priority(item, theme_score_map))
+        return max(candidates, key=lambda item: self._main_slot_priority(item, theme_score_map))
 
     def _pick_secondary_candidate(
         self,
@@ -3875,6 +4372,38 @@ class MomentumSecondaryDecisionService:
         remaining = [item for item in candidates if item["ts_code"] not in selected_codes]
         if not remaining:
             return None
+
+        best_remaining = max(remaining, key=lambda item: self._portfolio_priority(item, theme_score_map))
+        best_remaining_score = self._portfolio_priority(best_remaining, theme_score_map)
+        main_role_key = _safe_str(main_candidate.get("_role_key"))
+        main_buy_point_status = _safe_str(
+            main_candidate.get("_buy_point_status"),
+            main_candidate.get("buy_point_status"),
+        )
+        same_theme_confirmation = [
+            item
+            for item in remaining
+            if (
+                item["_theme"] == main_candidate["_theme"]
+                and _safe_str(item.get("_role_key")) in {"leader", "front"}
+                and self._has_planned_buy_point(item)
+            )
+        ]
+        if same_theme_confirmation:
+            best_same_theme_confirmation = max(
+                same_theme_confirmation,
+                key=lambda item: self._portfolio_priority(item, theme_score_map),
+            )
+            best_same_theme_score = self._portfolio_priority(
+                best_same_theme_confirmation,
+                theme_score_map,
+            )
+            if (
+                (main_buy_point_status != "clear" or main_role_key in {"mid", "back"})
+                and best_same_theme_score
+                >= best_remaining_score - SAME_THEME_CONFIRMATION_PRIORITY_TOLERANCE
+            ):
+                return best_same_theme_confirmation
 
         theme_names = [theme["name"] for theme in themes]
         diversify_theme = (
@@ -3890,15 +4419,10 @@ class MomentumSecondaryDecisionService:
                 if item["_theme"] != main_candidate["_theme"] and item["_theme"] in theme_names
             ]
             if cross_theme:
-                best_remaining = max(
-                    remaining,
-                    key=lambda item: self._portfolio_priority(item, theme_score_map),
-                )
                 best_cross_theme = max(
                     cross_theme,
                     key=lambda item: self._portfolio_priority(item, theme_score_map),
                 )
-                best_remaining_score = self._portfolio_priority(best_remaining, theme_score_map)
                 best_cross_theme_score = self._portfolio_priority(best_cross_theme, theme_score_map)
                 if best_cross_theme_score >= best_remaining_score - DIVERSIFICATION_PRIORITY_TOLERANCE:
                     return best_cross_theme
@@ -3911,7 +4435,6 @@ class MomentumSecondaryDecisionService:
         if role_diversified:
             return max(role_diversified, key=lambda item: self._portfolio_priority(item, theme_score_map))
 
-        best_remaining = max(remaining, key=lambda item: self._portfolio_priority(item, theme_score_map))
         if self._portfolio_priority(best_remaining, theme_score_map) < 55:
             return None
         return best_remaining
@@ -3934,7 +4457,32 @@ class MomentumSecondaryDecisionService:
             and (item["_role_key"] == "leader" or item["_buy_point_status"] != "unclear")
         ]
         pool = mainline_watch or remaining
-        candidate = max(pool, key=lambda item: self._portfolio_priority(item, theme_score_map))
+        main_theme = selected_themes[0] if selected_themes else ""
+        candidate = max(
+            pool,
+            key=lambda item: self._watch_slot_priority(item, theme_score_map, main_theme=main_theme),
+        )
+        if main_theme:
+            mainline_confirmation_candidates = [
+                item
+                for item in pool
+                if (
+                    item["_theme"] == main_theme
+                    and _safe_str(item.get("_role_key")) in {"leader", "front"}
+                    and self._has_planned_buy_point(item)
+                )
+            ]
+            if mainline_confirmation_candidates:
+                best_mainline_confirmation = max(
+                    mainline_confirmation_candidates,
+                    key=lambda item: self._watch_slot_priority(item, theme_score_map, main_theme=main_theme),
+                )
+                if (
+                    self._watch_slot_priority(best_mainline_confirmation, theme_score_map, main_theme=main_theme)
+                    >= self._watch_slot_priority(candidate, theme_score_map, main_theme=main_theme)
+                    - MAINLINE_CONFIRMATION_PRIORITY_TOLERANCE
+                ):
+                    candidate = best_mainline_confirmation
 
         theme_score = _safe_float(theme_score_map.get(candidate["_theme"]), 0.0)
         if theme_score < 55 and candidate["_role_key"] not in {"leader", "front"}:
@@ -3955,13 +4503,21 @@ class MomentumSecondaryDecisionService:
             "ts_code": candidate["ts_code"],
             "name": candidate["name"],
             "theme": candidate["_theme"],
+            "v13_theme_id": candidate.get("_v13_theme_id"),
+            "v13_mainline_score": (
+                round(_safe_float(candidate.get("_v13_mainline_score")), 1)
+                if candidate.get("_v13_mainline_score")
+                else None
+            ),
+            "v13_mainline_level": candidate.get("_v13_mainline_level"),
+            "v13_mainline_level_label": candidate.get("_v13_mainline_level_label"),
             "role": candidate["_role_label"],
             "score": round(self._portfolio_priority(candidate, theme_score_map), 1),
             "rank_score": round(_safe_float(candidate.get("rank_score")), 1),
             "risk_score": round(_safe_float(candidate.get("risk_score")), 1),
             "rule_base_score": round(_safe_float(candidate.get("_rule_base_score")), 1),
             "decision_score": round(_safe_float(candidate.get("_decision_score")), 1),
-            "forward_alpha_score": round(_safe_float(candidate.get("_forward_alpha_score")), 1),
+            "forward_alpha_score": round(_safe_float(candidate.get("_forward_alpha_score"), 50.0), 1),
             "buy_point_status": candidate["_buy_point_status"],
             "buy_point_label": candidate["_buy_point_label"],
             "suggested_action": suggested_action,
@@ -4134,6 +4690,66 @@ class MomentumSecondaryDecisionService:
         if clock < time(15, 0):
             return "afternoon"
         return "closed"
+
+    @staticmethod
+    def _build_snapshot_assist_from_intraday_signal(intraday_signal: Dict[str, Any]) -> Dict[str, Any]:
+        portfolio_items = list(intraday_signal.get("portfolio_items") or [])
+        degraded_codes = [
+            _safe_str(item.get("ts_code"))
+            for item in portfolio_items
+            if item.get("quote_available") is False and item.get("ts_code")
+        ]
+        assist_items: List[Dict[str, Any]] = []
+        for item in portfolio_items:
+            status = _safe_str(item.get("status"))
+            if status == "do_not_chase":
+                assist_status = "overextended"
+                assist_label = "偏离过大"
+                manual_check = "等待价格回到更合理的确认区间，再结合分时承接人工判断。"
+            elif item.get("quote_available") is False:
+                assist_status = "quote_missing"
+                assist_label = "报价不足"
+                manual_check = "先确认实时行情是否更新，不用这条快照做执行依据。"
+            elif item.get("signal_triggered"):
+                assist_status = "near_watch_zone"
+                assist_label = "接近观察条件"
+                manual_check = "只代表价格接近昨晚观察条件，仍需人工确认主线同步和分时承接。"
+            elif status == "observe_only":
+                assist_status = "observe_only"
+                assist_label = "仅观察"
+                manual_check = "只保留主线观察价值，不输出正式买入触发。"
+            else:
+                assist_status = "neutral"
+                assist_label = "继续观察"
+                manual_check = "等待价格、强度和承接进一步明确。"
+
+            assist_items.append(
+                {
+                    "slot": item.get("slot"),
+                    "slot_label": item.get("slot_label"),
+                    "ts_code": item.get("ts_code"),
+                    "name": item.get("name"),
+                    "status": assist_status,
+                    "status_label": assist_label,
+                    "current_price": item.get("current_price"),
+                    "change_percent": item.get("change_percent"),
+                    "entry_range_low": item.get("entry_range_low"),
+                    "entry_range_high": item.get("entry_range_high"),
+                    "price_vs_entry_high_pct": item.get("price_vs_entry_high_pct"),
+                    "manual_check": manual_check,
+                }
+            )
+
+        degraded_reasons = [f"{code}: realtime_quote unavailable" for code in degraded_codes]
+        return {
+            "label": "盘中快照辅助",
+            "confidence": "low",
+            "data_as_of": intraday_signal.get("updated_at"),
+            "is_degraded": bool(degraded_reasons),
+            "degraded_reasons": degraded_reasons,
+            "summary": "该模块只用当前快照提示是否接近观察区、是否偏离过大，以及还需要人工确认什么；不输出正式买入指令。",
+            "items": assist_items,
+        }
 
     def _build_intraday_item_signal(
         self,

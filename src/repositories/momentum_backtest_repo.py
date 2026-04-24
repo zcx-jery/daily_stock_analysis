@@ -101,18 +101,20 @@ class MomentumBacktestRepository:
         end_trade_date: date,
         profile: str,
         top_n: int,
+        strategy_health_mode: Optional[str] = None,
     ) -> Optional[MomentumBacktestRun]:
         with self.db.get_session() as session:
+            filters = [
+                MomentumBacktestRun.start_trade_date == start_trade_date,
+                MomentumBacktestRun.end_trade_date == end_trade_date,
+                MomentumBacktestRun.profile == profile,
+                MomentumBacktestRun.top_n == top_n,
+            ]
+            if strategy_health_mode:
+                filters.append(MomentumBacktestRun.strategy_health_mode == strategy_health_mode)
             return session.execute(
                 select(MomentumBacktestRun)
-                .where(
-                    and_(
-                        MomentumBacktestRun.start_trade_date == start_trade_date,
-                        MomentumBacktestRun.end_trade_date == end_trade_date,
-                        MomentumBacktestRun.profile == profile,
-                        MomentumBacktestRun.top_n == top_n,
-                    )
-                )
+                .where(and_(*filters))
                 .order_by(desc(MomentumBacktestRun.created_at), desc(MomentumBacktestRun.id))
                 .limit(1)
             ).scalar_one_or_none()
@@ -128,6 +130,8 @@ class MomentumBacktestRepository:
                 row.current_stage_key = "queued"
                 row.current_stage_label = "等待后台调度"
                 row.cancel_requested = False
+                if not getattr(row, "strategy_health_mode", None):
+                    row.strategy_health_mode = "cached_only"
                 row.started_at = None
                 row.finished_at = None
                 row.updated_at = datetime.now()
