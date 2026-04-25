@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [改进] V1 强势筛选回测主胜率切换为“短线延续合格率”：`T+1 收盘价 > T+1 开盘价` 且 `T+2 最高价 > T+1 收盘价`，并在 outcome、API Schema、前端回测面板和产品文档中同步表达。
 - [改进] 强势筛选 AI 点评上下文接入 V1.3 主线雷达、短线情绪、数据降级状态和盘中快照辅助，并强化“AI 只解释、不输出买入指令、不把快照当正式买点”的规则护栏。
 - [改进] V1 强势筛选回测摘要与单日详情新增 V1.3 主线雷达、短线情绪和数据降级诊断，复用冻结的二次决策载荷输出覆盖率、Top 主线均分与降级天数。
 - [改进] 强势筛选盘中接口新增 V1.3 `snapshot_assist` 低置信度快照辅助，页面展示是否接近观察区、是否偏离过大和人工确认条件，但不输出正式买入指令。

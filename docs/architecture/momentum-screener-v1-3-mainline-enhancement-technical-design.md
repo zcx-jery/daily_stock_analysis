@@ -7,7 +7,7 @@
 - 所属系统：`daily_stock_analysis`
 - 文档类型：技术开发文档 / 实现设计
 - 当前状态：`draft v0.1`
-- 最后更新：`2026-04-24`
+- 最后更新：`2026-04-25`
 - 关联文档：
   - [强势筛选 V1.3 主线增强版产品设计](./momentum-screener-v1-3-mainline-enhancement-product-design.md)
   - [强势筛选 V1.3 主线增强版开发任务清单](./momentum-screener-v1-3-development-tasks.md)
@@ -55,6 +55,17 @@ V1.3 应优先复用当前强势筛选主链路，不新增平行产品入口。
 | 前端 API | `apps/dsa-web/src/api/momentumScreener.ts`、`apps/dsa-web/src/api/momentumBacktest.ts` | 扩展类型与渲染数据 |
 | 前端页面 | `apps/dsa-web/src/pages/MomentumScreenerPage.tsx`、`apps/dsa-web/src/components/history/MomentumBacktestPanel.tsx` | 新增 V1.3 页面模块 |
 | AI 点评 | `src/services/momentum_screener_ai_commentary_service.py` | 将 V1.3 规则结论作为解释上下文，不让 AI 覆盖规则边界 |
+
+### 3.1 回测结算兼容约定
+
+V1.4 起，`positive_t2_rate_pct` 和上层 `*_positive_t2_rate` 在强势筛选 V1 回测语境中代表 `短线延续合格率`，不再代表 `T+2 收盘正收益率`。后端同时在 outcome payload 中写入：
+
+- `settlement_rule = t1_close_gt_open_and_t2_high_gt_t1_close`
+- `t1_direction_pass`
+- `t2_continuation_pass`
+- `settlement_pass`
+
+这样既保持旧接口字段兼容，也能在单日详情中解释每只票为什么合格或不合格。
 
 ## 4. 总体架构
 

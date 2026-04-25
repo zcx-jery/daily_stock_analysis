@@ -47,6 +47,7 @@ export interface MomentumBacktestBenchmarkItem {
   sampleCount: number;
   triggerRatePct?: number | null;
   positiveT2RatePct?: number | null;
+  settlementPassRatePct?: number | null;
   avgT2ProfitWindowPct?: number | null;
   avgT2MaxDrawdownPct?: number | null;
   alphaVsOfficialTop3Pct?: number | null;
@@ -216,6 +217,10 @@ export interface MomentumBacktestOutcomeItem {
   t2ProfitWindowPct?: number | null;
   t2MaxDrawdownPct?: number | null;
   realStrengthLabel?: string | null;
+  settlementRule?: string | null;
+  t1DirectionPass?: boolean | null;
+  t2ContinuationPass?: boolean | null;
+  settlementPass?: boolean | null;
 }
 
 export interface MomentumBacktestOutcomeMetrics {
@@ -223,6 +228,9 @@ export interface MomentumBacktestOutcomeMetrics {
   triggerRatePct?: number | null;
   positiveT1RatePct?: number | null;
   positiveT2RatePct?: number | null;
+  settlementPassRatePct?: number | null;
+  t1DirectionPassRatePct?: number | null;
+  t2ContinuationPassRatePct?: number | null;
   avgT1ProfitWindowPct?: number | null;
   avgT2ProfitWindowPct?: number | null;
   avgT2MaxDrawdownPct?: number | null;

@@ -387,7 +387,7 @@ function BenchmarkCard({ item }: { item: MomentumBacktestBenchmarkItem }) {
           <div className="text-sm font-medium text-foreground">{item.label}</div>
           <div className="mt-1 text-xs text-muted-text">样本 {item.sampleCount}</div>
         </div>
-        <Badge variant="default">{pct(item.positiveT2RatePct)}</Badge>
+        <Badge variant="default">{pct(item.settlementPassRatePct ?? item.positiveT2RatePct)}</Badge>
       </div>
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
         <DetailMetric label="T+2 利润窗口" value={pct(item.avgT2ProfitWindowPct)} />
@@ -425,7 +425,7 @@ function RegimeCard({ item }: { item: MomentumBacktestRegimeBreakdownItem }) {
         {levelBadge(item.level)}
       </div>
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
-        <DetailMetric label="T+2 正收益率" value={pct(item.decisionPositiveT2RatePct)} />
+        <DetailMetric label="延续合格率" value={pct(item.decisionPositiveT2RatePct)} />
         <DetailMetric label="T+2 利润窗口" value={pct(item.decisionAvgT2ProfitWindowPct)} />
         <DetailMetric label="放行准确率" value={pct(item.allowedTradePrecisionPct)} />
         <DetailMetric label="错杀率" value={pct(item.missedOpportunityRatePct)} />
@@ -1098,7 +1098,7 @@ export const MomentumBacktestPanel: React.FC = () => {
               <div className="grid gap-3 md:grid-cols-4">
                 <DetailMetric label="回测区间" value={`${run.startTradeDate} → ${run.endTradeDate}`} />
                 <DetailMetric label="已处理交易日" value={`${run.processedTradeDates} / ${run.totalTradeDates}`} />
-                <DetailMetric label="触发率 / T+2 正收益率" value={issueTitle(summaryView)} />
+                <DetailMetric label="触发率 / 延续合格率" value={issueTitle(summaryView)} />
                 <DetailMetric label="T+2 平均回撤" value={pct(summaryView.decisionTop3AvgT2MaxDrawdownPct)} />
               </div>
               <RunProgressPanel run={run} title="当前任务快照" />
@@ -1480,8 +1480,8 @@ export const MomentumBacktestPanel: React.FC = () => {
                 ))}
               </div>
               <div className="grid gap-3 md:grid-cols-2">
-                <DetailMetric label="候选池 T+2 正收益率" value={pct(selectedDetail.diagnosis.candidateMetrics.positiveT2RatePct)} />
-                <DetailMetric label="默认组合 T+2 正收益率" value={pct(selectedDetail.diagnosis.decisionMetrics.positiveT2RatePct)} />
+                <DetailMetric label="候选池延续合格率" value={pct(selectedDetail.diagnosis.candidateMetrics.positiveT2RatePct)} />
+                <DetailMetric label="默认组合延续合格率" value={pct(selectedDetail.diagnosis.decisionMetrics.positiveT2RatePct)} />
                 <DetailMetric label="候选池 T+2 利润窗口" value={pct(selectedDetail.diagnosis.candidateMetrics.avgT2ProfitWindowPct)} />
                 <DetailMetric label="默认组合 T+2 最大回撤" value={pct(selectedDetail.diagnosis.decisionMetrics.avgT2MaxDrawdownPct)} />
               </div>
@@ -1519,13 +1519,14 @@ export const MomentumBacktestPanel: React.FC = () => {
                   <h3 className="mt-1 text-lg font-semibold text-foreground">候选池 Top10 回放</h3>
                 </div>
                 <div className="overflow-x-auto">
-                  <table className="min-w-[760px] w-full text-sm">
+                      <table className="min-w-[860px] w-full text-sm">
                     <thead>
                       <tr className="border-b border-border/60 text-left text-xs uppercase tracking-[0.2em] text-muted-text">
                         <th className="px-3 py-3">排名</th>
                         <th className="px-3 py-3">股票</th>
                         <th className="px-3 py-3">主线 / 角色</th>
                         <th className="px-3 py-3">排序分</th>
+                        <th className="px-3 py-3">延续合格</th>
                         <th className="px-3 py-3">T+2 利润窗口</th>
                         <th className="px-3 py-3">T+2 回撤</th>
                       </tr>
@@ -1540,6 +1541,7 @@ export const MomentumBacktestPanel: React.FC = () => {
                           </td>
                           <td className="px-3 py-3 text-secondary-text">{item.theme ?? '--'} / {item.role ?? '--'}</td>
                           <td className="px-3 py-3 text-secondary-text">{num(item.rankScore)}</td>
+                          <td className="px-3 py-3 text-secondary-text">{item.outcome?.settlementPass ? '是' : '否'}</td>
                           <td className="px-3 py-3 text-secondary-text">{pct(item.outcome?.t2ProfitWindowPct)}</td>
                           <td className="px-3 py-3 text-secondary-text">{pct(item.outcome?.t2MaxDrawdownPct)}</td>
                         </tr>
@@ -1570,11 +1572,12 @@ export const MomentumBacktestPanel: React.FC = () => {
                           <Badge variant="default">{item.suggestedAction ?? '--'}</Badge>
                         </div>
                       </div>
-                      <div className="mt-3 grid gap-3 md:grid-cols-3">
+                      <div className="mt-3 grid gap-3 md:grid-cols-4">
                         <DetailMetric
                           label="买点区间"
                           value={item.entryRangeLow != null && item.entryRangeHigh != null ? `${item.entryRangeLow} - ${item.entryRangeHigh}` : '--'}
                         />
+                        <DetailMetric label="延续合格" value={item.outcome?.settlementPass ? '是' : '否'} />
                         <DetailMetric label="T+2 利润窗口" value={pct(item.outcome?.t2ProfitWindowPct)} />
                         <DetailMetric label="T+2 回撤" value={pct(item.outcome?.t2MaxDrawdownPct)} />
                       </div>
