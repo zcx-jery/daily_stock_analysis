@@ -22,10 +22,15 @@ jobs:
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           port: ${{ secrets.DEPLOY_PORT || 22 }}
           script: |
+            set -euo pipefail
             cd ${{ secrets.DEPLOY_PATH }}
             DEPLOY_REF="${{ github.event.inputs.deploy_ref || github.ref_name }}"
             if [ -z "$DEPLOY_REF" ]; then
               DEPLOY_REF="main"
+            fi
+            if [ -n "$(git status --porcelain)" ]; then
+              git status --porcelain
+              git stash push --include-untracked -m "pre-deploy-${DEPLOY_REF}-$(date -u +%Y%m%d%H%M%S)"
             fi
             git fetch origin "$DEPLOY_REF"
             git switch "$DEPLOY_REF" || git switch -c "$DEPLOY_REF" "origin/$DEPLOY_REF"
