@@ -499,6 +499,53 @@ function buildDecisionResponse(screening: MomentumScreenerResponse): MomentumScr
             : null,
         opportunityTag: item.opportunityTag ?? null,
       })),
+      candidateDiagnostics: screening.results.map((item: MomentumScreenerResult, index: number) => ({
+        rank: item.rank,
+        tsCode: item.tsCode,
+        name: item.name,
+        theme: index < 2 ? '电池' : item.themes[0] ?? '未分类',
+        themeScore: 82.5,
+        v13ThemeId: 'capital_theme:battery',
+        v13MainlineScore: 82.5,
+        v13MainlineLevel: 'strong',
+        v13MainlineLevelLabel: '主线强',
+        v13ThemeStrengthScore: 82.5,
+        v13FundSupportScore: 88 - index,
+        v13LimitStructureScore: 76 - index,
+        v13BuyabilityScore: 70 - index,
+        v13ChipRiskScore: 42 + index,
+        v13ShadowScore: 78.5 - index,
+        v13ShadowSummary: 'V1.3 影子分仅用于观察真实资金题材，不直接改写官方排序。',
+        roleKey: item.leaderLevel,
+        role: item.leaderLevel === 'leader' ? '龙头核心' : item.leaderLevel === 'front' ? '前排换手' : '观察备选',
+        buyPointStatus:
+          item.buyabilityScore != null && item.buyabilityScore >= 70
+            ? 'clear'
+            : item.rankScore >= 70
+              ? 'waiting'
+              : 'unclear',
+        buyPointLabel:
+          item.buyabilityScore != null && item.buyabilityScore >= 70
+            ? '买点清晰'
+            : item.rankScore >= 70
+              ? '等待触发'
+              : '买点不清晰',
+        rankScore: item.rankScore,
+        continuationScore: item.continuationScore,
+        extensionScore: item.extensionScore,
+        extensionSignalScore: item.extensionScore,
+        buyabilityScore: item.buyabilityScore ?? null,
+        riskScore: item.riskScore,
+        ruleBaseScore: item.rankScore,
+        explainAdjustmentScore: 0,
+        t1DirectionRiskAdjustment: 0,
+        decisionScore: item.rankScore + 8 - index,
+        forwardAlphaScore: 50,
+        forwardAlphaAdjustment: 0,
+        portfolioPriority: item.rankScore + 8 - index,
+        selectedSlot: index === 0 ? 'main' : index === 1 ? 'secondary' : index === 2 ? 'watch' : null,
+        isSelected: index < portfolioSource.length,
+      })),
       excludedCandidates: screening.results.slice(3).map((item: MomentumScreenerResult) => ({
         rank: item.rank,
         tsCode: item.tsCode,
@@ -789,6 +836,8 @@ describe('MomentumScreenerPage', () => {
     const dialog = await screen.findByRole('dialog');
     expect(within(dialog).getByText('Alpha Leader · 600001.SH')).toBeInTheDocument();
     expect(within(dialog).getByText('Standard 官方结果')).toBeInTheDocument();
+    expect(within(dialog).getByText('资金题材归因')).toBeInTheDocument();
+    expect(within(dialog).getByText('电池')).toBeInTheDocument();
     expect(within(dialog).getByText('Strength Confirmed')).toBeInTheDocument();
 
     fireEvent.click(within(dialog).getByRole('button', { name: '关闭抽屉' }));
@@ -952,7 +1001,10 @@ describe('MomentumScreenerPage', () => {
     expect(within(panel).getByText('进攻许可与主线可信度')).toBeInTheDocument();
     expect(within(panel).getByText('20日进攻许可')).toBeInTheDocument();
     expect(within(panel).getByText('60日主线可信度')).toBeInTheDocument();
-    expect(within(panel).getByText('V1.3 题材强弱诊断')).toBeInTheDocument();
+    expect(screen.getByText('资金主攻题材')).toBeInTheDocument();
+    expect(screen.getByText('资金题材')).toBeInTheDocument();
+    expect(screen.getAllByText('影子分 78.5').length).toBeGreaterThan(0);
+    expect(within(panel).getByText('资金题材雷达')).toBeInTheDocument();
     expect(within(panel).getByText('电池')).toBeInTheDocument();
     expect(within(panel).getByText('板块第 1')).toBeInTheDocument();
     expect(within(panel).getByText('题材强')).toBeInTheDocument();

@@ -9,6 +9,7 @@ import { ApiErrorAlert, Badge, Button, Card, Drawer, EmptyState, Input, Select }
 import type {
   MomentumActionLevel,
   MomentumBuyPointStatus,
+  MomentumDecisionCandidateDiagnostic,
   MomentumDecisionExcludedCandidate,
   MomentumDecisionPortfolioSlot,
   MomentumDecisionTheme,
@@ -396,6 +397,13 @@ function formatCapitalAmount(value?: number | null): string {
     return `${prefix}${(abs / 10_000).toFixed(1)}万`;
   }
   return `${prefix}${abs.toFixed(0)}`;
+}
+
+function formatOptionalScore(value?: number | null): string {
+  if (value == null || Number.isNaN(value)) {
+    return '--';
+  }
+  return value.toFixed(1);
 }
 
 function sortResults(results: MomentumScreenerResult[], sortBy: SortKey): MomentumScreenerResult[] {
@@ -1053,7 +1061,7 @@ const V13MainlineInsightPanel: React.FC<{ decision: MomentumSecondaryDecision }>
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <Flame className="h-4 w-4 text-cyan" />
-            <p className="text-sm font-semibold text-foreground">V1.3 题材强弱诊断</p>
+            <p className="text-sm font-semibold text-foreground">资金题材雷达</p>
             {dataStatus ? (
               <Badge variant={v13DataStatusBadgeVariant(dataStatus.status)}>
                 {dataStatus.status === 'ok' ? '数据完整' : dataStatus.status}
@@ -1147,7 +1155,7 @@ const V13MainlineInsightPanel: React.FC<{ decision: MomentumSecondaryDecision }>
         </div>
       ) : (
         <div className="mt-4 rounded-2xl border border-border/40 bg-card/40 p-4 text-sm leading-6 text-secondary-text">
-          当前还没有形成可展示的 V1.3 题材强弱诊断，系统继续使用旧主线规则输出二次决策。
+          当前还没有形成可展示的资金题材雷达，系统继续使用旧主线规则输出二次决策。
         </div>
       )}
     </div>
@@ -1982,6 +1990,23 @@ const MomentumScreenerPage: React.FC = () => {
     () => (response ? sortResults(response.results, sortBy) : []),
     [response, sortBy],
   );
+  const candidateDiagnosticByCode = useMemo(() => {
+    const diagnostics = new Map<string, MomentumDecisionCandidateDiagnostic>();
+    for (const item of decision?.candidateDiagnostics ?? []) {
+      diagnostics.set(item.tsCode, item);
+    }
+    return diagnostics;
+  }, [decision?.candidateDiagnostics]);
+  const topCapitalTheme = useMemo(() => {
+    const item = decision?.mainlineRadar?.[0];
+    if (!item) {
+      return null;
+    }
+    return {
+      item,
+      display: formatMainlineThemeDisplay(item),
+    };
+  }, [decision?.mainlineRadar]);
   const aggressiveHighlights = useMemo(() => {
     if (!aggressiveResponse) {
       return [];
@@ -2003,6 +2028,10 @@ const MomentumScreenerPage: React.FC = () => {
   }, [aggressiveResponse, decision?.portfolio]);
   const selectedResultTsCode = selectedResult?.item.tsCode;
   const selectedResultSource = selectedResult?.source;
+  const selectedResultDiagnostic =
+    selectedResultSource === 'standard' && selectedResultTsCode
+      ? candidateDiagnosticByCode.get(selectedResultTsCode) ?? null
+      : null;
 
   useEffect(() => {
     if (!selectedResultSource) {
@@ -2301,7 +2330,7 @@ const MomentumScreenerPage: React.FC = () => {
         </Card>
 
         <div className="flex min-h-0 flex-col gap-4">
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
             <SummaryCard
               icon={Radar}
               label="候选池数量"
@@ -2325,6 +2354,18 @@ const MomentumScreenerPage: React.FC = () => {
               label="最高排序分"
               value={sortedResults[0] ? sortedResults[0].rankScore.toFixed(1) : '--'}
               subtext={sortedResults[0] ? `${sortedResults[0].name} 排名第 1` : '等待筛选结果'}
+            />
+            <SummaryCard
+              icon={Flame}
+              label="资金主攻题材"
+              value={topCapitalTheme ? topCapitalTheme.display.name : '--'}
+              subtext={
+                topCapitalTheme
+                  ? `主力净额 ${formatCapitalAmount(topCapitalTheme.item.netAmount)} · ${
+                      topCapitalTheme.item.boardRank != null ? `板块第 ${topCapitalTheme.item.boardRank}` : '板块排名待确认'
+                    }`
+                  : '等待 V1.3 资金题材雷达'
+              }
             />
           </div>
 
@@ -2425,75 +2466,95 @@ const MomentumScreenerPage: React.FC = () => {
                       <th className="px-3 py-3">弹性分</th>
                       <th className="px-3 py-3">风险分</th>
                       <th className="px-3 py-3">可买分</th>
-                      <th className="px-3 py-3">板块</th>
+                      <th className="px-3 py-3">资金题材</th>
                       <th className="px-3 py-3">地位</th>
                       <th className="px-3 py-3">操作</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {sortedResults.map((item) => (
-                      <tr
-                        key={item.tsCode}
-                        data-testid={`momentum-screener-row-${item.tsCode}`}
-                        className="cursor-pointer border-b border-border/40 transition-colors hover:bg-hover/40"
-                        onClick={() => setSelectedResult({ source: 'standard', item })}
-                      >
-                        <td className="px-3 py-3 font-mono text-foreground">#{item.rank}</td>
-                        <td className="px-3 py-3">
-                          <div>
-                            <p className="font-medium text-foreground">{item.name}</p>
-                            <p className="mt-1 text-xs text-secondary-text">{item.tsCode} · {item.marketSegmentLabel}</p>
-                          </div>
-                        </td>
-                        <td className="px-3 py-3 font-medium text-danger">+{item.pctChg.toFixed(2)}%</td>
-                        <td className={`px-3 py-3 font-semibold ${scoreTone(item.rankScore)}`}>{item.rankScore.toFixed(1)}</td>
-                        <td className="px-3 py-3 text-foreground">{item.continuationScore.toFixed(1)}</td>
-                        <td className="px-3 py-3 text-foreground">{item.extensionScore.toFixed(1)}</td>
-                        <td className="px-3 py-3 text-warning">{item.riskScore.toFixed(1)}</td>
-                        <td className="px-3 py-3 text-cyan">{item.buyabilityScore != null ? item.buyabilityScore.toFixed(1) : '--'}</td>
-                        <td className="px-3 py-3 text-secondary-text">{item.themes[0] ?? '--'}</td>
-                        <td className="px-3 py-3">
-                          <Badge variant={leaderBadgeVariant(item.leaderLevel)}>{translateLeaderLevel(item.leaderLevel)}</Badge>
-                        </td>
-                        <td className="px-3 py-3">
-                          <div className="flex gap-2">
-                            <Button
-                              data-testid={`momentum-screener-ai-${item.tsCode}`}
-                              variant="ghost"
-                              size="sm"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                void handleOpenCandidateAiReview(item, 'standard');
-                              }}
-                            >
-                              AI 点评
-                            </Button>
-                            <Button
-                              data-testid={`momentum-screener-copy-${item.tsCode}`}
-                              variant="ghost"
-                              size="sm"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                void handleCopySingleResult(item);
-                              }}
-                            >
-                              复制明细
-                            </Button>
-                            <Button
-                              data-testid={`momentum-screener-export-${item.tsCode}`}
-                              variant="ghost"
-                              size="sm"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                handleExportSingleMarkdown(item);
-                              }}
-                            >
-                              导出 Markdown
-                            </Button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
+                    {sortedResults.map((item) => {
+                      const diagnostic = candidateDiagnosticByCode.get(item.tsCode);
+                      const capitalTheme = diagnostic?.theme || item.themes[0] || '--';
+                      return (
+                        <tr
+                          key={item.tsCode}
+                          data-testid={`momentum-screener-row-${item.tsCode}`}
+                          className="cursor-pointer border-b border-border/40 transition-colors hover:bg-hover/40"
+                          onClick={() => setSelectedResult({ source: 'standard', item })}
+                        >
+                          <td className="px-3 py-3 font-mono text-foreground">#{item.rank}</td>
+                          <td className="px-3 py-3">
+                            <div>
+                              <p className="font-medium text-foreground">{item.name}</p>
+                              <p className="mt-1 text-xs text-secondary-text">{item.tsCode} · {item.marketSegmentLabel}</p>
+                            </div>
+                          </td>
+                          <td className="px-3 py-3 font-medium text-danger">+{item.pctChg.toFixed(2)}%</td>
+                          <td className={`px-3 py-3 font-semibold ${scoreTone(item.rankScore)}`}>{item.rankScore.toFixed(1)}</td>
+                          <td className="px-3 py-3 text-foreground">{item.continuationScore.toFixed(1)}</td>
+                          <td className="px-3 py-3 text-foreground">{item.extensionScore.toFixed(1)}</td>
+                          <td className="px-3 py-3 text-warning">{item.riskScore.toFixed(1)}</td>
+                          <td className="px-3 py-3 text-cyan">{item.buyabilityScore != null ? item.buyabilityScore.toFixed(1) : '--'}</td>
+                          <td className="px-3 py-3">
+                            <div className="min-w-[140px]">
+                              <p className="font-medium text-foreground">{capitalTheme}</p>
+                              {diagnostic ? (
+                                <>
+                                  <p className="mt-1 text-xs text-cyan">
+                                    影子分 {formatOptionalScore(diagnostic.v13ShadowScore)}
+                                  </p>
+                                  <p className="mt-1 text-xs text-secondary-text">
+                                    资金 {formatOptionalScore(diagnostic.v13FundSupportScore)} · 涨停 {formatOptionalScore(diagnostic.v13LimitStructureScore)}
+                                  </p>
+                                </>
+                              ) : (
+                                <p className="mt-1 text-xs text-secondary-text">原始分类</p>
+                              )}
+                            </div>
+                          </td>
+                          <td className="px-3 py-3">
+                            <Badge variant={leaderBadgeVariant(item.leaderLevel)}>{translateLeaderLevel(item.leaderLevel)}</Badge>
+                          </td>
+                          <td className="px-3 py-3">
+                            <div className="flex gap-2">
+                              <Button
+                                data-testid={`momentum-screener-ai-${item.tsCode}`}
+                                variant="ghost"
+                                size="sm"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void handleOpenCandidateAiReview(item, 'standard');
+                                }}
+                              >
+                                AI 点评
+                              </Button>
+                              <Button
+                                data-testid={`momentum-screener-copy-${item.tsCode}`}
+                                variant="ghost"
+                                size="sm"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void handleCopySingleResult(item);
+                                }}
+                              >
+                                复制明细
+                              </Button>
+                              <Button
+                                data-testid={`momentum-screener-export-${item.tsCode}`}
+                                variant="ghost"
+                                size="sm"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  handleExportSingleMarkdown(item);
+                                }}
+                              >
+                                导出 Markdown
+                              </Button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -2552,6 +2613,38 @@ const MomentumScreenerPage: React.FC = () => {
                   value={formatEntryRange(selectedResult.item) || '--'}
                 />
               </div>
+            ) : null}
+
+            {selectedResultDiagnostic ? (
+              <Card className="rounded-2xl border-cyan/30 bg-cyan/5">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-foreground">资金题材归因</p>
+                    <p className="mt-2 text-sm leading-6 text-secondary-text">
+                      归入 <span className="font-medium text-foreground">{selectedResultDiagnostic.theme}</span>
+                      ，用于解释这只票跟随哪条真实强势题材，不直接改写官方排序。
+                    </p>
+                    {selectedResultDiagnostic.v13ShadowSummary ? (
+                      <p className="mt-2 text-xs leading-5 text-secondary-text">{selectedResultDiagnostic.v13ShadowSummary}</p>
+                    ) : null}
+                  </div>
+                  <Badge variant="info">影子分 {formatOptionalScore(selectedResultDiagnostic.v13ShadowScore)}</Badge>
+                </div>
+                <div className="mt-4 grid gap-2 sm:grid-cols-2 md:grid-cols-5">
+                  {[
+                    ['题材强弱', selectedResultDiagnostic.v13ThemeStrengthScore],
+                    ['资金支撑', selectedResultDiagnostic.v13FundSupportScore],
+                    ['涨停结构', selectedResultDiagnostic.v13LimitStructureScore],
+                    ['买点可行', selectedResultDiagnostic.v13BuyabilityScore],
+                    ['筹码风险', selectedResultDiagnostic.v13ChipRiskScore],
+                  ].map(([label, value]) => (
+                    <div key={label} className="rounded-xl border border-border/40 bg-card/55 px-3 py-2">
+                      <p className="text-xs text-secondary-text">{label}</p>
+                      <p className="mt-1 text-sm font-semibold text-foreground">{formatOptionalScore(value as number | null | undefined)}</p>
+                    </div>
+                  ))}
+                </div>
+              </Card>
             ) : null}
 
             <Card className="rounded-2xl border-border/60 bg-card/45">
