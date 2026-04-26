@@ -134,16 +134,24 @@ class MomentumBacktestRepository:
                 select(MomentumBacktestRun).where(MomentumBacktestRun.status == "running")
             ).scalars().all()
             count = 0
+            now = datetime.now()
             for row in rows:
-                row.status = "queued"
-                row.current_stage_key = "queued"
-                row.current_stage_label = "等待后台调度"
+                if bool(getattr(row, "cancel_requested", False)):
+                    row.status = "cancelled"
+                    row.current_stage_key = "cancelled"
+                    row.current_stage_label = "任务已取消"
+                    row.error_message = "任务在服务重启前已请求取消，已停止继续回放"
+                    row.finished_at = now
+                else:
+                    row.status = "queued"
+                    row.current_stage_key = "queued"
+                    row.current_stage_label = "等待后台调度"
+                    row.finished_at = None
                 row.cancel_requested = False
                 if not getattr(row, "strategy_health_mode", None):
                     row.strategy_health_mode = "cached_only"
                 row.started_at = None
-                row.finished_at = None
-                row.updated_at = datetime.now()
+                row.updated_at = now
                 count += 1
             if count:
                 session.commit()

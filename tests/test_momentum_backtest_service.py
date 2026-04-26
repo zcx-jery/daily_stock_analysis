@@ -1017,6 +1017,45 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
         recovered_service.close()
         self.assertIsNotNone(recovered_service)
 
+    def test_service_init_cancels_stale_running_runs_with_cancel_request(self) -> None:
+        repository = MomentumBacktestRepository(self.db_manager)
+        stale_run = MomentumBacktestRun(
+            run_id="momentum_bt_stale_cancel_requested",
+            status="running",
+            profile="standard",
+            engine_version="v1",
+            strategy_health_mode="cached_only",
+            entry_baseline_version="v1_4_3_0",
+            market_scope_version="v1_a_share_main_chinext_star",
+            top_n=30,
+            start_trade_date=pd.Timestamp("2026-04-08").date(),
+            end_trade_date=pd.Timestamp("2026-04-10").date(),
+            total_trade_dates=3,
+            processed_trade_dates=0,
+            failed_trade_dates=0,
+            cancel_requested=True,
+        )
+        repository.create_run(stale_run)
+
+        with patch("src.services.momentum_backtest_service.threading.Thread.start", lambda *_args, **_kwargs: None):
+            recovered_service = MomentumBacktestService(
+                screener_service=self.service.screener_service,
+                decision_service=self.service.decision_service,
+                repository=repository,
+            )
+
+        recovered = repository.get_run("momentum_bt_stale_cancel_requested")
+        self.assertIsNotNone(recovered)
+        self.assertEqual(recovered.status, "cancelled")
+        self.assertEqual(recovered.current_stage_key, "cancelled")
+        self.assertEqual(recovered.current_stage_label, "任务已取消")
+        self.assertFalse(recovered.cancel_requested)
+        self.assertIsNone(recovered.started_at)
+        self.assertIsNotNone(recovered.finished_at)
+        self.assertEqual(recovered.error_message, "任务在服务重启前已请求取消，已停止继续回放")
+        recovered_service.close()
+        self.assertIsNotNone(recovered_service)
+
     def test_execute_run_resumes_from_attempted_trade_date_count(self) -> None:
         repository = MomentumBacktestRepository(self.db_manager)
         resumable_run = MomentumBacktestRun(
