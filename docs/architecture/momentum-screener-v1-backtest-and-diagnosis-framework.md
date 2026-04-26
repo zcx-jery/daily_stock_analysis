@@ -6,8 +6,9 @@
 - 所属系统：`daily_stock_analysis`
 - 文档类型：产品验证框架 / 回测框架 / 问题诊断框架
 - 当前状态：`draft v1.0`
-- 最后更新：`2026-04-25`
+- 最后更新：`2026-04-26`
 - 关联文档：
+  - [强势筛选 V1 回测验收标准](./momentum-screener-backtest-acceptance-criteria.md)
   - [强势筛选 PRD](./momentum-screener-prd.md)
   - [强势筛选 V1 产品原则 + 总闸门规则](./momentum-screener-v1-product-principles-and-gate-rules.md)
   - [强势筛选二次决策 SPEC](./momentum-screener-secondary-decision-spec.md)
@@ -386,15 +387,15 @@ V1 可以开始做“自动发现问题”，但 **不能直接自动改规则�
 
 建议的闭环是：
 
-1. 自动记账  
+1. 自动记账
    - 每天冻结候选池、排序、二次决策、买点、总闸门和真实结果
-2. 自动诊断  
+2. 自动诊断
    - 按候选池 / 排序 / 执行 / 总闸门 / 市场环境五层归因
-3. 自动生成 challenger  
+3. 自动生成 challenger
    - 只提出候选改法，不直接替换生产规则
-4. 影子回测 / 影子运行  
+4. 影子回测 / 影子运行
    - 用同一批历史样本和未来观测窗口验证 challenger
-5. Champion / Challenger 决策  
+5. Champion / Challenger 决策
    - 连续通过后，再考虑升级生产版本
 
 一句话：

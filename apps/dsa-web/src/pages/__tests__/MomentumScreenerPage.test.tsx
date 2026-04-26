@@ -391,6 +391,42 @@ function buildDecisionResponse(screening: MomentumScreenerResponse): MomentumScr
         summary: '最近 60 日主线识别整体仍稳定。',
       },
       riskBanner: null,
+      mainlineRadar: [
+        {
+          themeId: '886089.TI',
+          themeName: '886089.TI',
+          score: 82.5,
+          level: 'strong',
+          levelLabel: '主线强',
+          candidateCount: 5,
+          top10Count: 2,
+          limitUpCount: 3,
+          brokenLimitCount: 0,
+          hotRank: 5,
+          sourceThemeNames: ['电解液', '隔膜', '锂矿'],
+          summary: '886089.TI 聚集 5 只候选，Top10 有 2 只，主线强度为主线强。',
+          evidence: [
+            {
+              key: 'candidate_density',
+              label: '候选池密度',
+              summary: '候选池密度贡献 30.0。',
+            },
+          ],
+        },
+      ],
+      shortTermSentiment: {
+        level: 'tradable',
+        label: '可做',
+        score: 70.6,
+        summary: '短线情绪为可做，主要拖累来自炸板风险、昨日强势反馈。',
+      },
+      v13DataStatus: {
+        enabled: true,
+        status: 'ok',
+        reason: 'V1.3 主线增强数据已接入二次决策。',
+        mainlineCount: 1,
+        shortTermSentimentLevel: 'tradable',
+      },
       themes: [
         {
           name: topThemeName,
@@ -910,6 +946,13 @@ describe('MomentumScreenerPage', () => {
     expect(within(panel).getByText('进攻许可与主线可信度')).toBeInTheDocument();
     expect(within(panel).getByText('20日进攻许可')).toBeInTheDocument();
     expect(within(panel).getByText('60日主线可信度')).toBeInTheDocument();
+    expect(within(panel).getByText('V1.3 题材强弱诊断')).toBeInTheDocument();
+    expect(within(panel).getByText('同花顺概念 886089')).toBeInTheDocument();
+    expect(within(panel).getByText('概念代码 886089.TI')).toBeInTheDocument();
+    expect(within(panel).getByText('题材强')).toBeInTheDocument();
+    expect(within(panel).getByText('强弱分 82.5')).toBeInTheDocument();
+    expect(within(panel).getByText('候选股 5 只')).toBeInTheDocument();
+    expect(within(panel).getByText('覆盖子题材：电解液、隔膜、锂矿')).toBeInTheDocument();
     expect(within(panel).getByText('默认 1-3 票组合')).toBeInTheDocument();
     expect(within(panel).getByText('明日行动清单')).toBeInTheDocument();
     expect(within(panel).getByText('开盘后 60 分钟内')).toBeInTheDocument();

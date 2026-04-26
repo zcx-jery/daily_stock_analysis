@@ -134,6 +134,32 @@ class TestTushareFetcherV13Adapters(unittest.TestCase):
         self.assertEqual(payload["rows"][0]["con_code"], "300750.SZ")
         self.assertEqual(payload["rows"][0]["in_date"], "2020-01-01")
 
+    def test_get_ths_index_translates_concept_code(self) -> None:
+        fetcher = self._make_fetcher()
+        fetcher._api.ths_index.return_value = pd.DataFrame(
+            {
+                "ts_code": ["886089.TI"],
+                "name": ["回购增持再贷款概念"],
+                "count": [477],
+                "exchange": ["A"],
+                "list_date": ["20241021"],
+                "type": ["N"],
+            }
+        )
+
+        with patch.object(fetcher, "_check_rate_limit"), patch.object(fetcher, "_get_china_now", self._fixed_now):
+            payload = fetcher.get_ths_index(ts_code="886089.TI")
+
+        fetcher._api.ths_index.assert_called_once_with(
+            fields="ts_code,name,count,exchange,list_date,type",
+            ts_code="886089.TI",
+        )
+        row = payload["rows"][0]
+        self.assertEqual(row["theme_code"], "886089.TI")
+        self.assertEqual(row["theme_name"], "回购增持再贷款概念")
+        self.assertEqual(row["member_count"], 477)
+        self.assertEqual(row["list_date"], "2024-10-21")
+
     def test_get_ths_hot_parses_concept_list(self) -> None:
         fetcher = self._make_fetcher()
         fetcher._api.ths_hot.return_value = pd.DataFrame(

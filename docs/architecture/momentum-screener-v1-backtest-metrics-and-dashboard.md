@@ -6,8 +6,9 @@
 - 所属系统：`daily_stock_analysis`
 - 文档类型：数据口径文档 / 指标定义文档 / 结果面板设计
 - 当前状态：`draft v1.0`
-- 最后更新：`2026-04-25`
+- 最后更新：`2026-04-26`
 - 关联文档：
+  - [强势筛选 V1 回测验收标准](./momentum-screener-backtest-acceptance-criteria.md)
   - [强势筛选 V1 回测与问题诊断框架](./momentum-screener-v1-backtest-and-diagnosis-framework.md)
   - [强势筛选 V1 产品原则 + 总闸门规则](./momentum-screener-v1-product-principles-and-gate-rules.md)
   - [强势筛选二次决策 SPEC](./momentum-screener-secondary-decision-spec.md)
@@ -499,10 +500,15 @@ V1 结果页必须遵守 4 条显示原则：
 ### 11.1 `summary`
 
 - 区间级汇总指标
+- 必须同时给出 `positive_t2_rate` / `settlement_pass_rate` 以及拆分项：
+  - `t1_direction_pass_rate`
+  - `t2_continuation_pass_rate`
+- 候选池 Top10 与官方 Top3 都要输出上述拆分，避免只看到最终合格率而无法判断瓶颈在 T+1 方向还是 T+2 延续。
 
 ### 11.2 `benchmark_comparison`
 
 - 与 Top10 / Top3 / 龙头 / 空仓等基准的对比
+- 基准项同样输出 `settlement_pass_rate_pct`、`t1_direction_pass_rate_pct`、`t2_continuation_pass_rate_pct`。
 
 ### 11.3 `layer_diagnostics`
 

@@ -599,25 +599,30 @@ theme_score =
 
 ```text
 decision_score =
+  rule_base_score
+  + explain_adjustment_score
+  + t1_direction_risk_adjustment
+
+rule_base_score =
   rank_score * 0.55
   + continuation_score * 0.20
-  + (buyability_score 或 extension_score) * 0.15
-  + role_priority
-  + buy_point_priority
+  + (buyability_score 或 extension_signal_score) * 0.15
   - risk_score * 0.10
 ```
 
 其中：
 
-1. `role_priority`
-   - 龙头核心：`12`
-   - 前排换手：`8`
-   - 观察备选（中位）：`3`
+1. `explain_adjustment_score` 是轻量解释修正，不再作为硬排名驱动。
+2. `role_tiebreaker`
+   - 龙头核心：`3`
+   - 前排换手：`4`
+   - 观察备选（中位）：`2`
    - 观察备选（后排）：`0`
-2. `buy_point_priority`
-   - 买点清晰：`12`
-   - 等待触发：`5`
-   - 买点不清晰：`0`
+3. `buy_point_tiebreaker`
+   - 买点清晰：`4`
+   - 等待触发：`3`
+   - 买点不清晰：`-4`
+4. `t1_direction_risk_adjustment` 是 T 日可见的方向风险降权，范围收口在 `-12 ~ 0`。除风险标签外，它还会对“高延伸 + 高延续 + 高排序”的过热共振做饱和惩罚，避免组合只追 T 日最强而忽略 T+1 开收盘方向。
 
 ### 7.7 主仓 / 次仓 / 观察仓是怎么选出来的
 
@@ -625,17 +630,23 @@ decision_score =
 
 #### 主仓
 
-优先从 `买点清晰` 的票里选 `portfolio_priority` 最高的。
+优先从完整排序集里选 `main_slot_priority` 最高的票。`买点清晰` 仍然是重要加分项，但如果某只票的 T 日结构已经暴露出明显的 T+1 方向风险，它会先被方向风险修正分降权。
 
 `portfolio_priority` 当前公式：
 
 ```text
+decision_score =
+  rule_base_score
+  + explain_adjustment_score
+  + t1_direction_risk_adjustment
+
 portfolio_priority =
   decision_score
-  + theme_score * 0.18
-  + role_priority
-  + buy_point_priority
-  - risk_score * 0.08
+  + (forward_alpha_score - 50) * 0.55
+  + theme_score * 0.08
+  - risk_score * 0.02
+  + role_tiebreaker
+  + planned_buy_point_adjustment
 ```
 
 补充口径：
@@ -643,6 +654,7 @@ portfolio_priority =
 1. 如果当前主仓还是 `waiting`，而同主线里已经有 `leader + clear` 的票进入默认组合，系统会做一次“主仓纠偏”。
 2. 这次纠偏不是无脑把龙头抬上去，而是只在当前主仓没有明显更强的前瞻优势时，才把主仓切回更清晰的主线核心。
 3. 如果当前主仓本身虽然不是 `clear`，但 `forward_alpha_score` 明显更高，系统仍允许它继续留在主仓。
+4. `t1_direction_risk_adjustment` 只使用 T 日已知信息，如 `upper_shadow`、`late_session_weakness`、`blowoff_volume`、`price_flow_divergence`、`high_acceleration`、`risk_score`、涨幅、排序分、延续分和弹性分，不读取 T+1/T+2 未来行情。
 
 #### 次仓
 
@@ -1046,6 +1058,7 @@ flowchart LR
 3. 它的角色优先级
 4. 它的买点优先级
 5. 它的风险分
+6. 它的 `t1_direction_risk_adjustment`
 
 如果它最终的 `portfolio_priority` 最高，它就会被选成 `主仓`。
 

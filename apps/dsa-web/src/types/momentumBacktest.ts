@@ -26,11 +26,17 @@ export interface MomentumBacktestSummary {
   avgBuyReadyCount?: number | null;
   candidateTop10BuyTriggerRate?: number | null;
   candidateTop10PositiveT2Rate?: number | null;
+  candidateTop10SettlementPassRate?: number | null;
+  candidateTop10T1DirectionPassRate?: number | null;
+  candidateTop10T2ContinuationPassRate?: number | null;
   candidateTop10AvgT2ProfitWindowPct?: number | null;
   candidateTop10AvgT2MaxDrawdownPct?: number | null;
   decisionTop3BuyTriggerRate?: number | null;
   decisionTop3PositiveT1Rate?: number | null;
   decisionTop3PositiveT2Rate?: number | null;
+  decisionTop3SettlementPassRate?: number | null;
+  decisionTop3T1DirectionPassRate?: number | null;
+  decisionTop3T2ContinuationPassRate?: number | null;
   decisionTop3AvgT1ProfitWindowPct?: number | null;
   decisionTop3AvgT2ProfitWindowPct?: number | null;
   decisionTop3AvgT2MaxDrawdownPct?: number | null;
@@ -48,6 +54,8 @@ export interface MomentumBacktestBenchmarkItem {
   triggerRatePct?: number | null;
   positiveT2RatePct?: number | null;
   settlementPassRatePct?: number | null;
+  t1DirectionPassRatePct?: number | null;
+  t2ContinuationPassRatePct?: number | null;
   avgT2ProfitWindowPct?: number | null;
   avgT2MaxDrawdownPct?: number | null;
   alphaVsOfficialTop3Pct?: number | null;

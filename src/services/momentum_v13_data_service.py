@@ -18,6 +18,68 @@ def _safe_list(value: Any) -> List[Any]:
     return value if isinstance(value, list) else []
 
 
+CAPITAL_THEME_RULES = [
+    {
+        "theme_id": "capital_theme:battery",
+        "theme_name": "电池",
+        "keywords": [
+            "锂电",
+            "锂电池",
+            "电池",
+            "固态电池",
+            "钠电池",
+            "动力电池",
+            "储能",
+            "电解液",
+            "隔膜",
+            "正极",
+            "负极",
+            "锂矿",
+            "锂盐",
+            "碳酸锂",
+            "盐湖提锂",
+            "六氟磷酸锂",
+            "氟化工",
+        ],
+        "stock_aliases": [
+            "多氟多",
+            "天华新能",
+            "恩捷股份",
+            "天赐材料",
+            "盛新锂能",
+            "天齐锂业",
+            "宁德时代",
+            "亿纬锂能",
+            "赣锋锂业",
+        ],
+    },
+    {
+        "theme_id": "capital_theme:ai_compute",
+        "theme_name": "AI 算力",
+        "keywords": ["算力", "人工智能", "AI", "服务器", "CPO", "液冷", "数据中心", "光模块", "GPU"],
+        "stock_aliases": [],
+    },
+    {
+        "theme_id": "capital_theme:robotics",
+        "theme_name": "机器人",
+        "keywords": ["机器人", "人形机器人", "减速器", "伺服", "执行器", "传感器"],
+        "stock_aliases": [],
+    },
+    {
+        "theme_id": "capital_theme:semiconductor",
+        "theme_name": "半导体",
+        "keywords": ["半导体", "芯片", "存储", "光刻", "封测", "晶圆", "先进封装"],
+        "stock_aliases": [],
+    },
+    {
+        "theme_id": "capital_theme:low_altitude",
+        "theme_name": "低空经济",
+        "keywords": ["低空", "飞行汽车", "eVTOL", "无人机", "通航"],
+        "stock_aliases": [],
+    },
+]
+
+
 class MomentumV13DataService:
     """Build reusable V1.3 data contexts for secondary decision and backtest."""
 
@@ -28,6 +90,7 @@ class MomentumV13DataService:
         "stk_limit": 7 * 24 * 60 * 60,
         "limit_list_d": 7 * 24 * 60 * 60,
         "ths_member": 7 * 24 * 60 * 60,
+        "ths_index": 7 * 24 * 60 * 60,
         "ths_hot": 30 * 60,
         "realtime_quote": 60,
         "context": 30 * 60,
@@ -64,6 +127,7 @@ class MomentumV13DataService:
         limit_events = self._load_limit_events(trade_date)
         ths_hot = self._load_ths_hot(trade_date)
         ths_members = self._load_ths_members(normalized_codes)
+        theme_name_map = self._load_ths_index_names(ths_members)
 
         payloads = {
             "stk_limit": limit_prices,
@@ -71,18 +135,40 @@ class MomentumV13DataService:
             "ths_member": ths_members,
             "ths_hot": ths_hot,
         }
+        source_status = self._build_source_status(payloads)
+        ths_index_payload = theme_name_map.get("_payload") or {}
+        if ths_index_payload:
+            source_status["ths_index"] = str(ths_index_payload.get("status") or "unknown")
+        hot_items = _safe_list(ths_hot.get("rows"))
+        raw_stock_theme_map = self._build_stock_theme_map(ths_members, normalized_codes)
+        stock_capital_theme_map = self._build_stock_capital_theme_map(
+            raw_stock_theme_map,
+            hot_items=hot_items,
+            theme_name_map={
+                key: value
+                for key, value in theme_name_map.items()
+                if key != "_payload"
+            },
+        )
         context = {
             "trade_date": self._display_trade_date(trade_date),
             "data_as_of": self._now_iso(),
             "is_degraded": self._is_any_degraded(payloads.values()),
             "degraded_reasons": self._collect_degraded_reasons(payloads),
-            "source_status": self._build_source_status(payloads),
-            "stock_theme_map": self._build_stock_theme_map(ths_members, normalized_codes),
+            "source_status": source_status,
+            "stock_theme_map": self._merge_stock_theme_maps(raw_stock_theme_map, stock_capital_theme_map),
+            "stock_raw_theme_map": raw_stock_theme_map,
+            "stock_capital_theme_map": stock_capital_theme_map,
             "theme_members": self._build_theme_members(ths_members),
+            "theme_name_map": {
+                key: value
+                for key, value in theme_name_map.items()
+                if key != "_payload"
+            },
             "limit_events": self._index_rows_by_ts_code(limit_events),
             "limit_prices": self._index_rows_by_ts_code(limit_prices),
-            "hot_items": _safe_list(ths_hot.get("rows")),
-            "raw_sources": payloads,
+            "hot_items": hot_items,
+            "raw_sources": {**payloads, "ths_index": ths_index_payload},
         }
         self._cache_set(context_key, context)
         return context
@@ -180,6 +266,7 @@ class MomentumV13DataService:
                     "broken_limit_count": broken_limit_count,
                     "hot_rank": hot_rank,
                     "representatives": representatives,
+                    "source_theme_names": sorted(theme_payload.get("source_theme_names") or [])[:8],
                     "evidence": [
                         {
                             "key": item["key"],
@@ -308,6 +395,51 @@ class MomentumV13DataService:
             degraded_reasons=degraded_reasons,
             extra={"source_status": source_status},
         )
+
+    def _load_ths_index_names(self, ths_members: Dict[str, Any]) -> Dict[str, Any]:
+        theme_codes = sorted(
+            {
+                str(row.get("theme_code") or row.get("ths_code") or "").strip().upper()
+                for row in _safe_list(ths_members.get("rows"))
+                if self._is_ths_theme_code(row.get("theme_code") or row.get("ths_code"))
+            }
+        )
+        result: Dict[str, Any] = {}
+        rows: List[Dict[str, Any]] = []
+        source_status: Dict[str, str] = {}
+        degraded_reasons: List[str] = []
+
+        for theme_code in theme_codes:
+            key = self._cache_key("ths_index", theme_code)
+            cached = self._cache_get(key, self._resource_ttls["ths_index"])
+            if cached is None:
+                cached = self._safe_fetch("ths_index", lambda code=theme_code: self.fetcher.get_ths_index(ts_code=code))
+                self._cache_set(key, cached)
+            source_status[theme_code] = str(cached.get("status") or "unknown")
+            payload_rows = _safe_list(cached.get("rows"))
+            rows.extend(payload_rows)
+            for row in payload_rows:
+                code = str(row.get("theme_code") or "").strip().upper()
+                name = str(row.get("theme_name") or "").strip()
+                if code and name:
+                    result[code] = name
+            if cached.get("is_degraded"):
+                degraded_reasons.extend(
+                    f"{theme_code}:{reason}" for reason in _safe_list(cached.get("degraded_reasons"))
+                )
+
+        status = "ok"
+        if degraded_reasons:
+            status = "partial" if rows else "unavailable"
+        result["_payload"] = self._payload(
+            source="tushare.ths_index",
+            trade_date=None,
+            rows=rows,
+            status=status,
+            degraded_reasons=degraded_reasons,
+            extra={"source_status": source_status},
+        )
+        return result
 
     def _load_realtime_quote(self, trade_date: str, ts_code: str) -> Dict[str, Any]:
         key = self._cache_key("realtime_quote", trade_date, ts_code)
@@ -509,6 +641,65 @@ class MomentumV13DataService:
         return result
 
     @classmethod
+    def _build_stock_capital_theme_map(
+        cls,
+        stock_theme_map: Dict[str, List[Dict[str, Any]]],
+        *,
+        hot_items: List[Dict[str, Any]],
+        theme_name_map: Dict[str, str],
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        hot_concepts_by_code: Dict[str, List[str]] = {}
+        for row in hot_items:
+            ts_code = str(row.get("ts_code") or "").strip()
+            if not ts_code:
+                continue
+            hot_concepts_by_code.setdefault(ts_code, []).extend(
+                str(concept).strip()
+                for concept in _safe_list(row.get("concepts"))
+                if str(concept).strip()
+            )
+
+        result: Dict[str, List[Dict[str, Any]]] = {}
+        for ts_code, rows in stock_theme_map.items():
+            texts: List[str] = []
+            child_theme_names: List[str] = []
+            for row in rows:
+                theme_code = str(row.get("theme_code") or row.get("ths_code") or "").strip().upper()
+                raw_name = str(row.get("theme_name") or row.get("ths_name") or "").strip()
+                mapped_name = str(theme_name_map.get(theme_code) or "").strip()
+                for text in (mapped_name, raw_name, theme_code):
+                    if text:
+                        texts.append(text)
+                display_name = mapped_name or raw_name
+                if display_name and display_name not in child_theme_names:
+                    child_theme_names.append(display_name)
+            texts.extend(hot_concepts_by_code.get(ts_code) or [])
+
+            capital_refs = cls._capital_theme_refs_from_texts(texts)
+            if not capital_refs:
+                continue
+            result[ts_code] = [
+                {
+                    "theme_code": theme_id,
+                    "theme_name": theme_name,
+                    "source": "capital_theme",
+                    "child_theme_names": child_theme_names,
+                }
+                for theme_id, theme_name in capital_refs
+            ]
+        return result
+
+    @staticmethod
+    def _merge_stock_theme_maps(
+        primary: Dict[str, List[Dict[str, Any]]],
+        secondary: Dict[str, List[Dict[str, Any]]],
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        merged = {key: list(rows) for key, rows in primary.items()}
+        for ts_code, rows in secondary.items():
+            merged.setdefault(ts_code, []).extend(rows)
+        return merged
+
+    @classmethod
     def _normalize_candidate(cls, item: Dict[str, Any]) -> Dict[str, Any]:
         normalized = dict(item)
         normalized["ts_code"] = cls._normalize_ts_code(str(item.get("ts_code") or item.get("code") or ""))
@@ -529,6 +720,7 @@ class MomentumV13DataService:
     ) -> Dict[str, Dict[str, Any]]:
         stock_theme_map = context.get("stock_theme_map") or {}
         theme_members = context.get("theme_members") or {}
+        theme_name_map = context.get("theme_name_map") or {}
         groups: Dict[str, Dict[str, Any]] = {}
         for candidate in candidates:
             ts_code = candidate.get("ts_code")
@@ -536,7 +728,12 @@ class MomentumV13DataService:
                 continue
             theme_rows = stock_theme_map.get(ts_code) or []
             theme_refs = self._candidate_theme_refs(candidate, theme_rows)
+            seen_theme_ids: set[str] = set()
             for theme_id, theme_name in theme_refs:
+                if theme_id in seen_theme_ids:
+                    continue
+                seen_theme_ids.add(theme_id)
+                theme_name = self._display_theme_name(theme_id, theme_name, theme_name_map)
                 payload = groups.setdefault(
                     theme_id,
                     {
@@ -544,29 +741,95 @@ class MomentumV13DataService:
                         "theme_name": theme_name,
                         "candidates": [],
                         "member_codes": set(theme_members.get(theme_id) or []),
+                        "source_theme_names": set(),
                     },
                 )
                 payload["candidates"].append(candidate)
                 payload["member_codes"].add(ts_code)
+                if not theme_id.startswith("capital_theme:") and theme_name:
+                    payload["source_theme_names"].add(theme_name)
+                if theme_id.startswith("capital_theme:"):
+                    for row in theme_rows:
+                        child_theme_name = str(row.get("theme_name") or row.get("ths_name") or "").strip()
+                        if child_theme_name:
+                            payload["source_theme_names"].add(child_theme_name)
+                        for child_name in _safe_list(row.get("child_theme_names")):
+                            if child_name:
+                                payload["source_theme_names"].add(str(child_name))
+                for row in theme_rows:
+                    if str(row.get("theme_code") or row.get("ths_code") or "").strip() == theme_id:
+                        for child_name in _safe_list(row.get("child_theme_names")):
+                            if child_name:
+                                payload["source_theme_names"].add(str(child_name))
         return groups
 
     @staticmethod
-    def _candidate_theme_refs(candidate: Dict[str, Any], theme_rows: List[Dict[str, Any]]) -> List[tuple[str, str]]:
+    def _is_ths_theme_code(value: Any) -> bool:
+        text = str(value or "").strip().upper()
+        return len(text) == 9 and text.endswith(".TI") and text[:6].isdigit()
+
+    @classmethod
+    def _display_theme_name(cls, theme_id: str, theme_name: str, theme_name_map: Dict[str, str]) -> str:
+        normalized_id = str(theme_id or "").strip().upper()
+        normalized_name = str(theme_name or "").strip()
+        mapped_name = str(theme_name_map.get(normalized_id) or "").strip()
+        if mapped_name:
+            return mapped_name
+        if normalized_name and not cls._is_ths_theme_code(normalized_name):
+            return normalized_name
+        return normalized_name or normalized_id or "未分类"
+
+    @classmethod
+    def _candidate_theme_refs(cls, candidate: Dict[str, Any], theme_rows: List[Dict[str, Any]]) -> List[tuple[str, str]]:
         refs: List[tuple[str, str]] = []
+        text_candidates: List[str] = []
+        candidate_name = str(candidate.get("name") or "").strip()
+        if candidate_name:
+            text_candidates.append(candidate_name)
+        for theme in candidate.get("themes") or []:
+            theme_text = str(theme).strip()
+            if theme_text:
+                text_candidates.append(theme_text)
         for row in theme_rows:
             theme_id = str(row.get("theme_code") or row.get("ths_code") or "").strip()
             if not theme_id:
                 continue
             theme_name = str(row.get("theme_name") or row.get("ths_name") or theme_id).strip()
             refs.append((theme_id, theme_name))
+            text_candidates.extend([theme_id, theme_name])
+            text_candidates.extend(str(item) for item in _safe_list(row.get("child_theme_names")) if item)
         if refs:
+            refs.extend(cls._capital_theme_refs_from_texts(text_candidates))
             return refs
-        themes = candidate.get("themes") or []
-        for theme in themes:
+        for theme in candidate.get("themes") or []:
             text = str(theme).strip()
             if text:
                 refs.append((text, text))
+        refs.extend(cls._capital_theme_refs_from_texts(text_candidates))
         return refs or [("未分类", "未分类")]
+
+    @staticmethod
+    def _capital_theme_refs_from_texts(texts: Iterable[Any]) -> List[tuple[str, str]]:
+        refs: List[tuple[str, str]] = []
+        normalized_texts = [str(text or "").strip() for text in texts if str(text or "").strip()]
+        for rule in CAPITAL_THEME_RULES:
+            keywords = [str(item) for item in rule.get("keywords", [])]
+            aliases = [str(item) for item in rule.get("stock_aliases", [])]
+            matched = False
+            for text in normalized_texts:
+                upper_text = text.upper()
+                if any(keyword and keyword in text for keyword in keywords):
+                    matched = True
+                    break
+                if any(alias and alias in text for alias in aliases):
+                    matched = True
+                    break
+                if "AI" in keywords and "AI" in upper_text:
+                    matched = True
+                    break
+            if matched:
+                refs.append((str(rule["theme_id"]), str(rule["theme_name"])))
+        return refs
 
     @staticmethod
     def _index_hot_items_by_code(hot_items: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:

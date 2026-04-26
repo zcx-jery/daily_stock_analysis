@@ -89,6 +89,18 @@
 - 把产品设计拆成开发任务
 - 供后端、前端、测试协作执行
 
+### 8. 回测验收与诊断
+
+- [强势筛选 V1 回测验收标准](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-backtest-acceptance-criteria.md)
+- [强势筛选 V1 回测与问题诊断框架](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-v1-backtest-and-diagnosis-framework.md)
+- [强势筛选 V1 回测数据口径与结果面板设计](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-v1-backtest-metrics-and-dashboard.md)
+
+用途：
+
+- 固定 60 交易日官方验收窗口
+- 固定短线延续合格率、相对基准、风险和总闸门验收标准
+- 供其他开发者按同一套口径输出回测诊断报告
+
 ## 推荐阅读顺序
 
 如果是第一次接手这条产品线，建议按以下顺序阅读：
@@ -99,7 +111,8 @@
 4. Standard 评分规则
 5. Aggressive 评分规则
 6. 字段级实现映射
-7. 开发任务拆分
+7. 回测验收标准
+8. 开发任务拆分
 
 ## 当前产品决策
 
@@ -113,6 +126,7 @@
 - `V1` 官方页面展示固定为 `Top30`
 - `V1` 普通用户不可调整入口参数，不保留研究模式
 - `V1` 官方回测只回放 `Standard` 生产链路
+- `V1` 回测验收以 60 交易日为标准窗口，主胜率统一使用 `短线延续合格率`
 - `V1` 总闸门采用 `市场环境 × 当日机会质量` 主矩阵，并由 `20日进攻许可` 做动作封顶；`60日主线可信度` 只做结构提示
 - `V1.3` 基于 6000 积分升级主线增强能力，接入题材成分、涨停炸板、涨跌停价和热榜证据，但不承诺分钟级买点
 
@@ -123,11 +137,13 @@
 - 规则变更：更新评分规则文档
 - 页面变更：更新 PRD
 - 接口字段变更：更新字段级实现映射表
+- 回测诊断口径变更：更新回测验收标准
 - 版本规划变化：更新产品方案
 - 实现拆分变化：更新开发任务拆分文档
 ## Additional Docs
 
 - [Momentum Screener V1 Backtest and Diagnosis Framework](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-v1-backtest-and-diagnosis-framework.md)
+- [Momentum Screener V1 Backtest Acceptance Criteria](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-backtest-acceptance-criteria.md)
 - [Momentum Screener V1 Backtest Metrics and Dashboard Design](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-v1-backtest-metrics-and-dashboard.md)
 - [Momentum Screener V1 Backtest Data and API Draft](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-v1-backtest-data-and-api-draft.md)
 - [Momentum Screener V1 Development Refactor Checklist](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-v1-development-refactor-checklist.md)

@@ -109,6 +109,7 @@ export interface MomentumDecisionPortfolioSlot {
   ruleBaseScore?: number | null;
   decisionScore?: number | null;
   forwardAlphaScore?: number | null;
+  t1DirectionRiskAdjustment?: number | null;
   buyPointStatus: MomentumBuyPointStatus;
   buyPointLabel: string;
   suggestedAction: MomentumSuggestedAction;
@@ -155,6 +156,7 @@ export interface MomentumDecisionCandidateDiagnostic {
   riskScore: number;
   ruleBaseScore: number;
   explainAdjustmentScore: number;
+  t1DirectionRiskAdjustment?: number | null;
   decisionScore: number;
   forwardAlphaScore: number;
   forwardAlphaAdjustment: number;
@@ -258,6 +260,7 @@ export interface MomentumMainlineRadarItem {
   limitUpCount?: number;
   brokenLimitCount?: number;
   hotRank?: number | null;
+  sourceThemeNames?: string[];
   representatives?: Record<string, unknown>[];
   evidence?: Record<string, unknown>[];
   isDegraded?: boolean;

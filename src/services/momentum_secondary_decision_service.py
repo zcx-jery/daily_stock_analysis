@@ -129,6 +129,7 @@ DIVERSIFICATION_PRIORITY_TOLERANCE = 2.0
 MAIN_SLOT_REBALANCE_PRIORITY_TOLERANCE = 2.5
 MAINLINE_CONFIRMATION_PRIORITY_TOLERANCE = 3.0
 SAME_THEME_CONFIRMATION_PRIORITY_TOLERANCE = 3.0
+V13_CONTEXT_MAX_TS_CODES = 30
 
 BUY_SIGNAL_ACTION_LEVELS = {"strong_go", "normal_go", "cautious_go"}
 ACTION_CHECKLIST_ENABLED_LEVELS = {"strong_go", "normal_go", "cautious_go"}
@@ -707,9 +708,13 @@ class MomentumSecondaryDecisionService:
             status["reason"] = "V1.3 主线增强已关闭。"
             return {}, [], None, status
 
+        sampled_candidates = sorted(
+            candidates,
+            key=lambda item: _safe_float(item.get("rank"), 999.0),
+        )[:V13_CONTEXT_MAX_TS_CODES]
         ts_codes = [
             _safe_str(candidate.get("ts_code") or candidate.get("code"))
-            for candidate in candidates
+            for candidate in sampled_candidates
             if candidate.get("ts_code") or candidate.get("code")
         ]
         if not trade_date or not ts_codes:
@@ -752,6 +757,8 @@ class MomentumSecondaryDecisionService:
                 "source_status": source_status,
                 "degraded_reasons": degraded_reasons,
                 "mainline_count": len(mainline_radar),
+                "sampled_code_count": len(ts_codes),
+                "candidate_count": len(candidates),
                 "short_term_sentiment_level": (
                     short_term_sentiment.get("level")
                     if isinstance(short_term_sentiment, dict)
@@ -969,7 +976,8 @@ class MomentumSecondaryDecisionService:
             ROLE_TIEBREAKER_PRIORITY[role_key]
             + BUY_POINT_TIEBREAKER_PRIORITY[buy_point_status]
         )
-        decision_score = rule_base_score + explain_adjustment_score
+        t1_direction_risk_adjustment = self._t1_direction_risk_adjustment(item, buy_point_status)
+        decision_score = rule_base_score + explain_adjustment_score + t1_direction_risk_adjustment
         forward_alpha_score = self._forward_alpha_score(item, role_key, buy_point_status)
 
         enriched = dict(item)
@@ -982,6 +990,7 @@ class MomentumSecondaryDecisionService:
                 "_buy_point_label": buy_point_label,
                 "_rule_base_score": round(rule_base_score, 2),
                 "_explain_adjustment_score": round(explain_adjustment_score, 2),
+                "_t1_direction_risk_adjustment": round(t1_direction_risk_adjustment, 2),
                 "_decision_score": round(decision_score, 2),
                 "_forward_alpha_score": round(forward_alpha_score, 2),
                 "_primary_reason": primary_reason,
@@ -1203,6 +1212,10 @@ class MomentumSecondaryDecisionService:
                     "rule_base_score": round(_safe_float(candidate.get("_rule_base_score")), 2),
                     "explain_adjustment_score": round(
                         _safe_float(candidate.get("_explain_adjustment_score")),
+                        2,
+                    ),
+                    "t1_direction_risk_adjustment": round(
+                        _safe_float(candidate.get("_t1_direction_risk_adjustment")),
                         2,
                     ),
                     "decision_score": round(_safe_float(candidate.get("_decision_score")), 2),
@@ -4129,6 +4142,58 @@ class MomentumSecondaryDecisionService:
         return max(70.0, 87.0 - (extension_score - 94.0) * 3.0)
 
     @staticmethod
+    def _t1_direction_risk_adjustment(item: Dict[str, Any], buy_point_status: str) -> float:
+        """T-day visible penalty for weak T+1 open-to-close direction odds."""
+
+        risk_tags = {str(tag) for tag in item.get("risk_tags", []) if tag}
+        risk_score = _safe_float(item.get("risk_score"))
+        pct_chg = _safe_float(item.get("pct_chg"))
+        rank_score = _safe_float(item.get("rank_score"))
+        continuation_score = _safe_float(item.get("continuation_score"))
+        extension_score = _safe_float(item.get("extension_score"))
+        adjustment = 0.0
+
+        tag_penalties = {
+            "late_session_weakness": 4.0,
+            "price_flow_divergence": 4.0,
+            "upper_shadow": 3.5,
+            "blowoff_volume": 3.0,
+            "high_acceleration": 2.0,
+            "top_list_distribution": 2.0,
+            "sector_fade": 2.0,
+        }
+        adjustment -= sum(penalty for tag, penalty in tag_penalties.items() if tag in risk_tags)
+
+        if risk_score >= 70:
+            adjustment -= 4.0
+        elif risk_score >= 55:
+            adjustment -= 2.0
+
+        if pct_chg >= 9.7 and (extension_score > 94 or "high_acceleration" in risk_tags):
+            adjustment -= 2.0
+        elif extension_score >= 98:
+            adjustment -= 5.0
+        elif extension_score >= 95:
+            adjustment -= 3.0
+        elif extension_score >= 92 and risk_score >= 10 and buy_point_status == "clear":
+            adjustment -= 1.0
+
+        if continuation_score >= 92 and extension_score >= 95:
+            adjustment -= 4.0
+        elif continuation_score >= 92 and extension_score >= 92:
+            adjustment -= 2.0
+        elif continuation_score >= 88 and extension_score >= 95:
+            adjustment -= 2.0
+
+        if rank_score >= 82 and extension_score >= 95:
+            adjustment -= 3.0
+
+        if buy_point_status == "unclear":
+            adjustment -= 2.0
+
+        return round(_clamp_float(adjustment, -12.0, 0.0), 2)
+
+    @staticmethod
     def _forward_alpha_score(
         item: Dict[str, Any],
         role_key: str,
@@ -4518,6 +4583,10 @@ class MomentumSecondaryDecisionService:
             "rule_base_score": round(_safe_float(candidate.get("_rule_base_score")), 1),
             "decision_score": round(_safe_float(candidate.get("_decision_score")), 1),
             "forward_alpha_score": round(_safe_float(candidate.get("_forward_alpha_score"), 50.0), 1),
+            "t1_direction_risk_adjustment": round(
+                _safe_float(candidate.get("_t1_direction_risk_adjustment")),
+                1,
+            ),
             "buy_point_status": candidate["_buy_point_status"],
             "buy_point_label": candidate["_buy_point_label"],
             "suggested_action": suggested_action,

@@ -217,7 +217,15 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
         name: str,
         t2_profit_window_pct: float,
         slot: str | None = None,
+        t1_direction_pass: bool = True,
+        t2_continuation_pass: bool = True,
+        settlement_pass: bool | None = None,
     ) -> MomentumBacktestOutcomeRecord:
+        resolved_settlement_pass = (
+            t1_direction_pass and t2_continuation_pass
+            if settlement_pass is None
+            else settlement_pass
+        )
         return MomentumBacktestOutcomeRecord(
             run_id="momentum_bt_diag",
             trade_date=pd.Timestamp("2026-04-10").date(),
@@ -226,8 +234,17 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
             ts_code=ts_code,
             name=name,
             buy_triggered=True,
+            t1_close_return_pct=1.0 if t1_direction_pass else -1.0,
             t2_profit_window_pct=t2_profit_window_pct,
             t2_close_return_pct=t2_profit_window_pct / 2,
+            outcome_payload_json=self.service._dump_json(
+                {
+                    "settlement_rule": "t1_close_gt_open_and_t2_high_gt_t1_close",
+                    "t1_direction_pass": t1_direction_pass,
+                    "t2_continuation_pass": t2_continuation_pass,
+                    "settlement_pass": resolved_settlement_pass,
+                }
+            ),
         )
 
     def test_create_run_replays_trade_dates_and_persists_summary(self) -> None:
@@ -262,6 +279,9 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
         self.assertEqual(summary["run_id"], result["run_id"])
         self.assertEqual(summary["strategy_health_mode"], "cached_only")
         self.assertIn("decision_top3_buy_trigger_rate", summary["summary"])
+        self.assertIn("decision_top3_t1_direction_pass_rate", summary["summary"])
+        self.assertIn("decision_top3_t2_continuation_pass_rate", summary["summary"])
+        self.assertIn("candidate_top10_t1_direction_pass_rate", summary["summary"])
         self.assertIn("benchmark_comparison", summary["summary"])
         self.assertIn("layer_diagnostics", summary["summary"])
         self.assertIn("gate_module_breakdown", summary["summary"])
@@ -545,6 +565,70 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
         issue = next(item for item in diagnosis["issues"] if item["issue_key"] == "portfolio_anchor_underperformed")
         self.assertFalse(issue["metrics"]["best_candidate_same_theme"])
         self.assertTrue(issue["metrics"]["best_candidate_in_selected_top3"])
+
+    def test_daily_diagnosis_flags_t1_direction_failure(self) -> None:
+        diagnosis = self.service._build_daily_diagnosis(
+            daily_row=self._build_daily_summary_fixture(),
+            candidate_rows=[],
+            decision_rows=[
+                self._build_decision_record(
+                    slot="main",
+                    ts_code="600001.SH",
+                    name="方向弱一",
+                    theme="电子",
+                    role="龙头核心",
+                ),
+                self._build_decision_record(
+                    slot="secondary",
+                    ts_code="600002.SH",
+                    name="方向弱二",
+                    theme="电子",
+                    role="前排换手",
+                ),
+                self._build_decision_record(
+                    slot="watch",
+                    ts_code="600003.SH",
+                    name="方向通过",
+                    theme="电子",
+                    role="观察备选",
+                ),
+            ],
+            candidate_outcomes=[],
+            decision_outcomes=[
+                self._build_outcome_record(
+                    view_scope="decision_top3",
+                    slot="main",
+                    ts_code="600001.SH",
+                    name="方向弱一",
+                    t2_profit_window_pct=5.0,
+                    t1_direction_pass=False,
+                    t2_continuation_pass=True,
+                ),
+                self._build_outcome_record(
+                    view_scope="decision_top3",
+                    slot="secondary",
+                    ts_code="600002.SH",
+                    name="方向弱二",
+                    t2_profit_window_pct=5.0,
+                    t1_direction_pass=False,
+                    t2_continuation_pass=True,
+                ),
+                self._build_outcome_record(
+                    view_scope="decision_top3",
+                    slot="watch",
+                    ts_code="600003.SH",
+                    name="方向通过",
+                    t2_profit_window_pct=5.0,
+                    t1_direction_pass=True,
+                    t2_continuation_pass=True,
+                ),
+            ],
+        )
+
+        issue = next(item for item in diagnosis["issues"] if item["issue_key"] == "t1_direction_failure_high")
+        self.assertEqual(issue["affected_codes"], ["600001.SH", "600002.SH"])
+        self.assertEqual(issue["metrics"]["decision_t1_direction_pass_rate_pct"], 33.33)
+        self.assertEqual(issue["metrics"]["decision_t2_continuation_pass_rate_pct"], 100.0)
 
     def test_regime_breakdown_normalizes_medium_to_general(self) -> None:
         row = self._build_daily_summary_fixture()

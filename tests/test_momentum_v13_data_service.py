@@ -57,6 +57,18 @@ class TestMomentumV13DataService(unittest.TestCase):
                 {"theme_code": "886000.TI", "con_code": con_code, "con_name": f"name-{con_code}"},
             ],
         )
+        fetcher.get_ths_index.side_effect = lambda ts_code: self._payload(
+            "tushare.ths_index",
+            [
+                {
+                    "theme_code": ts_code,
+                    "theme_name": {
+                        "885800.TI": "白酒",
+                        "886000.TI": "机器人",
+                    }.get(ts_code, ts_code),
+                }
+            ],
+        )
         fetcher.get_ths_hot.return_value = self._payload(
             "tushare.ths_hot",
             [{"ts_code": "600519.SH", "rank": 1, "concepts": ["白酒"]}],
@@ -75,14 +87,19 @@ class TestMomentumV13DataService(unittest.TestCase):
         self.assertEqual(context["source_status"]["stk_limit"], "ok")
         self.assertIn("600519.SH", context["limit_prices"])
         self.assertIn("600519.SH", context["limit_events"])
-        self.assertEqual(len(context["stock_theme_map"]["600519.SH"]), 2)
+        self.assertEqual(len(context["stock_raw_theme_map"]["600519.SH"]), 2)
+        self.assertEqual(context["stock_capital_theme_map"]["600519.SH"][0]["theme_name"], "机器人")
+        self.assertEqual(len(context["stock_theme_map"]["600519.SH"]), 3)
         self.assertEqual(context["theme_members"]["885800.TI"], ["600519.SH", "300750.SZ"])
+        self.assertEqual(context["theme_name_map"]["885800.TI"], "白酒")
+        self.assertEqual(context["source_status"]["ths_index"], "ok")
         self.assertEqual(context["hot_items"][0]["rank"], 1)
 
         fetcher.get_stock_limit_prices.assert_called_once_with("2026/04/23")
         fetcher.get_limit_list.assert_called_once_with("2026/04/23")
         fetcher.get_ths_hot.assert_called_once_with("2026/04/23")
         self.assertEqual(fetcher.get_ths_members.call_count, 2)
+        self.assertEqual(fetcher.get_ths_index.call_count, 2)
 
     def test_build_context_uses_cache_for_repeated_request(self) -> None:
         fetcher = self._make_fetcher()
@@ -96,6 +113,7 @@ class TestMomentumV13DataService(unittest.TestCase):
         fetcher.get_limit_list.assert_called_once()
         fetcher.get_ths_hot.assert_called_once()
         fetcher.get_ths_members.assert_called_once()
+        self.assertEqual(fetcher.get_ths_index.call_count, 2)
         self.assertGreaterEqual(MomentumV13DataService.get_cache_stats()["hit"], 1)
 
     def test_degraded_source_is_visible_in_context(self) -> None:
@@ -200,6 +218,84 @@ class TestMomentumV13DataService(unittest.TestCase):
         self.assertEqual(radar[0]["theme_id"], "白酒")
         self.assertEqual(radar[0]["theme_name"], "白酒")
         self.assertEqual(radar[0]["candidate_count"], 1)
+
+    def test_build_mainline_radar_translates_ths_code_with_theme_name_map(self) -> None:
+        service = MomentumV13DataService(fetcher=self._make_fetcher())
+        radar = service.build_mainline_radar(
+            candidates=[
+                {"rank": 1, "ts_code": "600519.SH", "name": "贵州茅台", "rank_score": 88},
+            ],
+            context={
+                "stock_theme_map": {
+                    "600519.SH": [{"theme_code": "886089.TI"}],
+                },
+                "theme_name_map": {
+                    "886089.TI": "回购增持再贷款概念",
+                },
+                "theme_members": {"886089.TI": ["600519.SH"]},
+                "limit_events": {},
+                "hot_items": [],
+            },
+        )
+
+        self.assertEqual(radar[0]["theme_id"], "886089.TI")
+        self.assertEqual(radar[0]["theme_name"], "回购增持再贷款概念")
+        self.assertIn("回购增持再贷款概念", radar[0]["summary"])
+        self.assertNotIn("886089.TI", radar[0]["summary"])
+
+    def test_build_mainline_radar_rolls_battery_chain_into_capital_theme(self) -> None:
+        service = MomentumV13DataService(fetcher=self._make_fetcher())
+        radar = service.build_mainline_radar(
+            candidates=[
+                {"rank": 1, "ts_code": "002407.SZ", "name": "多氟多", "rank_score": 91},
+                {"rank": 3, "ts_code": "002812.SZ", "name": "恩捷股份", "rank_score": 84},
+                {"rank": 5, "ts_code": "002466.SZ", "name": "天齐锂业", "rank_score": 82},
+            ],
+            context={
+                "stock_theme_map": {
+                    "002407.SZ": [{"theme_code": "raw_electrolyte", "theme_name": "电解液"}],
+                    "002812.SZ": [{"theme_code": "raw_separator", "theme_name": "隔膜"}],
+                    "002466.SZ": [{"theme_code": "raw_lithium", "theme_name": "锂矿"}],
+                },
+                "theme_members": {},
+                "limit_events": {
+                    "002407.SZ": [{"limit": "U", "limit_times": 1, "fd_amount": 100000.0, "open_times": 0}],
+                    "002812.SZ": [{"limit": "U", "limit_times": 1, "fd_amount": 90000.0, "open_times": 0}],
+                },
+                "hot_items": [{"ts_code": "002407.SZ", "rank": 2}],
+            },
+            limit=3,
+        )
+
+        self.assertEqual(radar[0]["theme_id"], "capital_theme:battery")
+        self.assertEqual(radar[0]["theme_name"], "电池")
+        self.assertEqual(radar[0]["candidate_count"], 3)
+        self.assertIn("电解液", radar[0]["source_theme_names"])
+        self.assertIn("隔膜", radar[0]["source_theme_names"])
+        self.assertIn("锂矿", radar[0]["source_theme_names"])
+
+    def test_build_mainline_radar_uses_stock_alias_for_capital_theme(self) -> None:
+        service = MomentumV13DataService(fetcher=self._make_fetcher())
+        radar = service.build_mainline_radar(
+            candidates=[
+                {"rank": 1, "ts_code": "002407.SZ", "name": "多氟多", "rank_score": 91},
+                {"rank": 2, "ts_code": "002466.SZ", "name": "天齐锂业", "rank_score": 86},
+            ],
+            context={
+                "stock_theme_map": {
+                    "002407.SZ": [{"theme_code": "700457.TI", "theme_name": "商品化工"}],
+                    "002466.SZ": [{"theme_code": "885806.TI", "theme_name": "小金属"}],
+                },
+                "theme_members": {},
+                "limit_events": {},
+                "hot_items": [],
+            },
+            limit=3,
+        )
+
+        self.assertEqual(radar[0]["theme_id"], "capital_theme:battery")
+        self.assertEqual(radar[0]["theme_name"], "电池")
+        self.assertEqual(radar[0]["candidate_count"], 2)
 
     def test_build_mainline_radar_propagates_context_degradation(self) -> None:
         service = MomentumV13DataService(fetcher=self._make_fetcher())

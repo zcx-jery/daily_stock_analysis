@@ -76,8 +76,12 @@ class _FakeGateScreenerService:
 
 
 class _FakeV13DecisionDataService:
+    def __init__(self):
+        self.last_ts_codes: list[str] = []
+
     def build_context(self, *, trade_date: str, ts_codes: list[str]):
-        del trade_date, ts_codes
+        del trade_date
+        self.last_ts_codes = list(ts_codes)
         return {
             "trade_date": "2026-04-10",
             "data_as_of": "2026-04-10T15:00:00Z",
@@ -489,9 +493,10 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         self.assertEqual(result["excluded_candidates"][0]["reason"], "非主线 / 主线过弱")
 
     def test_build_from_screening_uses_v13_mainline_radar_for_portfolio(self) -> None:
+        v13_data_service = _FakeV13DecisionDataService()
         service = MomentumSecondaryDecisionService(
             screener_service=None,
-            v13_data_service=_FakeV13DecisionDataService(),
+            v13_data_service=v13_data_service,
         )
         screening = {
             "profile": "standard",
@@ -541,6 +546,7 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
 
         result = service.build_from_screening(screening)
 
+        self.assertEqual(v13_data_service.last_ts_codes, ["600302.SH", "600301.SH"])
         self.assertEqual(result["v13_data_status"]["status"], "ok")
         self.assertEqual(result["mainline_radar"][0]["theme_name"], "机器人主线")
         self.assertEqual(result["short_term_sentiment"]["level"], "tradable")
@@ -549,6 +555,52 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         self.assertEqual(result["portfolio"][0]["v13_mainline_score"], 90.0)
         diagnostic = next(item for item in result["candidate_diagnostics"] if item["ts_code"] == "600301.SH")
         self.assertEqual(diagnostic["v13_theme_id"], "THS001")
+
+    def test_build_from_screening_limits_v13_context_codes_for_full_ranked_pool(self) -> None:
+        v13_data_service = _FakeV13DecisionDataService()
+        service = MomentumSecondaryDecisionService(
+            screener_service=None,
+            v13_data_service=v13_data_service,
+        )
+        results = []
+        for rank in range(1, 36):
+            results.append(
+                {
+                    "rank": rank,
+                    "ts_code": f"600{rank:03d}.SH",
+                    "name": f"候选{rank}",
+                    "pct_chg": 6.0,
+                    "continuation_score": 82.0,
+                    "extension_score": 78.0,
+                    "risk_score": 12.0,
+                    "buyability_score": None,
+                    "entry_range_low": 10.0,
+                    "entry_range_high": 10.4,
+                    "final_score": 80.0,
+                    "rank_score": 80.0,
+                    "themes": ["机器人"],
+                    "leader_level": "leader",
+                    "top_reasons": ["候选池样本"],
+                    "risk_tags": [],
+                    "score_breakdown": {},
+                }
+            )
+
+        result = service.build_from_screening(
+            {
+                "profile": "standard",
+                "trade_date": "2026-04-10",
+                "candidate_count": len(results),
+                "ranked_results": results,
+                "results": results[:30],
+            }
+        )
+
+        self.assertEqual(len(v13_data_service.last_ts_codes), 30)
+        self.assertEqual(v13_data_service.last_ts_codes[0], "600001.SH")
+        self.assertEqual(v13_data_service.last_ts_codes[-1], "600030.SH")
+        self.assertEqual(result["v13_data_status"]["sampled_code_count"], 30)
+        self.assertEqual(result["v13_data_status"]["candidate_count"], 35)
 
     def test_build_from_screening_disables_strategy_when_both_windows_are_weak(self) -> None:
         service = MomentumSecondaryDecisionService(screener_service=None)
@@ -781,6 +833,71 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
             item for item in result["candidate_diagnostics"] if item["ts_code"] == "600108.SH"
         )
         self.assertEqual(diagnostic["selected_slot"], "main")
+
+    def test_build_from_screening_penalizes_t1_direction_risk_in_portfolio(self) -> None:
+        service = MomentumSecondaryDecisionService(screener_service=None)
+        screening = {
+            "profile": "standard",
+            "trade_date": "2026-04-10",
+            "candidate_count": 2,
+            "results": [
+                {
+                    "rank": 1,
+                    "ts_code": "600201.SH",
+                    "name": "高位分歧龙头",
+                    "pct_chg": 9.9,
+                    "continuation_score": 92.0,
+                    "extension_score": 98.0,
+                    "risk_score": 62.0,
+                    "buyability_score": None,
+                    "entry_range_low": 18.1,
+                    "entry_range_high": 18.4,
+                    "final_score": 88.0,
+                    "rank_score": 90.0,
+                    "themes": ["机器人"],
+                    "leader_level": "龙头",
+                    "top_reasons": ["强势确认"],
+                    "risk_tags": [
+                        "late_session_weakness",
+                        "upper_shadow",
+                        "price_flow_divergence",
+                        "high_acceleration",
+                    ],
+                    "score_breakdown": {},
+                },
+                {
+                    "rank": 2,
+                    "ts_code": "600202.SH",
+                    "name": "稳态前排",
+                    "pct_chg": 7.2,
+                    "continuation_score": 86.0,
+                    "extension_score": 82.0,
+                    "risk_score": 24.0,
+                    "buyability_score": None,
+                    "entry_range_low": 10.2,
+                    "entry_range_high": 10.5,
+                    "final_score": 86.0,
+                    "rank_score": 85.0,
+                    "themes": ["机器人"],
+                    "leader_level": "前排",
+                    "top_reasons": ["资金承接"],
+                    "risk_tags": [],
+                    "score_breakdown": {},
+                },
+            ],
+        }
+
+        result = service.build_from_screening(screening)
+
+        self.assertEqual(result["portfolio"][0]["ts_code"], "600202.SH")
+        risky_diagnostic = next(
+            item for item in result["candidate_diagnostics"] if item["ts_code"] == "600201.SH"
+        )
+        self.assertEqual(risky_diagnostic["t1_direction_risk_adjustment"], -12.0)
+        self.assertLess(
+            risky_diagnostic["decision_score"],
+            risky_diagnostic["rule_base_score"] + risky_diagnostic["explain_adjustment_score"],
+        )
 
     def test_build_from_screening_keeps_secondary_on_mainline_when_cross_theme_is_too_weak(self) -> None:
         service = MomentumSecondaryDecisionService(screener_service=None)

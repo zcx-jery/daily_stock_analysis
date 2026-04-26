@@ -18,13 +18,14 @@
 
 ## 2. 目标与边界
 
-V1.3 的技术目标是：在当前 `6000` 积分预算下，把强势筛选从“候选股排序”升级为“主线识别 + 短线情绪 + 角色收口 + 回测诊断”的稳定生产链路。
+V1.3 的技术目标是：在当前 `6000` 积分预算下，把强势筛选从“候选股排序”升级为“真实板块强度识别 + 主线识别 + 短线情绪 + 角色收口 + 回测诊断”的稳定生产链路。
 
 本次技术文档只定义实现方案，不直接修改业务代码。
 
 ### 2.1 本次实现范围
 
-- 接入并标准化 `stk_limit / limit_list_d / ths_member / ths_hot / realtime_quote` 数据。
+- 接入并标准化 `dc_concept / moneyflow_ind_dc / dc_member / dc_index / dc_daily / kpl_list / stk_limit / limit_list_d / ths_member / ths_hot / realtime_quote` 数据。
+- 新增 `ThemeStrengthProvider`，优先用东方财富题材强度、板块资金流和板块成分回答“资金去了哪些强势板块”。
 - 为候选池补充题材 / 概念映射，形成主线候选。
 - 基于主线密度、涨停强度、炸板风险、热榜集中度和昨日强势反馈计算主线评分。
 - 将短线情绪接入总闸门，辅助判断当天是否适合继续做强势股。
@@ -74,11 +75,17 @@ flowchart TD
   A["全市场统一入口"] --> B["候选池 Top30"]
   B --> C["完整排序集"]
   C --> D["V1.3 数据增强层"]
+  D --> D0["真实板块强度 ThemeStrengthProvider"]
+  D0 --> D0a["东财题材强度 dc_concept"]
+  D0 --> D0b["板块资金流 moneyflow_ind_dc"]
+  D0 --> D0c["板块成分/行情 dc_member/dc_index/dc_daily"]
+  D0 --> D0d["开盘啦涨停题材 kpl_list"]
   D --> D1["题材/概念映射 ths_member"]
   D --> D2["涨停炸板 limit_list_d"]
   D --> D3["涨跌停价 stk_limit"]
   D --> D4["热榜 ths_hot"]
   D --> D5["实时快照 realtime_quote"]
+  D0 --> E["主线识别与评分"]
   D1 --> E["主线识别与评分"]
   D2 --> E
   D4 --> E
@@ -109,11 +116,18 @@ flowchart TD
 
 | 能力 | 建议方法 | 关键字段 | 失败处理 |
 | --- | --- | --- | --- |
+| 东方财富题材强度 | `get_dc_concepts(trade_date)` | `ts_code / name / hot / strength / z_t_num / main_change / lead_stock / sort` | 缺失时真实板块强度降级 |
+| 东方财富板块资金流 | `get_dc_moneyflow_themes(trade_date, content_type)` | `ts_code / name / rank / net_amount / net_amount_rate / buy_elg_amount / buy_lg_amount` | 缺失时资金强度维度置低置信度 |
+| 东方财富板块成分 | `get_dc_members(trade_date, con_code=None, ts_code=None)` | `ts_code / con_code / name / trade_date` | 缺失时股票到强板块映射降级 |
+| 东方财富板块行情 | `get_dc_index(trade_date)` / `get_dc_daily(trade_date)` | `ts_code / name / pct_change / up_num / down_num / amount / leading_stock` | 缺失时板块宽度和涨跌证据降级 |
+| 开盘啦涨停题材 | `get_kpl_list(trade_date, tag=None)` | `ts_code / name / lu_desc / theme / status / limit_order / turnover_rate` | 缺失时涨停原因语义降级 |
 | 涨跌停价 | `get_stock_limit_prices(trade_date)` | `ts_code / trade_date / up_limit / down_limit` | 缺失时追高边界降级 |
 | 涨停 / 炸板 | `get_limit_list(trade_date)` | `ts_code / name / pct_chg / close / limit / status / open_times / first_time / last_time` | 缺失时短线情绪降级 |
 | 题材成分 | `get_ths_members(ts_code=None, theme_code=None)` | `ts_code / con_code / name / ths_code / ths_name` | 缺失时主线识别降级为旧行业口径 |
 | 热榜 | `get_ths_hot(trade_date)` | `ts_code / name / rank / hot / concept` | 缺失时热度分置中性 |
 | 实时快照 | 复用 `get_realtime_quote(stock_code)` | `price / open / high / low / pre_close / time / source` | 缺失时盘中快照辅助隐藏或显示不可用 |
+| 个股资金流（第二阶段） | `get_stock_moneyflow_dc(trade_date)` / `get_stock_moneyflow_ths(trade_date)` | `ts_code / net_amount / main_net_amount / buy_elg_amount / buy_lg_amount` | 缺失时个股承接维度不参与评分 |
+| 筹码分布（第二阶段） | `get_cyq_perf(trade_date)` / `get_cyq_chips(trade_date)` | `ts_code / winner_rate / cost_15pct / cost_50pct / cost_85pct` | 缺失时筹码压力维度不参与评分 |
 
 字段标准化要求：
 
@@ -122,7 +136,61 @@ flowchart TD
 - 所有外部接口返回必须带 `data_source`、`data_as_of`、`is_degraded`。
 - 数值字段统一转为 `float | None`，避免 `NaN / inf` 进入 API。
 
-### 5.2 数据聚合服务
+### 5.2 ThemeStrengthProvider 标准输出
+
+建议新增 Provider 层，先把不同数据源归一成统一结构，再交给二次决策服务计算主线。
+
+```json
+{
+  "trade_date": "2026-04-24",
+  "data_as_of": "2026-04-24T15:30:00+08:00",
+  "themes": [
+    {
+      "theme_code": "BK0574.DC",
+      "theme_name": "锂电池概念",
+      "parent_theme": "电池",
+      "source": "dc_concept",
+      "rank": 1,
+      "strength_score": 92.5,
+      "raw_strength": 8230,
+      "net_amount": 10898035456.0,
+      "net_amount_rate": 3.2,
+      "pct_change": 4.8,
+      "up_num": 82,
+      "down_num": 5,
+      "limit_up_count": 12,
+      "leader_stock": "多氟多",
+      "source_child_themes": ["锂电池概念", "电池技术", "锂矿概念", "固态电池"],
+      "confidence": "high"
+    }
+  ],
+  "stock_theme_map": {
+    "002407.SZ": [
+      {
+        "theme_code": "BK0574.DC",
+        "theme_name": "锂电池概念",
+        "parent_theme": "电池",
+        "source": "dc_member"
+      }
+    ]
+  },
+  "source_status": {
+    "dc_concept": "ok",
+    "moneyflow_ind_dc": "ok",
+    "dc_member": "ok",
+    "kpl_list": "partial",
+    "ths_member": "fallback"
+  }
+}
+```
+
+Provider 输出必须保证：
+
+- 页面主结论使用 `theme_name / parent_theme`，不得直接展示原始概念代码作为用户主语。
+- `source_child_themes` 保留归并依据，方便解释为什么多个锂电、隔膜、电解液股票被归为 `电池`。
+- `source_status` 必须细到数据源级别，任何降级都不能静默发生。
+
+### 5.3 数据聚合服务
 
 建议新增服务模块：
 
@@ -159,11 +227,16 @@ class MomentumV13DataService:
   "is_degraded": false,
   "degraded_reasons": [],
   "stock_theme_map": {},
+  "theme_strength": {},
   "theme_members": {},
   "limit_events": {},
   "limit_prices": {},
   "hot_items": [],
   "source_status": {
+    "dc_concept": "ok",
+    "moneyflow_ind_dc": "ok",
+    "dc_member": "ok",
+    "kpl_list": "partial",
     "stk_limit": "ok",
     "limit_list_d": "ok",
     "ths_member": "ok",
@@ -172,12 +245,17 @@ class MomentumV13DataService:
 }
 ```
 
-### 5.3 缓存策略
+### 5.4 缓存策略
 
 V1.3 数据应分资源缓存，避免一次缺失拖垮全部能力。
 
 | 缓存对象 | 建议 key | TTL / 失效策略 |
 | --- | --- | --- |
+| 东财题材强度 | `momentum:v13:dc_concept:{trade_date}` | 盘中 30-60 分钟，收盘后交易日级复用 |
+| 东财板块资金流 | `momentum:v13:moneyflow_ind_dc:{trade_date}:{content_type}` | 交易日级，收盘后长期复用 |
+| 东财板块成分 | `momentum:v13:dc_member:{trade_date}:{code}` | 成分变化较慢，建议 7 天或按交易日缓存 |
+| 东财板块行情 | `momentum:v13:dc_index:{trade_date}` / `momentum:v13:dc_daily:{trade_date}` | 交易日级 |
+| 开盘啦题材 | `momentum:v13:kpl_list:{trade_date}` | 交易日级，注意次日更新时间 |
 | 涨跌停价 | `momentum:v13:stk_limit:{trade_date}` | 交易日级，收盘后可长期复用 |
 | 涨停炸板 | `momentum:v13:limit_list:{trade_date}` | 交易日级，收盘后可长期复用 |
 | 题材成分 | `momentum:v13:ths_member:{version}` | 成分变化较慢，建议 7 天或手动刷新 |
@@ -187,10 +265,14 @@ V1.3 数据应分资源缓存，避免一次缺失拖垮全部能力。
 
 第一版优先使用现有磁盘 / 内存缓存能力；如后续切 Redis，应保持 key 语义不变。
 
-### 5.4 降级策略
+### 5.5 降级策略
 
 | 缺失数据 | 降级结果 | 页面表达 |
 | --- | --- | --- |
+| `dc_concept` 缺失 | 真实题材强度降级到板块资金流和候选覆盖 | `真实题材强度不可用，使用资金流与候选覆盖近似` |
+| `moneyflow_ind_dc` 缺失 | 主力净流入和资金排名不参与主线评分 | `板块资金流缺失，资金强度低置信度` |
+| `dc_member` 缺失 | 股票到东财强板块映射降级到同花顺成分 / 父题材词库 | `板块成分不可用，主线归因降级` |
+| `kpl_list` 缺失 | 涨停原因和打板题材语义缺失 | `涨停题材语义缺失，不影响基础筛选` |
 | `ths_member` 缺失 | 主线识别回退到旧行业 / 主题文本口径 | `主线识别降级：题材成分不可用` |
 | `limit_list_d` 缺失 | 短线情绪不计算涨停 / 炸板维度 | `短线情绪低置信度` |
 | `stk_limit` 缺失 | 不计算涨跌停边界和追高红线 | `追高边界不可用` |
@@ -198,6 +280,15 @@ V1.3 数据应分资源缓存，避免一次缺失拖垮全部能力。
 | `realtime_quote` 缺失 | 盘中快照辅助不可用 | `暂无实时快照，等待刷新` |
 
 降级时禁止把 `None` 当作 `0` 扣死，必须通过 `is_degraded` 和 `confidence` 表达。
+
+真实板块强度 Provider 优先级：
+
+1. `dc_concept`
+2. `moneyflow_ind_dc`
+3. `dc_member / dc_index / dc_daily`
+4. `kpl_list`
+5. `ths_member / ths_hot / ths_index`
+6. 父题材配置和旧行业口径
 
 ## 6. 规则服务设计
 
@@ -219,10 +310,11 @@ def _build_v13_mainline_context(
 
 ```text
 候选股
--> 股票题材映射
--> 题材候选池聚合
--> 题材强势密度计算
--> 题材涨停 / 炸板 / 热榜证据计算
+-> 真实板块强度 Provider
+-> 股票 / 板块映射
+-> 父题材归并
+-> 候选池覆盖聚合
+-> 题材资金流 / 涨停 / 炸板 / 热榜证据计算
 -> 主线评分
 -> 输出 Top 1-2 条主线
 ```
@@ -231,11 +323,12 @@ def _build_v13_mainline_context(
 
 | 维度 | 权重 | 说明 |
 | --- | --- | --- |
-| 候选池密度 | 30 | 题材在候选池 Top30 / Top10 中的占比 |
-| 涨停强度 | 25 | 题材内涨停数、连板高度、涨停质量 |
-| 炸板风险 | -15 | 题材内炸板率、开板次数、冲高回落 |
-| 热榜集中度 | 15 | 热门股 / 热门题材是否集中在该主线 |
-| 昨日强势反馈 | 25 | 昨日候选池 Top10 + 昨日官方 Top3 次日表现 |
+| 板块资金强度 | 30 | `dc_concept` 强度 / 热度 / 主力净额，`moneyflow_ind_dc` 净流入和排名 |
+| 候选池密度 | 20 | 题材在候选池 Top30 / Top10 中的占比 |
+| 涨停与板块宽度 | 20 | 题材内涨停数、连板高度、上涨 / 下跌家数、涨停质量 |
+| 角色与覆盖质量 | 15 | 龙头 / 前排是否明确，候选股是否覆盖同一父题材 |
+| 炸板与价格风险 | -10 | 题材内炸板率、开板次数、冲高回落、追高压力 |
+| 昨日强势反馈 | 15 | 昨日候选池 Top10 + 昨日官方 Top3 次日表现 |
 
 输出档位：
 
@@ -529,6 +622,8 @@ V1.3 判断有效的方向不是“每天都提高收益”，而是：
 
 严格回测要求：
 
+- 优先使用 `dc_concept / moneyflow_ind_dc / dc_member / dc_index / dc_daily` 的历史交易日数据回放真实板块强度。
+- `kpl_list` 因通常次日更新，严格回测中必须按 `data_as_of` 判断当时是否已可见；若不可见，只能用于复盘诊断，不能用于 T 日决策评分。
 - `ths_member` 成分若无法回放历史版本，第一版必须标注为当前成分近似。
 - `ths_hot` 若没有历史稳定数据，不能参与严格高权重评分。
 - `realtime_quote` 不进入严格历史买点结论，只能验证快照辅助逻辑。
@@ -647,6 +742,11 @@ AI 输出优先解释：
 
 如后续需要新增配置，必须同步更新 `.env.example` 和相关文档：
 
+- `MOMENTUM_V13_ENABLE_THEME_STRENGTH_PROVIDER`
+- `MOMENTUM_V13_ENABLE_DC_CONCEPT`
+- `MOMENTUM_V13_ENABLE_DC_MONEYFLOW`
+- `MOMENTUM_V13_ENABLE_DC_MEMBER`
+- `MOMENTUM_V13_ENABLE_KPL_LIST`
 - `MOMENTUM_V13_CACHE_TTL_SECONDS`
 - `MOMENTUM_V13_ENABLE_THS_HOT`
 - `MOMENTUM_V13_ENABLE_INTRADAY_SNAPSHOT`
@@ -663,6 +763,9 @@ AI 输出优先解释：
 
 必须覆盖：
 
+- `dc_concept / moneyflow_ind_dc / dc_member` 可用时，优先输出真实板块强度和父题材归并。
+- 真实板块强度缺失时，降级到同花顺成分和父题材词库，且页面能显示降级状态。
+- 原始概念代码必须翻译为中文题材名或父题材名，不能作为用户主结论。
 - 题材成分缺失时主线降级。
 - 涨停炸板缺失时情绪降级。
 - 热榜缺失不误扣分。
@@ -695,7 +798,8 @@ AI 输出优先解释：
 
 ### 14.1 第一阶段：数据层
 
-- 在 `TushareFetcher` 中补齐 V1.3 接口封装。
+- 在 `TushareFetcher` 中补齐 `dc_concept / moneyflow_ind_dc / dc_member / dc_index / dc_daily / kpl_list` 等真实板块强度接口封装。
+- 新增 `ThemeStrengthProvider`，统一父题材归并、数据源优先级、资金强度和降级状态。
 - 新增 `MomentumV13DataService`。
 - 完成资源级缓存和降级状态。
 - 补数据层单元测试。
@@ -732,6 +836,8 @@ AI 输出优先解释：
 V1.3 技术实现完成后，应满足：
 
 - 页面能展示 `主线雷达 / 短线情绪 / 官方 Top3 / 盘中快照辅助`。
+- 页面能用中文题材名回答“资金去了哪些强势板块”，并展示父题材、来源子题材、主力净额、板块排名和覆盖候选股。
+- 页面不得把 `886089.TI`、`700457.TI` 等原始概念代码作为用户主结论直接展示。
 - 任一 V1.3 数据源不可用时，主链路仍可返回，并显示降级原因。
 - 官方 Top3 的主仓 / 次仓 / 观察仓选择不受页面展示数量影响。
 - 回测能输出 V1.3 失败归因，而不是只给收益统计。
@@ -743,6 +849,10 @@ V1.3 技术实现完成后，应满足：
 ### 16.1 主要风险
 
 - Tushare 增强接口权限或字段与预期不一致。
+- `dc_concept / moneyflow_ind_dc / dc_member` 的权限、更新时间和字段稳定性需要以实测为准，不能假设所有 6000 积分账号都完全一致。
+- 开盘啦 `kpl_list` 通常存在次日更新时间差，不能误用于 T 日盘中实时决策。
+- 东方财富、同花顺、开盘啦板块命名和成分口径不完全一致，父题材归并需要可配置且可解释。
+- 内部 `strength_score` 是系统计算分，不能包装成第三方 App 官方强度分。
 - `ths_member` 当前成分无法严格还原历史，影响历史回测准确性。
 - `ths_hot` 历史可用性不足，不能作为严格高权重依据。
 - 规则权重过早复杂化，导致回测不好解释。

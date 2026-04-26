@@ -567,6 +567,56 @@ class TushareFetcher(BaseFetcher):
 
         return self._v13_payload(source=source, trade_date=None, rows=rows, data_as_of=data_as_of)
 
+    def get_ths_index(self, *, ts_code: Optional[str] = None) -> Dict[str, Any]:
+        """
+        获取同花顺概念 / 行业指数基础信息，用于把 .TI 代码翻译成人可读名称。
+
+        Tushare 接口：ths_index。当前 V1.3 只按 ts_code 精确查询，避免拉取全量概念表。
+        """
+        source = "tushare.ths_index"
+        if self._api is None:
+            return self._v13_unavailable_payload(source=source, trade_date=None, reason="api_not_initialized")
+
+        params: Dict[str, Any] = {
+            "fields": "ts_code,name,count,exchange,list_date,type",
+        }
+        if ts_code:
+            params["ts_code"] = str(ts_code).strip().upper()
+
+        try:
+            df = self._call_api_with_rate_limit("ths_index", **params)
+        except Exception as exc:
+            return self._v13_unavailable_payload(source=source, trade_date=None, reason=str(exc))
+
+        data_as_of = self._v13_data_as_of()
+        if df is None or df.empty:
+            return self._v13_payload(
+                source=source,
+                trade_date=None,
+                rows=[],
+                status="partial",
+                data_as_of=data_as_of,
+                degraded_reasons=["empty_result"],
+            )
+
+        rows: List[Dict[str, Any]] = []
+        for _, row in df.iterrows():
+            rows.append(
+                {
+                    "theme_code": self._safe_v13_str(row.get("ts_code")),
+                    "theme_name": self._safe_v13_str(row.get("name")),
+                    "member_count": self._safe_v13_int(row.get("count")),
+                    "exchange": self._safe_v13_str(row.get("exchange")),
+                    "list_date": self._format_display_trade_date(row.get("list_date")),
+                    "type": self._safe_v13_str(row.get("type")),
+                    "data_source": source,
+                    "data_as_of": data_as_of,
+                    "is_degraded": False,
+                }
+            )
+
+        return self._v13_payload(source=source, trade_date=None, rows=rows, data_as_of=data_as_of)
+
     def get_ths_hot(
         self,
         trade_date: str,

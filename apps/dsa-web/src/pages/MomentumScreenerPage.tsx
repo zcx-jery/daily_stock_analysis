@@ -14,6 +14,7 @@ import type {
   MomentumDecisionTheme,
   MomentumIntradayPortfolioItem,
   MomentumIntradaySignal,
+  MomentumMainlineRadarItem,
   MomentumProfile,
   MomentumSecondaryDecision,
   MomentumSnapshotAssist,
@@ -805,7 +806,7 @@ const DecisionThemeCard: React.FC<{ theme: MomentumDecisionTheme }> = ({ theme }
         <Badge variant="info">{theme.strengthLabel}</Badge>
         <Badge variant="default">{theme.score.toFixed(1)}</Badge>
         {theme.v13MainlineScore != null ? (
-          <Badge variant="success">雷达 {theme.v13MainlineScore.toFixed(1)}</Badge>
+          <Badge variant="success">题材强度 {theme.v13MainlineScore.toFixed(1)}</Badge>
         ) : null}
       </div>
     </div>
@@ -868,7 +869,7 @@ const PortfolioDecisionCard: React.FC<{ item: MomentumDecisionPortfolioSlot }> =
       <Badge variant="info">排序分 {item.rankScore.toFixed(1)}</Badge>
       <Badge variant="warning">风险分 {item.riskScore.toFixed(1)}</Badge>
       {item.v13MainlineScore != null ? (
-        <Badge variant="success">主线雷达 {item.v13MainlineScore.toFixed(1)}</Badge>
+        <Badge variant="success">题材强度 {item.v13MainlineScore.toFixed(1)}</Badge>
       ) : null}
       {item.opportunityTag ? <Badge variant="warning">{item.opportunityTag}</Badge> : null}
     </div>
@@ -976,6 +977,41 @@ const GateLayerPanel: React.FC<{
   );
 };
 
+const MAINLINE_RAW_CODE_PATTERN = /^\d{6}\.TI$/i;
+
+function isMainlineRawCode(value?: string | null): boolean {
+  return MAINLINE_RAW_CODE_PATTERN.test(String(value ?? '').trim());
+}
+
+function formatMainlineThemeDisplay(item: MomentumMainlineRadarItem): { name: string; rawCode: string | null } {
+  const themeName = String(item.themeName ?? '').trim();
+  const themeId = String(item.themeId ?? '').trim();
+  const rawCode = [themeName, themeId].find(isMainlineRawCode) ?? null;
+
+  if (themeName && !isMainlineRawCode(themeName)) {
+    return { name: themeName, rawCode };
+  }
+
+  if (rawCode) {
+    return { name: `同花顺概念 ${rawCode.replace(/\.TI$/i, '')}`, rawCode };
+  }
+
+  return { name: themeName || themeId || '未命名题材', rawCode: null };
+}
+
+function formatMainlineLevelLabel(label?: string | null): string {
+  return String(label || '待确认').replace(/主线/g, '题材');
+}
+
+function formatMainlineSummary(item: MomentumMainlineRadarItem, displayName: string): string {
+  const summary = item.summary || '等待更多题材强弱证据。';
+  const rawValues = [item.themeName, item.themeId].filter((value): value is string => Boolean(value));
+  return rawValues.reduce(
+    (text, rawValue) => (isMainlineRawCode(rawValue) ? text.replaceAll(rawValue, displayName) : text),
+    summary,
+  ).replace(/主线/g, '题材');
+}
+
 const V13MainlineInsightPanel: React.FC<{ decision: MomentumSecondaryDecision }> = ({ decision }) => {
   const radarItems = decision.mainlineRadar ?? [];
   const sentiment = decision.shortTermSentiment;
@@ -991,7 +1027,7 @@ const V13MainlineInsightPanel: React.FC<{ decision: MomentumSecondaryDecision }>
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <Flame className="h-4 w-4 text-cyan" />
-            <p className="text-sm font-semibold text-foreground">V1.3 主线雷达</p>
+            <p className="text-sm font-semibold text-foreground">V1.3 题材强弱诊断</p>
             {dataStatus ? (
               <Badge variant={v13DataStatusBadgeVariant(dataStatus.status)}>
                 {dataStatus.status === 'ok' ? '数据完整' : dataStatus.status}
@@ -1004,7 +1040,7 @@ const V13MainlineInsightPanel: React.FC<{ decision: MomentumSecondaryDecision }>
             ) : null}
           </div>
           <p className="mt-2 text-sm leading-6 text-secondary-text">
-            用 6000 积分可用数据补强主线识别：题材成分、涨停/炸板、热榜集中度和候选池密度只做规则增强，不替代总闸门。
+            这块用同花顺概念成分、候选股集中度、涨停/炸板和热榜排名解释短线情绪来源；它只增强排序理解，不替代总闸门和买点判断。
           </p>
         </div>
         {sentiment ? (
@@ -1028,27 +1064,39 @@ const V13MainlineInsightPanel: React.FC<{ decision: MomentumSecondaryDecision }>
 
       {radarItems.length > 0 ? (
         <div className="mt-4 grid gap-3 lg:grid-cols-2">
-          {radarItems.map((item) => (
+          {radarItems.map((item) => {
+            const themeDisplay = formatMainlineThemeDisplay(item);
+            return (
             <div key={item.themeId || item.themeName} className="rounded-2xl border border-border/40 bg-card/45 p-4">
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div>
-                  <p className="text-sm font-semibold text-foreground">{item.themeName}</p>
-                  <p className="mt-1 text-xs text-secondary-text">{item.summary ?? '等待更多主线证据。'}</p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-sm font-semibold text-foreground">{themeDisplay.name}</p>
+                    {themeDisplay.rawCode ? <Badge variant="default">概念代码 {themeDisplay.rawCode}</Badge> : null}
+                  </div>
+                  <p className="mt-1 text-xs text-secondary-text">
+                    {formatMainlineSummary(item, themeDisplay.name)}
+                  </p>
+                  {item.sourceThemeNames && item.sourceThemeNames.length > 0 ? (
+                    <p className="mt-1 text-xs text-secondary-text">
+                      覆盖子题材：{item.sourceThemeNames.slice(0, 5).join('、')}
+                    </p>
+                  ) : null}
                 </div>
                 <div className="flex items-center gap-2">
                   <Badge variant={gateLevelBadgeVariant(item.level === 'strong' ? 'strong' : item.level === 'medium' ? 'medium' : 'weak')}>
-                    {item.levelLabel}
+                    {formatMainlineLevelLabel(item.levelLabel)}
                   </Badge>
-                  <Badge variant="default">{item.score.toFixed(1)}</Badge>
+                  <Badge variant="default">强弱分 {item.score.toFixed(1)}</Badge>
                 </div>
               </div>
 
               <div className="mt-4 grid gap-2 text-xs text-secondary-text sm:grid-cols-2">
-                <p>候选密度 {item.candidateCount ?? '--'}</p>
-                <p>Top10 {item.top10Count ?? '--'}</p>
-                <p>涨停 {item.limitUpCount ?? '--'}</p>
-                <p>炸板 {item.brokenLimitCount ?? '--'}</p>
-                <p>热榜 {item.hotRank != null ? `#${item.hotRank}` : '--'}</p>
+                <p>候选股 {item.candidateCount ?? '--'} 只</p>
+                <p>前 10 名 {item.top10Count ?? '--'} 只</p>
+                <p>涨停数 {item.limitUpCount ?? '--'}</p>
+                <p>炸板数 {item.brokenLimitCount ?? '--'}</p>
+                <p>热榜排名 {item.hotRank != null ? `第 ${item.hotRank}` : '--'}</p>
               </div>
 
               {item.evidence && item.evidence.length > 0 ? (
@@ -1061,11 +1109,12 @@ const V13MainlineInsightPanel: React.FC<{ decision: MomentumSecondaryDecision }>
                 </div>
               ) : null}
             </div>
-          ))}
+            );
+          })}
         </div>
       ) : (
         <div className="mt-4 rounded-2xl border border-border/40 bg-card/40 p-4 text-sm leading-6 text-secondary-text">
-          当前还没有形成可展示的 V1.3 主线雷达，系统继续使用旧主线规则输出二次决策。
+          当前还没有形成可展示的 V1.3 题材强弱诊断，系统继续使用旧主线规则输出二次决策。
         </div>
       )}
     </div>

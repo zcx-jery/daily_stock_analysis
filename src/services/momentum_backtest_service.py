@@ -1272,6 +1272,32 @@ class MomentumBacktestService:
         issues: List[Dict[str, Any]] = []
 
         if (
+            decision_metrics["t1_direction_pass_rate_pct"] is not None
+            and decision_metrics["settlement_pass_rate_pct"] is not None
+            and decision_metrics["t1_direction_pass_rate_pct"] < 50.0
+            and decision_metrics["settlement_pass_rate_pct"] < 50.0
+        ):
+            failed_t1_codes = [
+                row.ts_code
+                for row in decision_outcomes
+                if not self._outcome_t1_direction_pass(row)
+            ]
+            issues.append(
+                {
+                    "issue_key": "t1_direction_failure_high",
+                    "severity": "warning",
+                    "title": "T+1 方向失败偏高",
+                    "summary": "默认组合次日收盘强于开盘的比例偏低，短线延续主要卡在 T+1 方向确认。",
+                    "affected_codes": failed_t1_codes or [row.ts_code for row in decision_rows],
+                    "metrics": {
+                        "decision_t1_direction_pass_rate_pct": decision_metrics["t1_direction_pass_rate_pct"],
+                        "decision_t2_continuation_pass_rate_pct": decision_metrics["t2_continuation_pass_rate_pct"],
+                        "decision_settlement_pass_rate_pct": decision_metrics["settlement_pass_rate_pct"],
+                    },
+                }
+            )
+
+        if (
             daily_row.action_level in {"observe_only", "stand_aside"}
             and candidate_metrics["positive_t2_rate_pct"] is not None
             and candidate_metrics["avg_t2_profit_window_pct"] is not None
@@ -1676,11 +1702,17 @@ class MomentumBacktestService:
             "avg_buy_ready_count": self._avg_metric(row.buy_ready_count for row in daily_rows),
             "candidate_top10_buy_trigger_rate": candidate_metrics["trigger_rate_pct"],
             "candidate_top10_positive_t2_rate": candidate_metrics["positive_t2_rate_pct"],
+            "candidate_top10_settlement_pass_rate": candidate_metrics["settlement_pass_rate_pct"],
+            "candidate_top10_t1_direction_pass_rate": candidate_metrics["t1_direction_pass_rate_pct"],
+            "candidate_top10_t2_continuation_pass_rate": candidate_metrics["t2_continuation_pass_rate_pct"],
             "candidate_top10_avg_t2_profit_window_pct": candidate_metrics["avg_t2_profit_window_pct"],
             "candidate_top10_avg_t2_max_drawdown_pct": candidate_metrics["avg_t2_max_drawdown_pct"],
             "decision_top3_buy_trigger_rate": decision_metrics["trigger_rate_pct"],
             "decision_top3_positive_t1_rate": decision_metrics["positive_t1_rate_pct"],
             "decision_top3_positive_t2_rate": decision_metrics["positive_t2_rate_pct"],
+            "decision_top3_settlement_pass_rate": decision_metrics["settlement_pass_rate_pct"],
+            "decision_top3_t1_direction_pass_rate": decision_metrics["t1_direction_pass_rate_pct"],
+            "decision_top3_t2_continuation_pass_rate": decision_metrics["t2_continuation_pass_rate_pct"],
             "decision_top3_avg_t1_profit_window_pct": decision_metrics["avg_t1_profit_window_pct"],
             "decision_top3_avg_t2_profit_window_pct": decision_metrics["avg_t2_profit_window_pct"],
             "decision_top3_avg_t2_max_drawdown_pct": decision_metrics["avg_t2_max_drawdown_pct"],
@@ -1822,6 +1854,10 @@ class MomentumBacktestService:
             "gate_module_breakdown",
             "regime_breakdown",
             "candidate_top10_positive_t2_rate",
+            "candidate_top10_t1_direction_pass_rate",
+            "candidate_top10_t2_continuation_pass_rate",
+            "decision_top3_t1_direction_pass_rate",
+            "decision_top3_t2_continuation_pass_rate",
             "market_environment_breakdown",
             "strategy_health_mode",
             "strategy_health_validation_status_breakdown",
@@ -2287,6 +2323,8 @@ class MomentumBacktestService:
             "trigger_rate_pct": metrics.get("trigger_rate_pct"),
             "positive_t2_rate_pct": metrics.get("positive_t2_rate_pct"),
             "settlement_pass_rate_pct": metrics.get("settlement_pass_rate_pct"),
+            "t1_direction_pass_rate_pct": metrics.get("t1_direction_pass_rate_pct"),
+            "t2_continuation_pass_rate_pct": metrics.get("t2_continuation_pass_rate_pct"),
             "avg_t2_profit_window_pct": avg_profit,
             "avg_t2_max_drawdown_pct": metrics.get("avg_t2_max_drawdown_pct"),
             "alpha_vs_official_top3_pct": self._delta_pct(avg_profit, decision_profit),
