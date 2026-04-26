@@ -280,6 +280,129 @@ class TestTushareFetcherV13Adapters(unittest.TestCase):
         self.assertEqual(row["net_amount"], 10898035456.0)
         self.assertEqual(row["rank"], 1)
 
+    def test_get_stock_moneyflow_ths_converts_wan_amounts_into_yuan(self) -> None:
+        fetcher = self._make_fetcher()
+        fetcher._api.moneyflow_ths.return_value = pd.DataFrame(
+            {
+                "trade_date": ["20260424"],
+                "ts_code": ["002407.SZ"],
+                "name": ["test-name"],
+                "pct_change": [9.9],
+                "latest": [16.82],
+                "net_amount": [12345.6],
+                "net_d5_amount": [34567.8],
+                "buy_lg_amount": [9876.5],
+                "buy_lg_amount_rate": [2.6],
+                "buy_md_amount": [2345.6],
+                "buy_md_amount_rate": [0.7],
+                "buy_sm_amount": [-1234.5],
+                "buy_sm_amount_rate": [-0.3],
+            }
+        )
+
+        with patch.object(fetcher, "_check_rate_limit"), patch.object(fetcher, "_get_china_now", self._fixed_now):
+            payload = fetcher.get_stock_moneyflow_ths("20260424", ts_code="002407")
+
+        fetcher._api.moneyflow_ths.assert_called_once()
+        args = fetcher._api.moneyflow_ths.call_args.kwargs
+        self.assertEqual(args["trade_date"], "20260424")
+        self.assertEqual(args["ts_code"], "002407.SZ")
+        row = payload["rows"][0]
+        self.assertEqual(row["net_amount"], 123456000.0)
+        self.assertEqual(row["net_d5_amount"], 345678000.0)
+        self.assertEqual(row["buy_lg_amount"], 98765000.0)
+
+    def test_get_stock_moneyflow_dc_converts_wan_amounts_into_yuan(self) -> None:
+        fetcher = self._make_fetcher()
+        fetcher._api.moneyflow_dc.return_value = pd.DataFrame(
+            {
+                "trade_date": ["20260424"],
+                "ts_code": ["002407.SZ"],
+                "name": ["test-name"],
+                "pct_change": [9.9],
+                "close": [16.82],
+                "net_amount": [23456.7],
+                "net_amount_rate": [3.2],
+                "buy_elg_amount": [6789.1],
+                "buy_elg_amount_rate": [1.1],
+                "buy_lg_amount": [5678.9],
+                "buy_lg_amount_rate": [0.9],
+                "buy_md_amount": [3456.7],
+                "buy_md_amount_rate": [0.5],
+                "buy_sm_amount": [-1111.1],
+                "buy_sm_amount_rate": [-0.2],
+            }
+        )
+
+        with patch.object(fetcher, "_check_rate_limit"), patch.object(fetcher, "_get_china_now", self._fixed_now):
+            payload = fetcher.get_stock_moneyflow_dc("20260424", ts_code="002407")
+
+        fetcher._api.moneyflow_dc.assert_called_once()
+        args = fetcher._api.moneyflow_dc.call_args.kwargs
+        self.assertEqual(args["trade_date"], "20260424")
+        self.assertEqual(args["ts_code"], "002407.SZ")
+        row = payload["rows"][0]
+        self.assertEqual(row["net_amount"], 234567000.0)
+        self.assertEqual(row["buy_elg_amount"], 67891000.0)
+        self.assertEqual(row["buy_lg_amount"], 56789000.0)
+
+    def test_get_cyq_perf_normalizes_winner_rate(self) -> None:
+        fetcher = self._make_fetcher()
+        fetcher._api.cyq_perf.return_value = pd.DataFrame(
+            {
+                "ts_code": ["002407.SZ"],
+                "trade_date": ["20260424"],
+                "his_low": [9.5],
+                "his_high": [17.2],
+                "cost_5pct": [10.1],
+                "cost_15pct": [11.4],
+                "cost_50pct": [13.8],
+                "cost_85pct": [15.9],
+                "cost_95pct": [16.6],
+                "weight_avg": [13.9],
+                "winner_rate": [87.5],
+            }
+        )
+
+        with patch.object(fetcher, "_check_rate_limit"), patch.object(fetcher, "_get_china_now", self._fixed_now):
+            payload = fetcher.get_cyq_perf("20260424", ts_code="002407")
+
+        fetcher._api.cyq_perf.assert_called_once()
+        row = payload["rows"][0]
+        self.assertAlmostEqual(row["winner_rate"], 0.875)
+        self.assertEqual(row["cost_85pct"], 15.9)
+
+    def test_get_cyq_chips_builds_snapshot_from_distribution(self) -> None:
+        fetcher = self._make_fetcher()
+        fetcher._api.cyq_chips.return_value = pd.DataFrame(
+            {
+                "trade_date": ["20260424", "20260424", "20260424", "20260424"],
+                "ts_code": ["002407.SZ", "002407.SZ", "002407.SZ", "002407.SZ"],
+                "price": [10.0, 11.0, 12.0, 13.0],
+                "percent": [10.0, 20.0, 30.0, 40.0],
+            }
+        )
+        fetcher._api.daily.return_value = pd.DataFrame(
+            {
+                "trade_date": ["20260424"],
+                "ts_code": ["002407.SZ"],
+                "close": [12.0],
+            }
+        )
+
+        with patch.object(fetcher, "_check_rate_limit"), patch.object(fetcher, "_get_china_now", self._fixed_now):
+            payload = fetcher.get_cyq_chips("20260424", ts_code="002407")
+
+        self.assertEqual(fetcher._api.cyq_chips.call_count, 1)
+        self.assertEqual(fetcher._api.daily.call_count, 1)
+        row = payload["rows"][0]
+        self.assertAlmostEqual(row["profit_ratio"], 0.6)
+        self.assertAlmostEqual(row["avg_cost"], 12.0)
+        self.assertEqual(row["cost_90_low"], 10.0)
+        self.assertEqual(row["cost_90_high"], 13.0)
+        self.assertAlmostEqual(row["concentration_90"], 0.1304, places=4)
+        self.assertEqual(row["distribution_points"], 4)
+
     def test_get_kpl_list_normalizes_theme_reason(self) -> None:
         fetcher = self._make_fetcher()
         fetcher._api.kpl_list.return_value = pd.DataFrame(

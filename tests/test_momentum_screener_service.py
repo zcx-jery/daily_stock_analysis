@@ -332,6 +332,67 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
         self.assertLessEqual(round(leader_width, 4), round(11.0 * 0.02 + 0.01, 4))
         self.assertLessEqual(round(front_width, 4), round(8.65 * 0.03 + 0.01, 4))
 
+    def test_standard_score_breakdown_uses_v13_weight_structure(self) -> None:
+        service = self._build_service()
+
+        result = service.screen(top_n=2, profile="standard")
+        breakdown = result["results"][0]["score_breakdown"]
+
+        self.assertEqual(breakdown["volume_price_structure"]["max_score"], 18)
+        self.assertEqual(breakdown["trend_position"]["max_score"], 12)
+        self.assertEqual(breakdown["sector_resonance"]["max_score"], 25)
+        self.assertEqual(breakdown["capital_support"]["max_score"], 17)
+        self.assertEqual(breakdown["elasticity_activity"]["max_score"], 8)
+        self.assertLessEqual(result["results"][0]["risk_score"], 100.0)
+
+    def test_standard_v13_profile_can_promote_real_theme_leader(self) -> None:
+        service = self._build_service()
+        v13_profiles = {
+            "600001.SH": {
+                "theme_name": "弱势题材",
+                "theme_fund_strength_score": 38.0,
+                "candidate_count": 1,
+                "top10_count": 1,
+                "board_rank": 42,
+                "board_up_num": 12,
+                "board_down_num": 20,
+                "leader_stock": "别的股票",
+                "stock_theme_rank": 6,
+                "limit_events": [
+                    {
+                        "limit": "Z",
+                        "open_times": 3,
+                    }
+                ],
+            },
+            "600002.SH": {
+                "theme_name": "电池",
+                "theme_fund_strength_score": 93.0,
+                "candidate_count": 5,
+                "top10_count": 3,
+                "board_rank": 2,
+                "board_up_num": 45,
+                "board_down_num": 8,
+                "leader_stock": "测试跟风",
+                "stock_theme_rank": 1,
+                "limit_events": [
+                    {
+                        "limit": "U",
+                        "open_times": 0,
+                    }
+                ],
+            },
+        }
+
+        with patch.object(service, "_build_standard_v13_profile_map", return_value=v13_profiles):
+            result = service.screen(top_n=2, profile="standard")
+
+        self.assertEqual(result["results"][0]["ts_code"], "600002.SH")
+        self.assertEqual(
+            result["results"][0]["score_breakdown"]["sector_resonance"]["items"]["v13_theme_name"],
+            "电池",
+        )
+
     def test_screen_prefers_current_trade_date_after_close_when_eod_snapshot_ready(self) -> None:
         fetcher = _FakeFetcher(current_time=datetime(2026, 4, 11, 15, 10, 0))
         fetcher.trade_snapshots["20260411"] = fetcher.build_trade_snapshot("20260411", ready=True)
@@ -394,6 +455,152 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
         self.assertIsNotNone(result["results"][0]["entry_range_high"])
         self.assertIn("buyability", result["results"][0]["score_breakdown"])
         self.assertIn("volume_price_track", result["results"][0]["score_breakdown"])
+
+    def test_aggressive_score_breakdown_uses_v13_weight_structure(self) -> None:
+        service = self._build_service()
+
+        result = service.screen(top_n=2, profile="aggressive")
+        breakdown = result["results"][0]["score_breakdown"]
+
+        self.assertEqual(breakdown["buyability"]["max_score"], 18)
+        self.assertEqual(breakdown["volume_price_track"]["max_score"], 14)
+        self.assertEqual(breakdown["sector_resonance"]["max_score"], 10)
+        self.assertLessEqual(result["results"][0]["risk_score"], 100.0)
+
+    def test_aggressive_v13_profile_can_promote_better_participation_target(self) -> None:
+        service = self._build_service()
+        v13_profiles = {
+            "600001.SH": {
+                "theme_name": "弱势题材",
+                "theme_fund_strength_score": 40.0,
+                "candidate_count": 1,
+                "stock_theme_rank": 5,
+                "kpl_status": "一字板",
+                "kpl_turnover_rate": 1.2,
+                "limit_events": [
+                    {
+                        "limit": "Z",
+                        "open_times": 3,
+                        "limit_times": 1,
+                    }
+                ],
+            },
+            "600002.SH": {
+                "theme_name": "电池",
+                "theme_fund_strength_score": 90.0,
+                "candidate_count": 4,
+                "stock_theme_rank": 1,
+                "kpl_status": "换手回封",
+                "kpl_turnover_rate": 8.5,
+                "limit_events": [
+                    {
+                        "limit": "U",
+                        "open_times": 1,
+                        "limit_times": 2,
+                    }
+                ],
+            },
+        }
+
+        with patch.object(service, "_build_standard_v13_profile_map", return_value=v13_profiles):
+            result = service.screen(top_n=2, profile="aggressive")
+
+        self.assertEqual(result["results"][0]["ts_code"], "600002.SH")
+        self.assertEqual(
+            result["results"][0]["score_breakdown"]["buyability"]["items"]["v13_is_one_word_like"],
+            False,
+        )
+
+    def test_standard_v13_chip_risk_penalty_raises_risk_score_for_overheated_candidate(self) -> None:
+        service = self._build_service()
+        baseline = service.screen(top_n=2, profile="standard")
+        baseline_by_code = {item["ts_code"]: item for item in baseline["ranked_results"]}
+
+        v13_profiles = {
+            "600001.SH": {
+                "theme_name": "鐢垫睜",
+                "theme_fund_strength_score": 86.0,
+                "candidate_count": 5,
+                "stock_theme_rank": 1,
+                "limit_events": [{"limit": "U", "open_times": 0}],
+                "chip_sources": ["tushare.cyq_perf", "tushare.cyq_chips"],
+                "chip_winner_rate": 0.95,
+                "chip_cost_50pct": 9.4,
+                "chip_cost_85pct": 9.1,
+                "chip_concentration_90": 0.25,
+            },
+            "600002.SH": {
+                "theme_name": "鐢垫睜",
+                "theme_fund_strength_score": 82.0,
+                "candidate_count": 5,
+                "stock_theme_rank": 2,
+                "limit_events": [{"limit": "U", "open_times": 1}],
+                "chip_sources": ["tushare.cyq_perf", "tushare.cyq_chips"],
+                "chip_winner_rate": 0.58,
+                "chip_cost_50pct": 8.55,
+                "chip_cost_85pct": 8.7,
+                "chip_concentration_90": 0.08,
+            },
+        }
+
+        with patch.object(service, "_build_standard_v13_profile_map", return_value=v13_profiles):
+            stressed = service.screen(top_n=2, profile="standard")
+
+        stressed_by_code = {item["ts_code"]: item for item in stressed["ranked_results"]}
+        self.assertGreater(stressed_by_code["600001.SH"]["risk_score"], baseline_by_code["600001.SH"]["risk_score"])
+        self.assertIn("chip_overheat", stressed_by_code["600001.SH"]["risk_tags"])
+        self.assertIn("chip_high_profit", stressed_by_code["600001.SH"]["risk_tags"])
+
+    def test_aggressive_v13_chip_signal_changes_buyability_and_ranking(self) -> None:
+        service = self._build_service()
+        v13_profiles = {
+            "600001.SH": {
+                "theme_name": "寮卞娍棰樻潗",
+                "theme_fund_strength_score": 42.0,
+                "candidate_count": 1,
+                "stock_theme_rank": 5,
+                "kpl_status": "涓€瀛楁澘",
+                "kpl_turnover_rate": 1.2,
+                "limit_events": [{"limit": "Z", "open_times": 3, "limit_times": 1}],
+                "chip_sources": ["tushare.cyq_perf", "tushare.cyq_chips"],
+                "chip_winner_rate": 0.95,
+                "chip_cost_50pct": 9.4,
+                "chip_cost_85pct": 9.1,
+                "chip_concentration_90": 0.25,
+            },
+            "600002.SH": {
+                "theme_name": "鐢垫睜",
+                "theme_fund_strength_score": 90.0,
+                "candidate_count": 4,
+                "stock_theme_rank": 1,
+                "kpl_status": "鎹㈡墜鍥炲皝",
+                "kpl_turnover_rate": 8.5,
+                "limit_events": [{"limit": "U", "open_times": 1, "limit_times": 2}],
+                "chip_sources": ["tushare.cyq_perf", "tushare.cyq_chips"],
+                "chip_winner_rate": 0.58,
+                "chip_cost_50pct": 8.55,
+                "chip_cost_85pct": 8.7,
+                "chip_concentration_90": 0.08,
+                "stock_fund_sources": ["tushare.moneyflow_dc", "tushare.moneyflow_ths"],
+                "stock_fund_net_amount": 65000000.0,
+                "stock_fund_net_amount_rate": 5.1,
+                "stock_fund_net_d5_amount": 128000000.0,
+                "stock_fund_buy_lg_amount": 42000000.0,
+                "stock_fund_buy_lg_amount_rate": 2.4,
+            },
+        }
+
+        with patch.object(service, "_build_standard_v13_profile_map", return_value=v13_profiles):
+            result = service.screen(top_n=2, profile="aggressive")
+
+        by_code = {item["ts_code"]: item for item in result["ranked_results"]}
+        self.assertEqual(result["results"][0]["ts_code"], "600002.SH")
+        self.assertEqual(by_code["600002.SH"]["score_breakdown"]["buyability"]["items"]["v13_chip_pressure"], 3)
+        self.assertEqual(
+            by_code["600002.SH"]["score_breakdown"]["capital_support"]["items"]["v13_stock_flow_source_count"],
+            2,
+        )
+        self.assertIn("chip_overheat", by_code["600001.SH"]["risk_tags"])
 
     def test_sector_context_cache_is_shared_across_service_instances(self) -> None:
         fetcher = _FakeFetcher()

@@ -116,6 +116,98 @@ class TestMomentumV13DataService(unittest.TestCase):
             "tushare.kpl_list",
             [{"ts_code": "300750.SZ", "name": "宁德时代", "theme": "锂电池", "lu_desc": "电池产业链"}],
         )
+        fetcher.get_stock_moneyflow_dc = MagicMock(return_value=self._payload(
+            "tushare.moneyflow_dc",
+            [
+                {
+                    "ts_code": "600519.SH",
+                    "close": 1688.0,
+                    "net_amount": 88000000.0,
+                    "net_amount_rate": 5.2,
+                    "buy_elg_amount": 32000000.0,
+                    "buy_elg_amount_rate": 1.8,
+                    "buy_lg_amount": 54000000.0,
+                    "buy_lg_amount_rate": 3.1,
+                    "data_source": "tushare.moneyflow_dc",
+                },
+                {
+                    "ts_code": "300750.SZ",
+                    "close": 222.5,
+                    "net_amount": 56000000.0,
+                    "net_amount_rate": 3.8,
+                    "buy_elg_amount": 18000000.0,
+                    "buy_elg_amount_rate": 1.0,
+                    "buy_lg_amount": 26000000.0,
+                    "buy_lg_amount_rate": 1.7,
+                    "data_source": "tushare.moneyflow_dc",
+                },
+            ],
+        ))
+        fetcher.get_stock_moneyflow_ths = MagicMock(return_value=self._payload(
+            "tushare.moneyflow_ths",
+            [
+                {
+                    "ts_code": "600519.SH",
+                    "close": 1688.0,
+                    "net_amount": 76000000.0,
+                    "net_d5_amount": 210000000.0,
+                    "buy_lg_amount": 50000000.0,
+                    "buy_lg_amount_rate": 2.9,
+                    "buy_md_amount": 12000000.0,
+                    "buy_md_amount_rate": 0.8,
+                    "buy_sm_amount": -6000000.0,
+                    "buy_sm_amount_rate": -0.4,
+                    "data_source": "tushare.moneyflow_ths",
+                },
+                {
+                    "ts_code": "300750.SZ",
+                    "close": 222.5,
+                    "net_amount": 43000000.0,
+                    "net_d5_amount": 88000000.0,
+                    "buy_lg_amount": 22000000.0,
+                    "buy_lg_amount_rate": 1.4,
+                    "buy_md_amount": 8000000.0,
+                    "buy_md_amount_rate": 0.5,
+                    "buy_sm_amount": -5000000.0,
+                    "buy_sm_amount_rate": -0.3,
+                    "data_source": "tushare.moneyflow_ths",
+                },
+            ],
+        ))
+        fetcher.get_cyq_perf = MagicMock(side_effect=lambda trade_date, ts_code: self._payload(
+            "tushare.cyq_perf",
+            [
+                {
+                    "ts_code": ts_code,
+                    "winner_rate": 0.91 if ts_code == "600519.SH" else 0.58,
+                    "weight_avg": 1650.0 if ts_code == "600519.SH" else 218.3,
+                    "cost_5pct": 1520.0 if ts_code == "600519.SH" else 201.2,
+                    "cost_15pct": 1580.0 if ts_code == "600519.SH" else 206.5,
+                    "cost_50pct": 1638.0 if ts_code == "600519.SH" else 216.8,
+                    "cost_85pct": 1672.0 if ts_code == "600519.SH" else 223.9,
+                    "cost_95pct": 1704.0 if ts_code == "600519.SH" else 228.4,
+                    "data_source": "tushare.cyq_perf",
+                }
+            ],
+        ))
+        fetcher.get_cyq_chips = MagicMock(side_effect=lambda trade_date, ts_code: self._payload(
+            "tushare.cyq_chips",
+            [
+                {
+                    "ts_code": ts_code,
+                    "profit_ratio": 0.89 if ts_code == "600519.SH" else 0.61,
+                    "avg_cost": 1648.0 if ts_code == "600519.SH" else 217.6,
+                    "cost_90_low": 1515.0 if ts_code == "600519.SH" else 202.1,
+                    "cost_90_high": 1698.0 if ts_code == "600519.SH" else 226.5,
+                    "concentration_90": 0.057,
+                    "cost_70_low": 1578.0 if ts_code == "600519.SH" else 207.4,
+                    "cost_70_high": 1674.0 if ts_code == "600519.SH" else 222.8,
+                    "concentration_70": 0.03 if ts_code == "600519.SH" else 0.036,
+                    "distribution_points": 24,
+                    "data_source": "tushare.cyq_chips",
+                }
+            ],
+        ))
         fetcher.get_realtime_quote.return_value = _Quote(code="600519.SH", price=1688.0)
         return fetcher
 
@@ -142,16 +234,27 @@ class TestMomentumV13DataService(unittest.TestCase):
         self.assertEqual(context["theme_name_map"]["885800.TI"], "白酒")
         self.assertEqual(context["source_status"]["ths_index"], "ok")
         self.assertEqual(context["hot_items"][0]["rank"], 1)
+        self.assertEqual(
+            sorted(context["stock_moneyflow"]["600519.SH"]["sources"]),
+            ["tushare.moneyflow_dc", "tushare.moneyflow_ths"],
+        )
+        self.assertGreater(context["stock_moneyflow"]["600519.SH"]["net_d5_amount"], 0)
+        self.assertAlmostEqual(context["chip_snapshots"]["600519.SH"]["winner_rate"], 0.91)
+        self.assertEqual(context["chip_snapshots"]["600519.SH"]["distribution_points"], 24)
 
         fetcher.get_stock_limit_prices.assert_called_once_with("2026/04/23")
         fetcher.get_limit_list.assert_called_once_with("2026/04/23")
         fetcher.get_ths_hot.assert_called_once_with("2026/04/23")
         fetcher.get_dc_concepts.assert_called_once_with("2026/04/23")
+        fetcher.get_stock_moneyflow_dc.assert_called_once_with("2026/04/23")
+        fetcher.get_stock_moneyflow_ths.assert_called_once_with("2026/04/23")
         self.assertEqual(fetcher.get_dc_moneyflow_themes.call_count, 2)
         self.assertEqual(fetcher.get_dc_members.call_count, 2)
         fetcher.get_kpl_list.assert_called_once_with("2026/04/23", tag="涨停")
         self.assertEqual(fetcher.get_ths_members.call_count, 2)
         self.assertEqual(fetcher.get_ths_index.call_count, 2)
+        self.assertEqual(fetcher.get_cyq_perf.call_count, 2)
+        self.assertEqual(fetcher.get_cyq_chips.call_count, 2)
 
     def test_build_context_uses_cache_for_repeated_request(self) -> None:
         fetcher = self._make_fetcher()
@@ -165,11 +268,15 @@ class TestMomentumV13DataService(unittest.TestCase):
         fetcher.get_limit_list.assert_called_once()
         fetcher.get_ths_hot.assert_called_once()
         fetcher.get_dc_concepts.assert_called_once()
+        fetcher.get_stock_moneyflow_dc.assert_called_once()
+        fetcher.get_stock_moneyflow_ths.assert_called_once()
         self.assertEqual(fetcher.get_dc_moneyflow_themes.call_count, 2)
         fetcher.get_dc_members.assert_called_once()
         fetcher.get_kpl_list.assert_called_once()
         fetcher.get_ths_members.assert_called_once()
         self.assertEqual(fetcher.get_ths_index.call_count, 2)
+        fetcher.get_cyq_perf.assert_called_once()
+        fetcher.get_cyq_chips.assert_called_once()
         self.assertGreaterEqual(MomentumV13DataService.get_cache_stats()["hit"], 1)
 
     def test_degraded_source_is_visible_in_context(self) -> None:

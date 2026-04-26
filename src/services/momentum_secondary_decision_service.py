@@ -836,10 +836,18 @@ class MomentumSecondaryDecisionService:
         radar: Dict[str, Any],
     ) -> None:
         theme_strength_score = round(_safe_float(radar.get("score"), 50.0), 2)
-        fund_support_score = round(self._v13_fund_support_score(radar), 2)
+        stock_flow_signal = self._v13_stock_flow_shadow_signal(candidate, context, radar)
+        chip_signal = self._v13_chip_shadow_signal(candidate, context, radar)
+        fund_support_score = round(
+            self._v13_fund_support_score(radar, stock_flow_signal=stock_flow_signal),
+            2,
+        )
         limit_structure_score = round(self._v13_limit_structure_score(candidate, context), 2)
-        buyability_score = round(self._v13_buyability_shadow_score(candidate, context), 2)
-        chip_risk_score = 50.0
+        buyability_score = round(
+            self._v13_buyability_shadow_score(candidate, context, chip_signal=chip_signal),
+            2,
+        )
+        chip_risk_score = round(_safe_float(chip_signal.get("risk_score"), 50.0), 2)
         shadow_score = round(
             _clamp_float(
                 theme_strength_score * 0.30
@@ -855,44 +863,191 @@ class MomentumSecondaryDecisionService:
         candidate["_v13_limit_structure_score"] = limit_structure_score
         candidate["_v13_buyability_score"] = buyability_score
         candidate["_v13_chip_risk_score"] = chip_risk_score
+        candidate["_v13_chip_tags"] = list(chip_signal.get("tags") or [])
+        candidate["_v13_chip_signal_available"] = bool(chip_signal.get("available"))
         candidate["_v13_shadow_score"] = shadow_score
         candidate["_v13_shadow_summary"] = (
             f"V1.3影子分 {shadow_score:.1f}：题材 {theme_strength_score:.1f}、"
             f"资金 {fund_support_score:.1f}、涨停结构 {limit_structure_score:.1f}、"
-            f"买点 {buyability_score:.1f}；筹码风险暂用中性值。"
+            f"买点 {buyability_score:.1f}；{self._describe_v13_chip_shadow_signal(chip_signal)}。"
         )
 
     @staticmethod
-    def _v13_fund_support_score(radar: Dict[str, Any]) -> float:
+    def _build_v13_shadow_profile(
+        candidate: Dict[str, Any],
+        context: Dict[str, Any],
+        radar: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        ts_code = _safe_str(candidate.get("ts_code"))
+        stock_flow = (context.get("stock_moneyflow") or {}).get(ts_code) or {}
+        chip_snapshot = (context.get("chip_snapshots") or {}).get(ts_code) or {}
+        return {
+            "theme_name": _safe_str(radar.get("theme_name")),
+            "theme_fund_strength_score": _safe_float(radar.get("fund_strength_score") or radar.get("score"), 50.0),
+            "stock_fund_net_amount": stock_flow.get("net_amount"),
+            "stock_fund_net_amount_rate": stock_flow.get("net_amount_rate"),
+            "stock_fund_net_d5_amount": stock_flow.get("net_d5_amount"),
+            "stock_fund_buy_lg_amount": stock_flow.get("buy_lg_amount"),
+            "stock_fund_buy_lg_amount_rate": stock_flow.get("buy_lg_amount_rate"),
+            "stock_fund_sources": list(stock_flow.get("sources") or []),
+            "chip_winner_rate": chip_snapshot.get("winner_rate"),
+            "chip_weight_avg": chip_snapshot.get("weight_avg"),
+            "chip_avg_cost": chip_snapshot.get("avg_cost"),
+            "chip_cost_15pct": chip_snapshot.get("cost_15pct"),
+            "chip_cost_50pct": chip_snapshot.get("cost_50pct"),
+            "chip_cost_85pct": chip_snapshot.get("cost_85pct"),
+            "chip_cost_95pct": chip_snapshot.get("cost_95pct"),
+            "chip_concentration_90": chip_snapshot.get("concentration_90"),
+            "chip_concentration_70": chip_snapshot.get("concentration_70"),
+            "chip_distribution_points": chip_snapshot.get("distribution_points"),
+            "chip_sources": list(chip_snapshot.get("sources") or []),
+        }
+
+    @staticmethod
+    def _build_v13_shadow_candidate_series(
+        candidate: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> pd.Series:
+        row = dict(candidate)
+        ts_code = _safe_str(candidate.get("ts_code"))
+        stock_flow = (context.get("stock_moneyflow") or {}).get(ts_code) or {}
+        close_price = _safe_float(row.get("close"))
+        if close_price <= 0:
+            close_price = _safe_float(stock_flow.get("close"))
+        if close_price <= 0:
+            entry_low = _safe_float(candidate.get("entry_range_low"))
+            entry_high = _safe_float(candidate.get("entry_range_high"))
+            if entry_low > 0 and entry_high > 0:
+                close_price = (entry_low + entry_high) / 2.0
+            else:
+                close_price = max(entry_low, entry_high, 0.0)
+        if close_price > 0:
+            row["close"] = close_price
+        return pd.Series(row)
+
+    @classmethod
+    def _v13_stock_flow_shadow_signal(
+        cls,
+        candidate: Dict[str, Any],
+        context: Dict[str, Any],
+        radar: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        profile = cls._build_v13_shadow_profile(candidate, context, radar)
+        row = cls._build_v13_shadow_candidate_series(candidate, context)
+        return MomentumScreenerService._resolve_v13_stock_flow(profile, row)
+
+    @classmethod
+    def _v13_chip_shadow_signal(
+        cls,
+        candidate: Dict[str, Any],
+        context: Dict[str, Any],
+        radar: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        profile = cls._build_v13_shadow_profile(candidate, context, radar)
+        row = cls._build_v13_shadow_candidate_series(candidate, context)
+        return MomentumScreenerService._resolve_v13_chip_signal(profile, row)
+
+    @staticmethod
+    def _describe_v13_chip_shadow_signal(chip_signal: Dict[str, Any]) -> str:
+        if not chip_signal.get("available"):
+            return "筹码风险缺少快照，按中性解释"
+
+        risk_score = round(_safe_float(chip_signal.get("risk_score"), 50.0), 1)
+        if risk_score >= 75:
+            level = "高风险"
+        elif risk_score >= 60:
+            level = "偏高"
+        elif risk_score <= 35:
+            level = "低风险"
+        else:
+            level = "中性"
+
+        tags = set(chip_signal.get("tags") or [])
+        note = ""
+        if "chip_overheat" in tags:
+            note = "，获利盘过热"
+        elif "chip_overhead_supply" in tags:
+            note = "，上方筹码偏重"
+        elif "chip_high_profit" in tags:
+            note = "，获利盘拥挤"
+        elif risk_score <= 35:
+            note = "，结构相对健康"
+        return f"筹码风险 {risk_score:.1f}（{level}{note}）"
+
+    @staticmethod
+    def _v13_fund_support_score(
+        radar: Dict[str, Any],
+        *,
+        stock_flow_signal: Optional[Dict[str, Any]] = None,
+    ) -> float:
         score = _safe_float(radar.get("fund_strength_score"), 50.0)
-        if radar.get("fund_strength_score") is not None:
-            return _clamp_float(score)
+        if radar.get("fund_strength_score") is None:
+            net_amount = _safe_float(radar.get("net_amount"))
+            if net_amount > 0:
+                score += min(28.0, net_amount / 500000000.0 * 6.0)
+            elif net_amount < 0:
+                score -= min(22.0, abs(net_amount) / 500000000.0 * 6.0)
 
-        net_amount = _safe_float(radar.get("net_amount"))
-        if net_amount > 0:
-            score += min(28.0, net_amount / 500000000.0 * 6.0)
-        elif net_amount < 0:
-            score -= min(22.0, abs(net_amount) / 500000000.0 * 6.0)
+            board_rank = int(_safe_float(radar.get("board_rank") or radar.get("rank"), 0.0))
+            if 0 < board_rank <= 5:
+                score += 18.0
+            elif board_rank <= 15 and board_rank > 0:
+                score += 10.0
+            elif board_rank <= 30 and board_rank > 0:
+                score += 5.0
 
-        board_rank = int(_safe_float(radar.get("board_rank") or radar.get("rank"), 0.0))
-        if 0 < board_rank <= 5:
-            score += 18.0
-        elif board_rank <= 15 and board_rank > 0:
-            score += 10.0
-        elif board_rank <= 30 and board_rank > 0:
-            score += 5.0
+            net_amount_rate = _safe_float(radar.get("net_amount_rate"))
+            if net_amount_rate > 0:
+                score += min(10.0, net_amount_rate * 1.5)
+            elif net_amount_rate < 0:
+                score -= min(10.0, abs(net_amount_rate) * 1.5)
 
-        net_amount_rate = _safe_float(radar.get("net_amount_rate"))
-        if net_amount_rate > 0:
-            score += min(10.0, net_amount_rate * 1.5)
-        elif net_amount_rate < 0:
-            score -= min(10.0, abs(net_amount_rate) * 1.5)
+            pct_change = _safe_float(radar.get("pct_change"))
+            if pct_change > 0:
+                score += min(8.0, pct_change * 1.2)
+            elif pct_change < 0:
+                score -= min(8.0, abs(pct_change) * 1.2)
 
-        pct_change = _safe_float(radar.get("pct_change"))
-        if pct_change > 0:
-            score += min(8.0, pct_change * 1.2)
-        elif pct_change < 0:
-            score -= min(8.0, abs(pct_change) * 1.2)
+        signal = stock_flow_signal or {}
+        if signal.get("sources"):
+            net_amount = _safe_float(signal.get("net_amount"))
+            net_ratio = _safe_float(signal.get("net_ratio"))
+            d5_amount = _safe_float(signal.get("net_d5_amount"))
+            buy_lg_ratio = _safe_float(signal.get("buy_lg_ratio"))
+            source_count = len(signal.get("sources") or [])
+
+            if net_amount > 0:
+                if net_ratio >= 0.06:
+                    score += 16.0
+                elif net_ratio >= 0.04:
+                    score += 12.0
+                elif net_ratio >= 0.02:
+                    score += 8.0
+                else:
+                    score += 4.0
+            elif net_amount < 0:
+                if abs(net_ratio) >= 0.04:
+                    score -= 16.0
+                elif abs(net_ratio) >= 0.02:
+                    score -= 10.0
+                else:
+                    score -= 5.0
+
+            if d5_amount is not None:
+                if d5_amount > 0 and net_amount > 0:
+                    score += 8.0
+                elif d5_amount < 0:
+                    score -= 8.0
+
+            if buy_lg_ratio >= 0.02:
+                score += 7.0
+            elif buy_lg_ratio >= 0.01:
+                score += 4.0
+            elif net_amount < 0:
+                score -= 3.0
+
+            if source_count >= 2:
+                score += 3.0
         return _clamp_float(score)
 
     @staticmethod
@@ -931,7 +1086,12 @@ class MomentumSecondaryDecisionService:
         return _clamp_float(score)
 
     @staticmethod
-    def _v13_buyability_shadow_score(candidate: Dict[str, Any], context: Dict[str, Any]) -> float:
+    def _v13_buyability_shadow_score(
+        candidate: Dict[str, Any],
+        context: Dict[str, Any],
+        *,
+        chip_signal: Optional[Dict[str, Any]] = None,
+    ) -> float:
         del context
         score = _safe_float(candidate.get("buyability_score"), 55.0)
         if candidate.get("entry_range_low") is not None and candidate.get("entry_range_high") is not None:
@@ -950,6 +1110,25 @@ class MomentumSecondaryDecisionService:
             score += 8.0
         if "high_acceleration" in set(candidate.get("risk_tags") or []):
             score -= 8.0
+        signal = chip_signal or {}
+        if signal.get("available"):
+            chip_buyability_score = int(_safe_float(signal.get("buyability_score"), 2.0))
+            chip_risk_score = _safe_float(signal.get("risk_score"), 50.0)
+            if chip_buyability_score >= 3:
+                score += 10.0
+            elif chip_buyability_score == 2:
+                score += 4.0
+            elif chip_buyability_score == 1:
+                score -= 5.0
+            else:
+                score -= 12.0
+
+            if chip_risk_score >= 75:
+                score -= 10.0
+            elif chip_risk_score >= 60:
+                score -= 5.0
+            elif chip_risk_score <= 32:
+                score += 4.0
         return _clamp_float(score)
 
     def build_intraday_from_decision(

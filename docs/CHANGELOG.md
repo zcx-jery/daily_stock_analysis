@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [改进] 强势筛选 V1.3 共享数据层补充个股资金流与筹码快照，Standard / Aggressive 开始按真实个股承接与筹码风险修正评分。
+- [改进] 强势筛选二次决策 V1.3 影子分接入真实筹码风险与个股承接信号，候选诊断与摘要不再固定使用中性占位。
+- [改进] 强势筛选 Standard 主评分正式接入 V1.3 真实题材共振、板块资金共振和主线风险修正，官方排序不再只把 V1.3 当作影子诊断分。
+- [改进] 强势筛选 Aggressive 进攻补充引擎接入 V1.3 强度确认、买入可行性、题材共振和风险修正，补充观察排序更贴近真实强势题材与可参与结构。
 - [改进] 强势筛选页将 V1.3 资金题材归因接入顶部摘要、Standard 结果表和个股详情抽屉，减少只在独立诊断块里展示的割裂感。
 - [chore] 支持手动部署 workflow 指定 Git ref，并在测试服工作树存在本地改动时先 stash 再拉取目标分支重建服务。
 - [文档] 新增强势筛选 V1.3 Standard / Aggressive 评分升级方案，明确 6000 积分数据如何进入官方主引擎与进攻补充引擎的评分、风险和回测口径。

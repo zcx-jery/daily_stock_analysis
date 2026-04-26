@@ -143,7 +143,7 @@ class _FakeMomentumBacktestService:
             "engine_version": "v1",
             "strategy_health_mode": "cached_only",
             "strategy_health_mode_label": "兼容缓存口径",
-            "entry_baseline_version": "v1_4_2_2",
+            "entry_baseline_version": "v1_4_3_0",
             "market_scope_version": "v1_a_share_main_chinext_star",
             "top_n": 30,
             "start_trade_date": "2026-04-08",
@@ -708,7 +708,7 @@ def _build_fake_screening_result(profile="standard", candidate_count=1):
         "trade_date": "2026-04-10",
         "requested_trade_date": None,
         "trade_date_note": None,
-        "entry_baseline_version": "v1_4_2_2",
+        "entry_baseline_version": "v1_4_3_0",
         "market_scope_version": "v1_a_share_main_chinext_star",
         "candidate_count": candidate_count,
         "results": [result],
@@ -1010,7 +1010,7 @@ def test_momentum_screener_endpoint_returns_response(client):
     assert response.status_code == 200
     data = response.json()
     assert data["profile"] == "standard"
-    assert data["entry_baseline_version"] == "v1_4_2_2"
+    assert data["entry_baseline_version"] == "v1_4_3_0"
     assert data["market_scope_version"] == "v1_a_share_main_chinext_star"
     assert data["candidate_count"] == 1
     assert data["results"][0]["ts_code"] == "600001.SH"
@@ -1055,7 +1055,7 @@ def test_momentum_screener_endpoint_runs_real_standard_service_flow(client):
     assert len(data["results"]) == 2
     assert data["results"][0]["ts_code"] == "600001.SH"
     assert data["results"][0]["themes"]
-    assert data["entry_baseline_version"] == "v1_4_2_2"
+    assert data["entry_baseline_version"] == "v1_4_3_0"
     assert data["market_scope_version"] == "v1_a_share_main_chinext_star"
     assert "strength_confirmation" in data["results"][0]["score_breakdown"]
     assert data["results"][0]["entry_range_low"] is not None

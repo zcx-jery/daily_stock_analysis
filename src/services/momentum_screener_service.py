@@ -17,14 +17,15 @@ import pandas as pd
 from data_provider.base import is_st_stock
 from data_provider.tushare_fetcher import TushareFetcher
 from src.config import get_config
+from src.services.momentum_v13_data_service import MomentumV13DataService
 
 logger = logging.getLogger(__name__)
 
 MOMENTUM_EOD_READY_COVERAGE_RATIO = 0.6
 MOMENTUM_MARKET_CLOSE_CUTOFF = "15:00"
-MOMENTUM_ENTRY_BASELINE_VERSION = "v1_4_2_2"
+MOMENTUM_ENTRY_BASELINE_VERSION = "v1_4_3_0"
 MOMENTUM_MARKET_SCOPE_VERSION = "v1_a_share_main_chinext_star"
-MOMENTUM_SCREENING_CACHE_VERSION = "v1_4_2_2_ranked_screening_v1"
+MOMENTUM_SCREENING_CACHE_VERSION = "v1_4_3_0_ranked_screening_v13_standard_v1"
 MOMENTUM_DEFAULT_TOP_N = 30
 MOMENTUM_DEFAULT_MIN_CHANGE_PCT = 4.0
 MOMENTUM_DEFAULT_MIN_AMOUNT = 2e8
@@ -86,6 +87,8 @@ class MomentumScreenerService:
         self._candidate_pool_cache = self.__class__._shared_candidate_pool_cache
         self._screening_result_cache = self.__class__._shared_screening_result_cache
         self._history_cache = self.__class__._shared_history_cache
+        self._v13_data_service: Optional[MomentumV13DataService] = None
+        self._v13_data_service_unavailable = False
         self.__class__._refresh_sector_cache_ttl_from_config()
         self._trade_snapshot_cache_dir = (
             Path(trade_snapshot_cache_dir)
@@ -812,6 +815,7 @@ class MomentumScreenerService:
         sector_context = cached_sector_entry.get("payload", {}) if isinstance(cached_sector_entry, dict) else {}
         sector_stats = self._build_sector_stats(candidates, sector_context)
 
+        prepared_rows: List[tuple[pd.Series, Dict[str, Any]]] = []
         results: List[Dict[str, Any]] = []
         for index, row in candidates.iterrows():
             history = self._load_history(_safe_str(row.get("ts_code") or row.get("symbol")), trade_date)
@@ -832,12 +836,309 @@ class MomentumScreenerService:
                     ),
                 },
             )
+            prepared_rows.append((row, features))
             if profile == "aggressive":
                 results.append(self._score_aggressive(row, features))
             else:
                 results.append(self._score_standard(row, features))
 
-        return results
+        if not results:
+            return results
+
+        v13_profile_map = self._build_standard_v13_profile_map(
+            trade_date=trade_date,
+            provisional_results=results,
+        )
+        if not v13_profile_map:
+            return results
+
+        enhanced_results: List[Dict[str, Any]] = []
+        for row, features in prepared_rows:
+            enhanced_features = dict(features)
+            enhanced_features["v13_profile"] = v13_profile_map.get(_safe_str(row.get("ts_code")), {})
+            if profile == "aggressive":
+                enhanced_results.append(self._score_aggressive(row, enhanced_features))
+            else:
+                enhanced_results.append(self._score_standard(row, enhanced_features))
+
+        return enhanced_results
+
+    def _get_v13_data_service(self) -> Optional[MomentumV13DataService]:
+        if self._v13_data_service is not None:
+            return self._v13_data_service
+        if self._v13_data_service_unavailable:
+            return None
+        try:
+            self._v13_data_service = MomentumV13DataService(fetcher=self.fetcher)
+        except Exception as exc:  # pragma: no cover - defensive guard for env/config drift
+            self._v13_data_service_unavailable = True
+            logger.warning("Momentum V1.3 data service unavailable in screener: %s", exc)
+            return None
+        return self._v13_data_service
+
+    def _build_standard_v13_profile_map(
+        self,
+        *,
+        trade_date: str,
+        provisional_results: List[Dict[str, Any]],
+    ) -> Dict[str, Dict[str, Any]]:
+        if not provisional_results:
+            return {}
+
+        required_fetcher_methods = (
+            "get_stock_limit_prices",
+            "get_limit_list",
+            "get_dc_concepts",
+            "get_dc_members",
+            "get_dc_moneyflow_themes",
+            "get_kpl_list",
+        )
+        if any(not hasattr(self.fetcher, method_name) for method_name in required_fetcher_methods):
+            return {}
+
+        v13_service = self._get_v13_data_service()
+        if v13_service is None:
+            return {}
+
+        ranked_candidates = [
+            dict(item)
+            for item in provisional_results
+            if _safe_str(item.get("ts_code"))
+        ]
+        if not ranked_candidates:
+            return {}
+
+        ranked_candidates.sort(
+            key=lambda item: (
+                _safe_float(item.get("rank_score")),
+                _safe_float(item.get("final_score")),
+            ),
+            reverse=True,
+        )
+        for rank, item in enumerate(ranked_candidates, start=1):
+            item["rank"] = rank
+
+        try:
+            context = v13_service.build_context(
+                trade_date=trade_date,
+                ts_codes=[_safe_str(item.get("ts_code")) for item in ranked_candidates],
+            )
+            mainline_radar = v13_service.build_mainline_radar(
+                candidates=ranked_candidates,
+                context=context,
+                limit=max(2, len(ranked_candidates)),
+            )
+        except Exception as exc:  # pragma: no cover - fallback to legacy scoring on provider issues
+            logger.warning(
+                "Momentum standard V1.3 scoring fallback to legacy path for trade_date=%s: %s",
+                trade_date,
+                exc,
+            )
+            return {}
+
+        return self._index_standard_v13_profiles(
+            candidates=ranked_candidates,
+            context=context,
+            mainline_radar=mainline_radar,
+        )
+
+    def _index_standard_v13_profiles(
+        self,
+        *,
+        candidates: List[Dict[str, Any]],
+        context: Dict[str, Any],
+        mainline_radar: List[Dict[str, Any]],
+    ) -> Dict[str, Dict[str, Any]]:
+        if not candidates or not context or not mainline_radar:
+            return {}
+
+        stock_theme_map = context.get("stock_theme_map") or {}
+        theme_strength_map = context.get("theme_strength") or {}
+        theme_members = context.get("theme_members") or {}
+        limit_events = context.get("limit_events") or {}
+        stock_moneyflow_map = context.get("stock_moneyflow") or {}
+        chip_snapshots = context.get("chip_snapshots") or {}
+        kpl_by_code = {
+            _safe_str(item.get("ts_code")): item
+            for item in (context.get("kpl_items") or [])
+            if _safe_str(item.get("ts_code"))
+        }
+        radar_by_id = {
+            _safe_str(item.get("theme_id")): item
+            for item in mainline_radar
+            if _safe_str(item.get("theme_id"))
+        }
+        radar_by_name = {
+            _safe_str(item.get("theme_name")): item
+            for item in mainline_radar
+            if _safe_str(item.get("theme_name"))
+        }
+
+        theme_candidate_order: Dict[str, List[str]] = {}
+        for candidate in candidates:
+            ts_code = _safe_str(candidate.get("ts_code"))
+            if not ts_code:
+                continue
+            seen_theme_ids: set[str] = set()
+            for row in stock_theme_map.get(ts_code) or []:
+                theme_id = _safe_str(row.get("theme_code") or row.get("ths_code"))
+                theme_name = _safe_str(row.get("theme_name") or row.get("ths_name") or theme_id)
+                radar = radar_by_id.get(theme_id) or radar_by_name.get(theme_name)
+                if radar is None:
+                    continue
+                normalized_theme_id = _safe_str(
+                    radar.get("theme_id"),
+                    theme_id or _safe_str(radar.get("theme_name")),
+                )
+                if not normalized_theme_id or normalized_theme_id in seen_theme_ids:
+                    continue
+                seen_theme_ids.add(normalized_theme_id)
+                theme_candidate_order.setdefault(normalized_theme_id, []).append(ts_code)
+
+        theme_rank_map = {
+            theme_id: {
+                code: rank
+                for rank, code in enumerate(codes, start=1)
+            }
+            for theme_id, codes in theme_candidate_order.items()
+        }
+
+        profiles: Dict[str, Dict[str, Any]] = {}
+        for candidate in candidates:
+            ts_code = _safe_str(candidate.get("ts_code"))
+            theme_rows = stock_theme_map.get(ts_code) or []
+            kpl_item = kpl_by_code.get(ts_code) or {}
+            if not ts_code or not theme_rows:
+                continue
+
+            best_profile: Optional[Dict[str, Any]] = None
+            for row in theme_rows:
+                theme_id = _safe_str(row.get("theme_code") or row.get("ths_code"))
+                theme_name = _safe_str(row.get("theme_name") or row.get("ths_name") or theme_id)
+                radar = radar_by_id.get(theme_id) or radar_by_name.get(theme_name)
+                if radar is None:
+                    continue
+                normalized_theme_id = _safe_str(
+                    radar.get("theme_id"),
+                    theme_id or _safe_str(radar.get("theme_name")),
+                )
+                strength = theme_strength_map.get(normalized_theme_id) or theme_strength_map.get(
+                    _safe_str(radar.get("theme_name"))
+                ) or {}
+                stock_flow = stock_moneyflow_map.get(ts_code) or {}
+                chip_snapshot = chip_snapshots.get(ts_code) or {}
+                profile = {
+                    "theme_id": normalized_theme_id,
+                    "theme_name": _safe_str(radar.get("theme_name"), theme_name),
+                    "mainline_score": _safe_float(radar.get("score")),
+                    "mainline_level": _safe_str(radar.get("level")),
+                    "mainline_level_label": _safe_str(radar.get("level_label")),
+                    "theme_fund_strength_score": self._estimate_v13_theme_fund_strength(
+                        strength if strength else radar
+                    ),
+                    "candidate_count": int(_safe_float(radar.get("candidate_count"))),
+                    "top10_count": int(_safe_float(radar.get("top10_count"))),
+                    "limit_up_count": int(_safe_float(radar.get("limit_up_count"))),
+                    "broken_limit_count": int(_safe_float(radar.get("broken_limit_count"))),
+                    "board_rank": int(
+                        _safe_float(strength.get("rank") if strength else radar.get("board_rank"), 999)
+                    ),
+                    "board_pct_change": _safe_float(
+                        strength.get("pct_change") if strength else radar.get("pct_change")
+                    ),
+                    "board_net_amount": _safe_float(
+                        strength.get("net_amount") if strength else radar.get("net_amount")
+                    ),
+                    "board_net_amount_rate": _safe_float(
+                        strength.get("net_amount_rate") if strength else radar.get("net_amount_rate")
+                    ),
+                    "board_up_num": int(
+                        _safe_float(strength.get("up_num") if strength else radar.get("up_num"))
+                    ),
+                    "board_down_num": int(
+                        _safe_float(strength.get("down_num") if strength else radar.get("down_num"))
+                    ),
+                    "leader_stock": _safe_str(
+                        strength.get("leading") if strength else radar.get("leader_stock")
+                    ),
+                    "source_count": len(strength.get("sources") or radar.get("data_sources") or []),
+                    "member_count": len(theme_members.get(normalized_theme_id) or []),
+                    "limit_events": list(limit_events.get(ts_code) or []),
+                    "kpl_status": _safe_str(kpl_item.get("status")),
+                    "kpl_turnover_rate": _safe_float(kpl_item.get("turnover_rate")),
+                    "kpl_bid_amount": _safe_float(kpl_item.get("bid_amount")),
+                    "kpl_limit_order": _safe_float(
+                        kpl_item.get("lu_limit_order") or kpl_item.get("limit_order")
+                    ),
+                    "kpl_theme": _safe_str(kpl_item.get("theme")),
+                    "stock_fund_net_amount": _safe_float(stock_flow.get("net_amount")),
+                    "stock_fund_net_amount_rate": _safe_float(stock_flow.get("net_amount_rate")),
+                    "stock_fund_net_d5_amount": _safe_float(stock_flow.get("net_d5_amount")),
+                    "stock_fund_buy_elg_amount": _safe_float(stock_flow.get("buy_elg_amount")),
+                    "stock_fund_buy_elg_amount_rate": _safe_float(stock_flow.get("buy_elg_amount_rate")),
+                    "stock_fund_buy_lg_amount": _safe_float(stock_flow.get("buy_lg_amount")),
+                    "stock_fund_buy_lg_amount_rate": _safe_float(stock_flow.get("buy_lg_amount_rate")),
+                    "stock_fund_sources": list(stock_flow.get("sources") or []),
+                    "chip_winner_rate": _safe_float(chip_snapshot.get("winner_rate")),
+                    "chip_weight_avg": _safe_float(chip_snapshot.get("weight_avg")),
+                    "chip_avg_cost": _safe_float(chip_snapshot.get("avg_cost")),
+                    "chip_cost_15pct": _safe_float(chip_snapshot.get("cost_15pct")),
+                    "chip_cost_50pct": _safe_float(chip_snapshot.get("cost_50pct")),
+                    "chip_cost_85pct": _safe_float(chip_snapshot.get("cost_85pct")),
+                    "chip_cost_95pct": _safe_float(chip_snapshot.get("cost_95pct")),
+                    "chip_concentration_90": _safe_float(chip_snapshot.get("concentration_90")),
+                    "chip_concentration_70": _safe_float(chip_snapshot.get("concentration_70")),
+                    "chip_distribution_points": int(_safe_float(chip_snapshot.get("distribution_points"))),
+                    "chip_sources": list(chip_snapshot.get("sources") or []),
+                    "is_degraded": bool(context.get("is_degraded")),
+                }
+                if best_profile is None or profile["mainline_score"] > _safe_float(best_profile.get("mainline_score")):
+                    best_profile = profile
+
+            if best_profile is None:
+                continue
+
+            theme_id = _safe_str(best_profile.get("theme_id"))
+            stock_theme_rank = theme_rank_map.get(theme_id, {}).get(ts_code, 999)
+            best_profile["stock_theme_rank"] = stock_theme_rank
+            best_profile["is_theme_leader"] = stock_theme_rank <= 2
+            profiles[ts_code] = best_profile
+
+        return profiles
+
+    @staticmethod
+    def _estimate_v13_theme_fund_strength(payload: Dict[str, Any]) -> float:
+        direct_score = payload.get("fund_strength_score")
+        if direct_score is not None:
+            return max(0.0, min(100.0, _safe_float(direct_score, 50.0)))
+
+        score = 50.0
+        board_rank = int(_safe_float(payload.get("rank") or payload.get("board_rank"), 0.0))
+        if 0 < board_rank <= 3:
+            score += 28.0
+        elif 0 < board_rank <= 10:
+            score += 18.0
+        elif 0 < board_rank <= 20:
+            score += 8.0
+
+        net_amount = _safe_float(payload.get("net_amount"))
+        if net_amount > 0:
+            score += min(24.0, net_amount / 500000000.0 * 6.0)
+        elif net_amount < 0:
+            score -= min(18.0, abs(net_amount) / 500000000.0 * 6.0)
+
+        pct_change = _safe_float(payload.get("pct_change"))
+        if pct_change > 0:
+            score += min(12.0, pct_change * 1.8)
+        elif pct_change < 0:
+            score -= min(10.0, abs(pct_change) * 1.4)
+
+        up_num = int(_safe_float(payload.get("up_num")))
+        down_num = int(_safe_float(payload.get("down_num")))
+        breadth_total = up_num + down_num
+        if breadth_total > 0:
+            score += (up_num / breadth_total - 0.5) * 18.0
+        return max(0.0, min(100.0, score))
 
     def _build_sector_stats(self, candidates: pd.DataFrame, sector_context: Optional[Dict[str, Any]] = None) -> Dict[str, Dict[str, Any]]:
         sector_stats: Dict[str, Dict[str, Any]] = {}
@@ -1498,6 +1799,159 @@ class MomentumScreenerService:
             return 0.0
         return max(0.0, min(1.0, (high - max(open_price, close)) / (high - low)))
 
+    @staticmethod
+    def _text_contains_any(value: Any, keywords: List[str]) -> bool:
+        text = _safe_str(value)
+        return any(keyword in text for keyword in keywords if keyword)
+
+    @staticmethod
+    def _resolve_v13_stock_flow(v13_profile: Dict[str, Any], row: pd.Series) -> Dict[str, Any]:
+        amount = _safe_float(row.get("amount"))
+        flow_sources = list(v13_profile.get("stock_fund_sources") or [])
+        net_amount = _safe_float(v13_profile.get("stock_fund_net_amount"), default=None)
+        if net_amount is None or (not flow_sources and net_amount == 0.0):
+            net_amount = _safe_float(row.get("main_net_inflow"))
+        rate_pct = _safe_float(v13_profile.get("stock_fund_net_amount_rate"), default=None)
+        if rate_pct is None:
+            rate_pct = _safe_float(v13_profile.get("stock_fund_buy_lg_amount_rate"), default=None)
+        ratio_from_rate = rate_pct / 100.0 if rate_pct is not None else None
+        ratio_from_amount = net_amount / amount if amount > 0 and net_amount is not None else None
+        net_ratio = ratio_from_rate if ratio_from_rate is not None else (_safe_float(ratio_from_amount) if ratio_from_amount is not None else 0.0)
+        buy_lg_rate_pct = _safe_float(v13_profile.get("stock_fund_buy_lg_amount_rate"), default=None)
+        return {
+            "net_amount": _safe_float(net_amount),
+            "net_amount_rate_pct": _safe_float(rate_pct),
+            "net_ratio": max(0.0, _safe_float(net_ratio)),
+            "net_d5_amount": _safe_float(v13_profile.get("stock_fund_net_d5_amount"), default=None),
+            "buy_lg_amount": _safe_float(v13_profile.get("stock_fund_buy_lg_amount"), default=None),
+            "buy_lg_rate_pct": _safe_float(buy_lg_rate_pct),
+            "buy_lg_ratio": max(0.0, _safe_float(buy_lg_rate_pct) / 100.0) if buy_lg_rate_pct is not None else 0.0,
+            "sources": flow_sources,
+        }
+
+    @staticmethod
+    def _resolve_v13_chip_signal(v13_profile: Dict[str, Any], row: pd.Series) -> Dict[str, Any]:
+        close_price = _safe_float(row.get("close"))
+        chip_sources = list(v13_profile.get("chip_sources") or [])
+        winner_rate = _safe_float(v13_profile.get("chip_winner_rate"), default=None)
+        if winner_rate is not None and winner_rate > 1.0:
+            winner_rate = winner_rate / 100.0
+        cost_50pct = _safe_float(v13_profile.get("chip_cost_50pct"), default=None)
+        cost_85pct = _safe_float(v13_profile.get("chip_cost_85pct"), default=None)
+        weight_avg = _safe_float(v13_profile.get("chip_weight_avg") or v13_profile.get("chip_avg_cost"), default=None)
+        concentration_90 = _safe_float(v13_profile.get("chip_concentration_90"), default=None)
+        available = any(
+            value is not None
+            for value in (winner_rate, cost_50pct, cost_85pct, weight_avg, concentration_90)
+        ) and bool(chip_sources)
+        if close_price <= 0:
+            available = False
+        profit_heat_ratio = 0.0
+        overhead_ratio = 0.0
+        median_gap_ratio = 0.0
+        if available and close_price > 0:
+            if cost_85pct is not None and cost_85pct > 0:
+                profit_heat_ratio = max(0.0, close_price - cost_85pct) / close_price
+                overhead_ratio = max(0.0, cost_85pct - close_price) / close_price
+            if cost_50pct is not None and cost_50pct > 0:
+                median_gap_ratio = abs(close_price - cost_50pct) / close_price
+
+        risk_score = 50.0
+        tags: List[str] = []
+        if available:
+            risk_score = 35.0
+            if winner_rate is not None:
+                if winner_rate >= 0.92:
+                    risk_score += 28.0
+                    tags.append("chip_high_profit")
+                elif winner_rate >= 0.85:
+                    risk_score += 18.0
+                    tags.append("chip_profit_crowding")
+                elif winner_rate >= 0.78:
+                    risk_score += 8.0
+                elif 0.35 <= winner_rate <= 0.72:
+                    risk_score -= 8.0
+                elif winner_rate < 0.15:
+                    risk_score += 4.0
+
+            if profit_heat_ratio >= 0.15:
+                risk_score += 18.0
+                tags.append("chip_overheat")
+            elif profit_heat_ratio >= 0.10:
+                risk_score += 12.0
+                tags.append("chip_overheat")
+            elif profit_heat_ratio >= 0.05:
+                risk_score += 6.0
+            else:
+                risk_score -= 4.0
+
+            if overhead_ratio >= 0.12:
+                risk_score += 10.0
+                tags.append("chip_overhead_supply")
+            elif overhead_ratio >= 0.06:
+                risk_score += 4.0
+            elif overhead_ratio <= 0.02:
+                risk_score -= 2.0
+
+            if concentration_90 is not None:
+                if concentration_90 <= 0.10:
+                    risk_score -= 4.0
+                elif concentration_90 >= 0.22:
+                    risk_score += 8.0
+                    tags.append("chip_concentration_risk")
+                elif concentration_90 >= 0.16:
+                    risk_score += 4.0
+
+            if cost_50pct is not None and close_price > 0:
+                if close_price < cost_50pct and median_gap_ratio >= 0.08:
+                    risk_score += 8.0
+                    tags.append("chip_below_median_cost")
+                elif close_price > cost_50pct and median_gap_ratio <= 0.05:
+                    risk_score -= 3.0
+
+            risk_score = max(0.0, min(100.0, risk_score))
+
+        buyability_score = 2
+        if available:
+            if risk_score <= 32:
+                buyability_score = 3
+            elif risk_score <= 52:
+                buyability_score = 2
+            elif risk_score <= 68:
+                buyability_score = 1
+            else:
+                buyability_score = 0
+
+        standard_penalty = 0.0
+        aggressive_penalty = 0.0
+        if available:
+            if risk_score >= 78:
+                standard_penalty = 6.0
+                aggressive_penalty = 5.0
+            elif risk_score >= 65:
+                standard_penalty = 4.0
+                aggressive_penalty = 3.0
+            elif risk_score >= 55:
+                standard_penalty = 2.0
+                aggressive_penalty = 1.5
+
+        return {
+            "available": available,
+            "risk_score": round(risk_score, 2),
+            "buyability_score": buyability_score,
+            "standard_penalty": standard_penalty,
+            "aggressive_penalty": aggressive_penalty,
+            "winner_rate": winner_rate,
+            "cost_50pct": cost_50pct,
+            "cost_85pct": cost_85pct,
+            "weight_avg": weight_avg,
+            "concentration_90": concentration_90,
+            "profit_heat_ratio": round(profit_heat_ratio, 4),
+            "overhead_ratio": round(overhead_ratio, 4),
+            "tags": tags,
+            "sources": chip_sources,
+        }
+
     def _score_standard(self, row: pd.Series, features: Dict[str, Any]) -> Dict[str, Any]:
         breakdown = {
             "strength_confirmation": self._score_strength_confirmation(row, features),
@@ -1512,17 +1966,17 @@ class MomentumScreenerService:
         base_score = sum(item["score"] for item in breakdown.values())
         final_score = max(0.0, base_score - risk_penalty)
         continuation_score = (
-            (breakdown["strength_confirmation"]["score"] / 20.0) * 0.30
-            + (breakdown["volume_price_structure"]["score"] / 20.0) * 0.30
-            + (breakdown["sector_resonance"]["score"] / 20.0) * 0.25
-            + (breakdown["capital_support"]["score"] / 15.0) * 0.15
+            (breakdown["strength_confirmation"]["score"] / 20.0) * 0.28
+            + (breakdown["volume_price_structure"]["score"] / 18.0) * 0.27
+            + (breakdown["sector_resonance"]["score"] / 25.0) * 0.25
+            + (breakdown["capital_support"]["score"] / 17.0) * 0.20
         ) * 100
         extension_score = (
-            (breakdown["trend_position"]["score"] / 15.0) * 0.40
-            + (breakdown["sector_resonance"]["score"] / 20.0) * 0.30
-            + (breakdown["elasticity_activity"]["score"] / 10.0) * 0.30
+            (breakdown["trend_position"]["score"] / 12.0) * 0.38
+            + (breakdown["sector_resonance"]["score"] / 25.0) * 0.34
+            + (breakdown["elasticity_activity"]["score"] / 8.0) * 0.28
         ) * 100
-        risk_score = (risk_penalty / 20.0) * 100
+        risk_score = (risk_penalty / 25.0) * 100
         rank_score = continuation_score * 0.65 + extension_score * 0.25 - risk_score * 0.10
 
         sector_stats = features["sector_stats"]
@@ -1621,22 +2075,22 @@ class MomentumScreenerService:
         continuation_score = (
             (breakdown["strength_confirmation"]["score"] / 30.0) * 0.35
             + (breakdown["capital_support"]["score"] / 20.0) * 0.25
-            + (breakdown["volume_price_track"]["score"] / 15.0) * 0.20
-            + (breakdown["sector_resonance"]["score"] / 12.0) * 0.10
+            + (breakdown["volume_price_track"]["score"] / 14.0) * 0.20
+            + (breakdown["sector_resonance"]["score"] / 10.0) * 0.10
             + (breakdown["trend_elasticity"]["score"] / 8.0) * 0.10
         ) * 100
         extension_score = (
             (breakdown["strength_confirmation"]["score"] / 30.0) * 0.25
-            + (breakdown["sector_resonance"]["score"] / 12.0) * 0.20
+            + (breakdown["sector_resonance"]["score"] / 10.0) * 0.20
             + (breakdown["trend_elasticity"]["score"] / 8.0) * 0.30
-            + (breakdown["buyability"]["score"] / 15.0) * 0.25
+            + (breakdown["buyability"]["score"] / 18.0) * 0.25
         ) * 100
         buyability_score = (
-            (breakdown["buyability"]["score"] / 15.0) * 0.50
-            + (breakdown["volume_price_track"]["score"] / 15.0) * 0.30
+            (breakdown["buyability"]["score"] / 18.0) * 0.50
+            + (breakdown["volume_price_track"]["score"] / 14.0) * 0.30
             + (breakdown["capital_support"]["score"] / 20.0) * 0.20
         ) * 100
-        risk_score = (risk_penalty / 15.0) * 100
+        risk_score = (risk_penalty / 20.0) * 100
         rank_score = continuation_score * 0.55 + buyability_score * 0.25 + extension_score * 0.20 - risk_score * 0.12
 
         sector_stats = features["sector_stats"]
@@ -1698,15 +2152,57 @@ class MomentumScreenerService:
         close_score = 6 if close_position >= 0.92 else 5 if close_position >= 0.82 else 3 if close_position >= 0.70 else 1 if close_position >= 0.55 else 0
         accel_score = 6 if cum_ret_3d >= 20 and limit_proximity >= 0.99 else 4 if cum_ret_3d >= 15 and close_position >= 0.82 else 2 if cum_ret_3d >= 10 else 0
 
+        legacy_score = float(limit_score + gap_score + close_score + accel_score)
+        items: Dict[str, Any] = {
+            "limit_strength": limit_score,
+            "gap_open_strength": gap_score,
+            "close_status": close_score,
+            "acceleration_confirmation": accel_score,
+            "legacy_raw_score": legacy_score,
+        }
+
+        v13_profile = features.get("v13_profile") or {}
+        if not v13_profile:
+            return {
+                "score": legacy_score,
+                "max_score": 30,
+                "items": items,
+            }
+
+        limit_events = list(v13_profile.get("limit_events") or [])
+        kpl_status = _safe_str(v13_profile.get("kpl_status"))
+        max_limit_times = max((int(_safe_float(event.get("limit_times"))) for event in limit_events), default=0)
+        open_times = max((int(_safe_float(event.get("open_times"))) for event in limit_events), default=0)
+        final_limit_flag = _safe_str(limit_events[-1].get("limit") if limit_events else "")
+
+        limit_strength_v13 = 8 if final_limit_flag == "U" else 7 if limit_proximity >= 0.997 else 5 if limit_proximity >= 0.99 else 3 if _safe_float(row.get("pct_chg")) >= 7 else 0
+        seal_status_score = 7 if self._text_contains_any(kpl_status, ["换手", "回封"]) else 6 if final_limit_flag == "U" else 3 if self._text_contains_any(kpl_status, ["炸板"]) else 1 if limit_proximity >= 0.99 else 0
+        open_reseal_score = 6 if final_limit_flag == "U" and 1 <= open_times <= 2 else 4 if final_limit_flag == "U" and open_times == 0 else 2 if final_limit_flag == "U" and open_times >= 3 else 0
+        board_height_score = 4 if max_limit_times >= 3 else 3 if max_limit_times == 2 else 2 if max_limit_times == 1 else 0
+        close_accel_score = 5 if close_position >= 0.90 and cum_ret_3d >= 15 else 4 if close_position >= 0.82 and cum_ret_3d >= 10 else 3 if close_position >= 0.75 else 1 if _safe_float(row.get("pct_chg")) >= 7 else 0
+
+        v13_score = float(
+            limit_strength_v13
+            + seal_status_score
+            + open_reseal_score
+            + board_height_score
+            + close_accel_score
+        )
+        blended_score = round(min(30.0, legacy_score * 0.35 + v13_score * 0.65), 2)
+        items.update(
+            {
+                "v13_limit_strength": limit_strength_v13,
+                "v13_seal_status": seal_status_score,
+                "v13_open_reseal": open_reseal_score,
+                "v13_board_height": board_height_score,
+                "v13_close_acceleration": close_accel_score,
+                "v13_raw_score": v13_score,
+            }
+        )
         return {
-            "score": float(limit_score + gap_score + close_score + accel_score),
+            "score": blended_score,
             "max_score": 30,
-            "items": {
-                "limit_strength": limit_score,
-                "gap_open_strength": gap_score,
-                "close_status": close_score,
-                "acceleration_confirmation": accel_score,
-            },
+            "items": items,
         }
 
     def _score_aggressive_capital_support(self, row: pd.Series, features: Dict[str, Any]) -> Dict[str, Any]:
@@ -1723,15 +2219,59 @@ class MomentumScreenerService:
         consistency_score = 4 if limit_proximity >= 0.99 and main_net_inflow > 0 else 3 if pct_chg >= 7 and main_net_inflow > 0 else 1 if pct_chg >= 7 and main_inflow_ratio >= 0 else 0
         top_list_score = 2 if top_list_flag and top_list_net_amount > 0 else 1 if (not top_list_flag) or top_list_net_amount == 0 else 0
 
+        legacy_score = float(absolute_score + ratio_score + consistency_score + top_list_score)
+        items: Dict[str, Any] = {
+            "main_inflow_abs": absolute_score,
+            "main_inflow_ratio": ratio_score,
+            "price_flow_alignment": consistency_score,
+            "top_list": top_list_score,
+            "legacy_raw_score": legacy_score,
+        }
+
+        v13_profile = features.get("v13_profile") or {}
+        if not v13_profile:
+            return {
+                "score": legacy_score,
+                "max_score": 20,
+                "items": items,
+            }
+
+        flow_signal = self._resolve_v13_stock_flow(v13_profile, row)
+        effective_net_amount = _safe_float(flow_signal.get("net_amount"))
+        effective_net_ratio = _safe_float(flow_signal.get("net_ratio"))
+        d5_amount = _safe_float(flow_signal.get("net_d5_amount"), default=None)
+        buy_lg_ratio = _safe_float(flow_signal.get("buy_lg_ratio"))
+        v13_abs_score = 6 if effective_net_amount > 0 and (effective_net_ratio >= 0.05 or inflow_rank_pct >= 0.90) else 5 if effective_net_amount > 0 and (effective_net_ratio >= 0.03 or inflow_rank_pct >= 0.75) else 3 if effective_net_amount > 0 and (effective_net_ratio >= 0.01 or inflow_rank_pct >= 0.50) else 1 if effective_net_amount > 0 else 0
+        v13_ratio_score = 5 if effective_net_ratio >= 0.06 else 4 if effective_net_ratio >= 0.04 else 3 if effective_net_ratio >= 0.02 else 1 if effective_net_ratio > 0 else 0
+
+        theme_fund_strength = _safe_float(v13_profile.get("theme_fund_strength_score"), 50.0)
+        board_resonance_score = 4 if effective_net_amount > 0 and theme_fund_strength >= 80 else 3 if effective_net_amount > 0 and theme_fund_strength >= 68 else 2 if theme_fund_strength >= 60 else 0
+        price_flow_score = 3 if d5_amount is not None and d5_amount > 0 and effective_net_amount > 0 else 2 if effective_net_amount > 0 and (buy_lg_ratio >= 0.02 or pct_chg >= 7) else 1 if pct_chg >= 7 and theme_fund_strength >= 68 else 0
+        top_list_score_v13 = 2 if top_list_flag and top_list_net_amount > 0 else 1 if top_list_flag or top_list_net_amount == 0 else 0
+
+        v13_score = float(
+            v13_abs_score
+            + v13_ratio_score
+            + board_resonance_score
+            + price_flow_score
+            + top_list_score_v13
+        )
+        blended_score = round(min(20.0, legacy_score * 0.40 + v13_score * 0.60), 2)
+        items.update(
+            {
+                "v13_main_inflow_abs": v13_abs_score,
+                "v13_main_inflow_ratio": v13_ratio_score,
+                "v13_board_resonance": board_resonance_score,
+                "v13_flow_follow_through": price_flow_score,
+                "v13_top_list": top_list_score_v13,
+                "v13_stock_flow_source_count": len(flow_signal.get("sources") or []),
+                "v13_raw_score": v13_score,
+            }
+        )
         return {
-            "score": float(absolute_score + ratio_score + consistency_score + top_list_score),
+            "score": blended_score,
             "max_score": 20,
-            "items": {
-                "main_inflow_abs": absolute_score,
-                "main_inflow_ratio": ratio_score,
-                "price_flow_alignment": consistency_score,
-                "top_list": top_list_score,
-            },
+            "items": items,
         }
 
     def _score_aggressive_buyability(self, row: pd.Series, features: Dict[str, Any]) -> Dict[str, Any]:
@@ -1743,14 +2283,67 @@ class MomentumScreenerService:
         amount_score = 5 if 5e8 <= amount <= 1.8e9 else 4 if 3e8 <= amount < 5e8 or 1.8e9 < amount <= 2.5e9 else 2 if 2.5e9 < amount <= 4e9 else 0
         turnover_score = 4 if 5 <= turnover_rate <= 15 else 3 if 3 <= turnover_rate < 5 or 15 < turnover_rate <= 20 else 1 if 20 < turnover_rate <= 25 else 0
 
+        legacy_raw_score = float(amplitude_score + amount_score + turnover_score)
+        legacy_scaled_score = round(legacy_raw_score / 15.0 * 18.0, 2)
+        items: Dict[str, Any] = {
+            "amplitude_space": amplitude_score,
+            "amount_golden_zone": amount_score,
+            "turnover_golden_zone": turnover_score,
+            "legacy_raw_score": legacy_raw_score,
+        }
+
+        v13_profile = features.get("v13_profile") or {}
+        if not v13_profile:
+            return {
+                "score": legacy_scaled_score,
+                "max_score": 18,
+                "items": items,
+            }
+
+        limit_proximity = _safe_float(row.get("close")) / max(_safe_float(row.get("up_limit")), 1.0)
+        kpl_status = _safe_str(v13_profile.get("kpl_status"))
+        kpl_turnover_rate = _safe_float(v13_profile.get("kpl_turnover_rate"), turnover_rate)
+        limit_events = list(v13_profile.get("limit_events") or [])
+        final_limit_flag = _safe_str(limit_events[-1].get("limit") if limit_events else "")
+        open_times = max((int(_safe_float(event.get("open_times"))) for event in limit_events), default=0)
+        is_one_word_like = self._text_contains_any(kpl_status, ["一字"]) or (
+            final_limit_flag == "U" and open_times == 0 and limit_proximity >= 0.997 and kpl_turnover_rate < 3
+        )
+
+        turnover_score_v13 = 5 if 5 <= kpl_turnover_rate <= 18 and not is_one_word_like else 4 if 3 <= kpl_turnover_rate < 5 or 18 < kpl_turnover_rate <= 22 else 2 if 2 <= kpl_turnover_rate < 3 else 0
+        structure_score = 4 if final_limit_flag == "U" and 1 <= open_times <= 2 else 3 if self._text_contains_any(kpl_status, ["回封", "换手"]) else 2 if final_limit_flag == "U" and open_times == 0 and not is_one_word_like else 1 if final_limit_flag == "Z" else 0
+        chase_room_score = 3 if 0.97 <= limit_proximity <= 0.992 else 2 if 0.992 < limit_proximity <= 0.997 else 1 if limit_proximity < 0.97 else 0
+        chip_signal = self._resolve_v13_chip_signal(v13_profile, row)
+        chip_pressure_score = int(chip_signal.get("buyability_score", 2))
+        amount_score_v13 = 3 if 5e8 <= amount <= 2.5e9 else 2 if 3e8 <= amount < 5e8 or 2.5e9 < amount <= 4e9 else 1 if 2e8 <= amount < 3e8 else 0
+
+        v13_score = float(
+            turnover_score_v13
+            + structure_score
+            + chase_room_score
+            + chip_pressure_score
+            + amount_score_v13
+        )
+        blended_score = round(min(18.0, legacy_scaled_score * 0.30 + v13_score * 0.70), 2)
+        items.update(
+            {
+                "v13_turnover_participation": turnover_score_v13,
+                "v13_structure_quality": structure_score,
+                "v13_chase_room": chase_room_score,
+                "v13_chip_pressure": chip_pressure_score,
+                "v13_chip_risk_score": chip_signal.get("risk_score"),
+                "v13_chip_profit_heat_ratio": chip_signal.get("profit_heat_ratio"),
+                "v13_chip_overhead_ratio": chip_signal.get("overhead_ratio"),
+                "v13_chip_tags": chip_signal.get("tags"),
+                "v13_amount_capacity": amount_score_v13,
+                "v13_is_one_word_like": is_one_word_like,
+                "v13_raw_score": v13_score,
+            }
+        )
         return {
-            "score": float(amplitude_score + amount_score + turnover_score),
-            "max_score": 15,
-            "items": {
-                "amplitude_space": amplitude_score,
-                "amount_golden_zone": amount_score,
-                "turnover_golden_zone": turnover_score,
-            },
+            "score": blended_score,
+            "max_score": 18,
+            "items": items,
         }
 
     def _build_aggressive_entry_range(self, row: pd.Series, features: Dict[str, Any]) -> tuple[Optional[float], Optional[float]]:
@@ -1804,13 +2397,43 @@ class MomentumScreenerService:
         else:
             turnover_score = 0
 
+        legacy_raw_score = float(min(shrink_score + turnover_score, 15))
+        legacy_scaled_score = round(legacy_raw_score / 15.0 * 14.0, 2)
+        items: Dict[str, Any] = {
+            "consensus_limit": shrink_score,
+            "healthy_turnover": turnover_score,
+            "legacy_raw_score": legacy_raw_score,
+        }
+
+        v13_profile = features.get("v13_profile") or {}
+        if not v13_profile:
+            return {
+                "score": legacy_scaled_score,
+                "max_score": 14,
+                "items": items,
+            }
+
+        limit_events = list(v13_profile.get("limit_events") or [])
+        open_times = max((int(_safe_float(event.get("open_times"))) for event in limit_events), default=0)
+        final_limit_flag = _safe_str(limit_events[-1].get("limit") if limit_events else "")
+        kpl_status = _safe_str(v13_profile.get("kpl_status"))
+
+        consensus_score = 7 if final_limit_flag == "U" and open_times == 0 and volume_ratio < 1.2 else 5 if final_limit_flag == "U" and volume_ratio < 1.6 else 2 if final_limit_flag == "U" else 0
+        healthy_turnover_v13 = 7 if final_limit_flag == "U" and 1 <= open_times <= 2 else 6 if self._text_contains_any(kpl_status, ["换手", "回封"]) and 4 <= turnover_rate <= 18 else 4 if 1.2 <= volume_ratio <= 3.5 and 4 <= turnover_rate <= 18 else 1 if turnover_rate >= 2 else 0
+
+        v13_score = float(min(consensus_score + healthy_turnover_v13, 14))
+        blended_score = round(min(14.0, legacy_scaled_score * 0.40 + v13_score * 0.60), 2)
+        items.update(
+            {
+                "v13_consensus_limit": consensus_score,
+                "v13_healthy_turnover": healthy_turnover_v13,
+                "v13_raw_score": v13_score,
+            }
+        )
         return {
-            "score": float(min(shrink_score + turnover_score, 15)),
-            "max_score": 15,
-            "items": {
-                "consensus_limit": shrink_score,
-                "healthy_turnover": turnover_score,
-            },
+            "score": blended_score,
+            "max_score": 14,
+            "items": items,
         }
 
     def _score_aggressive_sector_resonance(self, row: pd.Series, features: Dict[str, Any]) -> Dict[str, Any]:
@@ -1826,14 +2449,44 @@ class MomentumScreenerService:
         breadth_score = 4 if limit_count >= 3 or strong_count >= 6 else 3 if limit_count == 2 or 4 <= strong_count <= 5 else 2 if limit_count == 1 or 2 <= strong_count <= 3 else 0
         leader_score = 3 if leader_rank <= 2 else 2 if leader_rank <= 5 else 0
 
+        legacy_raw_score = float(rank_score + breadth_score + leader_score)
+        legacy_scaled_score = round(legacy_raw_score / 12.0 * 10.0, 2)
+        items: Dict[str, Any] = {
+            "sector_rank": rank_score,
+            "sector_breadth": breadth_score,
+            "sector_leader": leader_score,
+            "legacy_raw_score": legacy_raw_score,
+        }
+
+        v13_profile = features.get("v13_profile") or {}
+        if not v13_profile:
+            return {
+                "score": legacy_scaled_score,
+                "max_score": 10,
+                "items": items,
+            }
+
+        theme_fund_strength = _safe_float(v13_profile.get("theme_fund_strength_score"), 50.0)
+        candidate_count = int(_safe_float(v13_profile.get("candidate_count")))
+        stock_theme_rank = int(_safe_float(v13_profile.get("stock_theme_rank"), 999.0))
+
+        theme_strength_score = 4 if theme_fund_strength >= 82 else 3 if theme_fund_strength >= 68 else 2 if theme_fund_strength >= 58 else 0
+        density_score = 3 if candidate_count >= 4 else 2 if candidate_count >= 2 else 1 if candidate_count == 1 else 0
+        leader_score_v13 = 3 if stock_theme_rank <= 1 else 2 if stock_theme_rank <= 3 else 1 if stock_theme_rank <= 5 else 0
+        v13_score = float(theme_strength_score + density_score + leader_score_v13)
+        blended_score = round(min(10.0, legacy_scaled_score * 0.30 + v13_score * 0.70), 2)
+        items.update(
+            {
+                "v13_theme_strength": theme_strength_score,
+                "v13_theme_density": density_score,
+                "v13_theme_leader": leader_score_v13,
+                "v13_raw_score": v13_score,
+            }
+        )
         return {
-            "score": float(rank_score + breadth_score + leader_score),
-            "max_score": 12,
-            "items": {
-                "sector_rank": rank_score,
-                "sector_breadth": breadth_score,
-                "sector_leader": leader_score,
-            },
+            "score": blended_score,
+            "max_score": 10,
+            "items": items,
         }
 
     def _score_aggressive_trend_elasticity(self, row: pd.Series, features: Dict[str, Any]) -> Dict[str, Any]:
@@ -1895,8 +2548,57 @@ class MomentumScreenerService:
         elif strong_count <= 2:
             penalties.append(("sector_fade", 2))
 
-        total_penalty = min(sum(score for _, score in penalties), 15)
-        return float(total_penalty), [name for name, _ in penalties]
+        legacy_penalty = min(sum(score for _, score in penalties), 15)
+        legacy_tags = [name for name, _ in penalties]
+
+        v13_profile = features.get("v13_profile") or {}
+        if not v13_profile:
+            return round(legacy_penalty / 15.0 * 20.0, 2), legacy_tags
+
+        extra_penalty = 0.0
+        extra_tags: List[str] = []
+        limit_events = list(v13_profile.get("limit_events") or [])
+        open_times = max((int(_safe_float(event.get("open_times"))) for event in limit_events), default=0)
+        final_limit_flag = _safe_str(limit_events[-1].get("limit") if limit_events else "")
+        if final_limit_flag == "Z":
+            extra_penalty += 6.0
+            extra_tags.append("limit_break")
+        elif open_times >= 3:
+            extra_penalty += 4.0
+            extra_tags.append("weak_reseal")
+        elif open_times == 2:
+            extra_penalty += 2.0
+            extra_tags.append("multiple_open_board")
+
+        theme_fund_strength = _safe_float(v13_profile.get("theme_fund_strength_score"), 50.0)
+        if theme_fund_strength < 42:
+            extra_penalty += 4.0
+            extra_tags.append("theme_fund_fade")
+        elif theme_fund_strength < 55:
+            extra_penalty += 2.0
+            extra_tags.append("theme_fund_soft")
+
+        stock_theme_rank = int(_safe_float(v13_profile.get("stock_theme_rank"), 999.0))
+        candidate_count = int(_safe_float(v13_profile.get("candidate_count")))
+        if candidate_count >= 4 and stock_theme_rank >= 5:
+            extra_penalty += 3.0
+            extra_tags.append("theme_back_runner")
+        elif candidate_count >= 3 and stock_theme_rank >= 3:
+            extra_penalty += 1.5
+            extra_tags.append("theme_follow_up")
+
+        chip_signal = self._resolve_v13_chip_signal(v13_profile, row)
+        if chip_signal.get("available"):
+            extra_penalty += _safe_float(chip_signal.get("aggressive_penalty"))
+            extra_tags.extend(chip_signal.get("tags") or [])
+
+        if limit_proximity >= 0.997 and pct_chg >= 9 and main_net_inflow <= 0:
+            extra_penalty += 3.0
+            extra_tags.append("high_position_no_flow")
+
+        total_penalty = round(min(20.0, legacy_penalty / 15.0 * 20.0 + extra_penalty * 0.55), 2)
+        merged_tags = list(dict.fromkeys([*legacy_tags, *extra_tags]))
+        return total_penalty, merged_tags
 
     def _score_strength_confirmation(self, row: pd.Series, features: Dict[str, Any]) -> Dict[str, Any]:
         pct_chg = _safe_float(row.get("pct_chg"))
@@ -1931,14 +2633,17 @@ class MomentumScreenerService:
         amount_score = 4 if amount_rank_pct >= 0.80 else 3 if amount_rank_pct >= 0.60 else 2 if amount_rank_pct >= 0.30 else 0
         expand_score = 4 if 1.5 <= volume_expand_5 <= 3.0 else 3 if 1.2 <= volume_expand_5 < 1.5 else 2 if 3.0 < volume_expand_5 <= 4.0 else 1 if 1.0 <= volume_expand_5 < 1.2 else 0
 
+        raw_score = float(volume_score + turnover_score + amount_score + expand_score)
+        scaled_score = round(raw_score / 20.0 * 18.0, 2)
         return {
-            "score": float(volume_score + turnover_score + amount_score + expand_score),
-            "max_score": 20,
+            "score": scaled_score,
+            "max_score": 18,
             "items": {
                 "volume_ratio": volume_score,
                 "turnover_rate": turnover_score,
                 "amount_rank": amount_score,
                 "volume_expand_5": expand_score,
+                "legacy_raw_score": raw_score,
             },
         }
 
@@ -1956,13 +2661,16 @@ class MomentumScreenerService:
         break_score = 5 if close_price > prev_20d_high or _safe_float(row.get("high")) > prev_60d_high else 4 if prev_20d_high > 0 and abs(close_price - prev_20d_high) / prev_20d_high <= 0.01 else 3 if prev_20d_high > 0 and abs(close_price - prev_20d_high) / prev_20d_high <= 0.03 else 1 if close_price >= ma10 else 0
         strong_score = 5 if cum_ret_5d >= 15 and up_days_5d >= 3 else 4 if cum_ret_5d >= 10 and up_days_5d >= 3 else 3 if cum_ret_5d >= 5 else 1 if _safe_float(row.get("pct_chg")) >= 7 else 0
 
+        raw_score = float(ma_score + break_score + strong_score)
+        scaled_score = round(raw_score / 15.0 * 12.0, 2)
         return {
-            "score": float(ma_score + break_score + strong_score),
-            "max_score": 15,
+            "score": scaled_score,
+            "max_score": 12,
             "items": {
                 "ma_structure": ma_score,
                 "breakout": break_score,
                 "strong_trend_5d": strong_score,
+                "legacy_raw_score": raw_score,
             },
         }
 
@@ -1981,15 +2689,70 @@ class MomentumScreenerService:
         ladder_score = 4 if leader_rank <= 2 and strong_count >= 3 else 3 if strong_count >= 2 else 2 if strong_count >= 1 else 0
         leader_score = 5 if leader_rank <= 2 else 4 if leader_rank <= 5 else 2 if leader_rank <= max(int(sector_size / 2), 1) else 0
 
+        legacy_raw_score = float(rank_score + breadth_score + ladder_score + leader_score)
+        legacy_scaled_score = round(legacy_raw_score / 20.0 * 25.0, 2)
+        items: Dict[str, Any] = {
+            "sector_rank": rank_score,
+            "sector_breadth": breadth_score,
+            "sector_ladder": ladder_score,
+            "sector_leader": leader_score,
+            "legacy_raw_score": legacy_raw_score,
+        }
+
+        v13_profile = features.get("v13_profile") or {}
+        if not v13_profile:
+            return {
+                "score": legacy_scaled_score,
+                "max_score": 25,
+                "items": items,
+            }
+
+        board_rank = int(_safe_float(v13_profile.get("board_rank"), 999.0))
+        theme_strength_score = 8 if board_rank <= 3 else 7 if board_rank <= 5 else 6 if board_rank <= 10 else 5 if board_rank <= 15 else 3 if board_rank <= 30 else 0
+
+        theme_fund_strength = _safe_float(v13_profile.get("theme_fund_strength_score"), 50.0)
+        fund_score = 6 if theme_fund_strength >= 85 else 5 if theme_fund_strength >= 72 else 4 if theme_fund_strength >= 62 else 2 if theme_fund_strength >= 52 else 0
+
+        candidate_count = int(_safe_float(v13_profile.get("candidate_count")))
+        top10_count = int(_safe_float(v13_profile.get("top10_count")))
+        density_score = 5 if candidate_count >= 5 or top10_count >= 3 else 4 if candidate_count >= 4 or top10_count >= 2 else 3 if candidate_count >= 2 else 1 if candidate_count == 1 else 0
+
+        up_num = int(_safe_float(v13_profile.get("board_up_num")))
+        down_num = int(_safe_float(v13_profile.get("board_down_num")))
+        total_num = up_num + down_num
+        up_ratio = up_num / total_num if total_num > 0 else 0.5
+        breadth_score_v13 = 3 if up_ratio >= 0.68 or up_num >= down_num * 2 else 2 if up_ratio >= 0.58 else 1 if up_ratio >= 0.52 else 0
+
+        stock_theme_rank = int(_safe_float(v13_profile.get("stock_theme_rank"), 999.0))
+        leader_name = _safe_str(v13_profile.get("leader_stock"))
+        leader_score_v13 = 3 if stock_theme_rank <= 1 or leader_name == _safe_str(row.get("name")) else 2 if stock_theme_rank <= 3 else 1 if stock_theme_rank <= 5 else 0
+
+        v13_raw_score = float(
+            theme_strength_score
+            + fund_score
+            + density_score
+            + breadth_score_v13
+            + leader_score_v13
+        )
+        blended_score = round(
+            min(25.0, legacy_scaled_score * 0.35 + v13_raw_score * 0.65),
+            2,
+        )
+        items.update(
+            {
+                "v13_theme_strength": theme_strength_score,
+                "v13_theme_fund": fund_score,
+                "v13_theme_density": density_score,
+                "v13_theme_breadth": breadth_score_v13,
+                "v13_theme_leader": leader_score_v13,
+                "v13_raw_score": v13_raw_score,
+                "v13_theme_name": v13_profile.get("theme_name"),
+            }
+        )
         return {
-            "score": float(rank_score + breadth_score + ladder_score + leader_score),
-            "max_score": 20,
-            "items": {
-                "sector_rank": rank_score,
-                "sector_breadth": breadth_score,
-                "sector_ladder": ladder_score,
-                "sector_leader": leader_score,
-            },
+            "score": blended_score,
+            "max_score": 25,
+            "items": items,
         }
 
     def _score_capital_support(self, row: pd.Series, features: Dict[str, Any]) -> Dict[str, Any]:
@@ -2005,15 +2768,74 @@ class MomentumScreenerService:
         top_list_score = 3 if top_list_flag and top_list_net_amount > 0 else 2 if top_list_flag and top_list_net_amount == 0 else 1 if not top_list_flag else 0
         consistency_score = 2 if pct_chg >= 9 and main_net_inflow > 0 else 1 if pct_chg >= 7 and main_net_inflow > 0 else 0
 
+        legacy_raw_score = float(absolute_score + ratio_score + top_list_score + consistency_score)
+        legacy_scaled_score = round(legacy_raw_score / 15.0 * 17.0, 2)
+        items: Dict[str, Any] = {
+            "main_inflow_abs": absolute_score,
+            "main_inflow_ratio": ratio_score,
+            "top_list": top_list_score,
+            "price_flow_alignment": consistency_score,
+            "legacy_raw_score": legacy_raw_score,
+        }
+
+        v13_profile = features.get("v13_profile") or {}
+        if not v13_profile:
+            return {
+                "score": legacy_scaled_score,
+                "max_score": 17,
+                "items": items,
+            }
+
+        flow_signal = self._resolve_v13_stock_flow(v13_profile, row)
+        effective_net_amount = _safe_float(flow_signal.get("net_amount"))
+        effective_net_ratio = _safe_float(flow_signal.get("net_ratio"))
+        d5_amount = _safe_float(flow_signal.get("net_d5_amount"), default=None)
+        buy_lg_ratio = _safe_float(flow_signal.get("buy_lg_ratio"))
+        v13_abs_score = 5 if effective_net_amount > 0 and (effective_net_ratio >= 0.04 or inflow_rank_pct >= 0.90) else 4 if effective_net_amount > 0 and (effective_net_ratio >= 0.025 or inflow_rank_pct >= 0.75) else 3 if effective_net_amount > 0 and (effective_net_ratio >= 0.01 or inflow_rank_pct >= 0.50) else 1 if effective_net_amount > 0 else 0
+        v13_ratio_score = 4 if effective_net_ratio >= 0.05 else 3 if effective_net_ratio >= 0.03 else 2 if effective_net_ratio >= 0.01 else 1 if effective_net_ratio > 0 else 0
+
+        theme_fund_strength = _safe_float(v13_profile.get("theme_fund_strength_score"), 50.0)
+        if effective_net_amount > 0 and theme_fund_strength >= 80:
+            board_resonance_score = 4
+        elif effective_net_amount > 0 and theme_fund_strength >= 65:
+            board_resonance_score = 3
+        elif effective_net_amount > 0 and theme_fund_strength >= 55:
+            board_resonance_score = 2
+        elif theme_fund_strength >= 70:
+            board_resonance_score = 1
+        else:
+            board_resonance_score = 0
+
+        continuation_score_v13 = 2 if d5_amount is not None and d5_amount > 0 and effective_net_amount > 0 else 1 if effective_net_amount > 0 and (buy_lg_ratio >= 0.015 or pct_chg >= 7) else 0
+        top_list_score_v13 = 2 if top_list_flag and top_list_net_amount > 0 else 1 if top_list_flag or top_list_net_amount == 0 else 0
+
+        v13_raw_score = float(
+            v13_abs_score
+            + v13_ratio_score
+            + board_resonance_score
+            + continuation_score_v13
+            + top_list_score_v13
+        )
+        blended_score = round(
+            min(17.0, legacy_scaled_score * 0.35 + v13_raw_score * 0.65),
+            2,
+        )
+        items.update(
+            {
+                "v13_main_inflow_abs": v13_abs_score,
+                "v13_main_inflow_ratio": v13_ratio_score,
+                "v13_board_resonance": board_resonance_score,
+                "v13_flow_continuation": continuation_score_v13,
+                "v13_top_list": top_list_score_v13,
+                "v13_stock_flow_source_count": len(flow_signal.get("sources") or []),
+                "v13_raw_score": v13_raw_score,
+                "v13_theme_name": v13_profile.get("theme_name"),
+            }
+        )
         return {
-            "score": float(absolute_score + ratio_score + top_list_score + consistency_score),
-            "max_score": 15,
-            "items": {
-                "main_inflow_abs": absolute_score,
-                "main_inflow_ratio": ratio_score,
-                "top_list": top_list_score,
-                "price_flow_alignment": consistency_score,
-            },
+            "score": blended_score,
+            "max_score": 17,
+            "items": items,
         }
 
     def _score_elasticity(self, row: pd.Series, features: Dict[str, Any]) -> Dict[str, Any]:
@@ -2027,13 +2849,16 @@ class MomentumScreenerService:
         history_score = 4 if limit_up_days_60d >= 1 or strong_days_60d >= 3 else 3 if strong_days_60d == 2 else 2 if strong_days_60d == 1 else 0
         activity_score = 2 if strong_days_60d >= 2 or top_list_flag or pct_chg >= 9.0 else 1 if strong_days_60d >= 1 else 0
 
+        raw_score = float(mv_score + history_score + activity_score)
+        scaled_score = round(raw_score / 10.0 * 8.0, 2)
         return {
-            "score": float(mv_score + history_score + activity_score),
-            "max_score": 10,
+            "score": scaled_score,
+            "max_score": 8,
             "items": {
                 "circ_mv": mv_score,
                 "historical_activity": history_score,
                 "recognition": activity_score,
+                "legacy_raw_score": raw_score,
             },
         }
 
@@ -2095,7 +2920,7 @@ class MomentumScreenerService:
         risk_tags = [name for name, _ in penalties]
         return float(total_penalty), risk_tags
 
-    def _score_risk_penalty(self, row: pd.Series, features: Dict[str, Any]) -> tuple[float, List[str]]:
+    def _score_standard_legacy_risk_penalty(self, row: pd.Series, features: Dict[str, Any]) -> tuple[float, List[str]]:
         penalties: List[tuple[str, int]] = []
         upper_shadow_ratio = _safe_float(features["upper_shadow_ratio"])
         volume_expand_5 = _safe_float(features["volume_expand_5"], 1.0)
@@ -2151,6 +2976,56 @@ class MomentumScreenerService:
 
         total_penalty = min(sum(score for _, score in penalties), 15)
         return float(total_penalty), [name for name, _ in penalties]
+
+    def _score_risk_penalty(self, row: pd.Series, features: Dict[str, Any]) -> tuple[float, List[str]]:
+        legacy_penalty, legacy_tags = self._score_standard_legacy_risk_penalty(row, features)
+        scaled_legacy_penalty = legacy_penalty / 15.0 * 25.0
+
+        v13_profile = features.get("v13_profile") or {}
+        if not v13_profile:
+            return round(min(25.0, scaled_legacy_penalty), 2), legacy_tags
+
+        extra_penalty = 0.0
+        v13_tags: List[str] = []
+        limit_events = list(v13_profile.get("limit_events") or [])
+        if limit_events:
+            open_times = max(int(_safe_float(event.get("open_times"))) for event in limit_events)
+            broken_limit = any(_safe_str(event.get("limit")).upper() == "Z" for event in limit_events)
+            if broken_limit:
+                extra_penalty += 8.0
+                v13_tags.append("limit_break")
+            elif open_times >= 2:
+                extra_penalty += 5.0
+                v13_tags.append("multiple_open_board")
+            elif open_times == 1:
+                extra_penalty += 3.0
+                v13_tags.append("open_board")
+
+        theme_fund_strength = _safe_float(v13_profile.get("theme_fund_strength_score"), 50.0)
+        if theme_fund_strength < 45:
+            extra_penalty += 5.0
+            v13_tags.append("theme_fund_fade")
+        elif theme_fund_strength < 55:
+            extra_penalty += 3.0
+            v13_tags.append("theme_fund_soft")
+
+        stock_theme_rank = int(_safe_float(v13_profile.get("stock_theme_rank"), 999.0))
+        candidate_count = int(_safe_float(v13_profile.get("candidate_count")))
+        if candidate_count >= 4 and stock_theme_rank >= 5:
+            extra_penalty += 4.0
+            v13_tags.append("theme_back_runner")
+        elif candidate_count >= 3 and stock_theme_rank >= 3:
+            extra_penalty += 2.0
+            v13_tags.append("theme_follow_up")
+
+        chip_signal = self._resolve_v13_chip_signal(v13_profile, row)
+        if chip_signal.get("available"):
+            extra_penalty += _safe_float(chip_signal.get("standard_penalty"))
+            v13_tags.extend(chip_signal.get("tags") or [])
+
+        total_penalty = round(min(25.0, scaled_legacy_penalty + extra_penalty * 0.45), 2)
+        merged_tags = list(dict.fromkeys([*legacy_tags, *v13_tags]))
+        return total_penalty, merged_tags
 
     @staticmethod
     def _build_top_reasons(breakdown: Dict[str, Dict[str, Any]]) -> List[str]:

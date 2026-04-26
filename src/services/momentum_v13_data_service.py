@@ -90,6 +90,10 @@ class MomentumV13DataService:
         "dc_concept": 30 * 60,
         "dc_moneyflow": 7 * 24 * 60 * 60,
         "dc_member": 7 * 24 * 60 * 60,
+        "stock_moneyflow_dc": 7 * 24 * 60 * 60,
+        "stock_moneyflow_ths": 7 * 24 * 60 * 60,
+        "cyq_perf": 7 * 24 * 60 * 60,
+        "cyq_chips": 7 * 24 * 60 * 60,
         "kpl_list": 7 * 24 * 60 * 60,
         "stk_limit": 7 * 24 * 60 * 60,
         "limit_list_d": 7 * 24 * 60 * 60,
@@ -132,6 +136,10 @@ class MomentumV13DataService:
         dc_concepts = self._load_dc_concepts(trade_date)
         dc_moneyflow = self._load_dc_moneyflow(trade_date)
         dc_members = self._load_dc_members(trade_date, normalized_codes)
+        stock_moneyflow_dc = self._load_stock_moneyflow_dc(trade_date, normalized_codes)
+        stock_moneyflow_ths = self._load_stock_moneyflow_ths(trade_date, normalized_codes)
+        cyq_perf = self._load_cyq_perf(trade_date, normalized_codes)
+        cyq_chips = self._load_cyq_chips(trade_date, normalized_codes)
         kpl_list = self._load_kpl_list(trade_date)
         ths_hot = self._load_ths_hot(trade_date)
         ths_members = self._load_ths_members(normalized_codes)
@@ -141,6 +149,10 @@ class MomentumV13DataService:
             "dc_concept": dc_concepts,
             "moneyflow_ind_dc": dc_moneyflow,
             "dc_member": dc_members,
+            "moneyflow_dc": stock_moneyflow_dc,
+            "moneyflow_ths": stock_moneyflow_ths,
+            "cyq_perf": cyq_perf,
+            "cyq_chips": cyq_chips,
             "kpl_list": kpl_list,
             "stk_limit": limit_prices,
             "limit_list_d": limit_events,
@@ -169,6 +181,12 @@ class MomentumV13DataService:
                 **{key: value for key, value in theme_name_map.items() if key != "_payload"},
             },
         )
+        stock_moneyflow = self._merge_stock_moneyflow_snapshots(
+            stock_moneyflow_dc,
+            stock_moneyflow_ths,
+            normalized_codes,
+        )
+        chip_snapshots = self._merge_chip_snapshots(cyq_perf, cyq_chips, normalized_codes)
         combined_theme_members = self._merge_theme_members(
             self._merge_theme_members(self._build_theme_members(dc_members), self._build_theme_members(ths_members)),
             self._build_kpl_theme_members(kpl_list),
@@ -184,6 +202,8 @@ class MomentumV13DataService:
             "stock_dc_theme_map": dc_stock_theme_map,
             "stock_kpl_theme_map": kpl_stock_theme_map,
             "stock_capital_theme_map": stock_capital_theme_map,
+            "stock_moneyflow": stock_moneyflow,
+            "chip_snapshots": chip_snapshots,
             "theme_members": combined_theme_members,
             "theme_name_map": {
                 **dc_theme_name_map,
@@ -477,6 +497,114 @@ class MomentumV13DataService:
             extra={"source_status": source_status},
         )
 
+    def _load_stock_moneyflow_dc(self, trade_date: str, ts_codes: List[str]) -> Dict[str, Any]:
+        key = self._cache_key("stock_moneyflow_dc", trade_date)
+        cached = self._cache_get(key, self._resource_ttls["stock_moneyflow_dc"])
+        if cached is None:
+            fetch_method = self._resolve_fetcher_method("get_stock_moneyflow_dc")
+            if fetch_method is None:
+                cached = self._payload(
+                    source="tushare.moneyflow_dc",
+                    trade_date=self._display_trade_date(trade_date),
+                    rows=[],
+                    status="unavailable",
+                    degraded_reasons=["method_not_supported"],
+                )
+            else:
+                cached = self._safe_fetch("moneyflow_dc", lambda: fetch_method(trade_date))
+            self._cache_set(key, cached)
+        return self._filter_rows_by_ts_codes(cached, ts_codes)
+
+    def _load_stock_moneyflow_ths(self, trade_date: str, ts_codes: List[str]) -> Dict[str, Any]:
+        key = self._cache_key("stock_moneyflow_ths", trade_date)
+        cached = self._cache_get(key, self._resource_ttls["stock_moneyflow_ths"])
+        if cached is None:
+            fetch_method = self._resolve_fetcher_method("get_stock_moneyflow_ths")
+            if fetch_method is None:
+                cached = self._payload(
+                    source="tushare.moneyflow_ths",
+                    trade_date=self._display_trade_date(trade_date),
+                    rows=[],
+                    status="unavailable",
+                    degraded_reasons=["method_not_supported"],
+                )
+            else:
+                cached = self._safe_fetch("moneyflow_ths", lambda: fetch_method(trade_date))
+            self._cache_set(key, cached)
+        return self._filter_rows_by_ts_codes(cached, ts_codes)
+
+    def _load_cyq_perf(self, trade_date: str, ts_codes: List[str]) -> Dict[str, Any]:
+        rows: List[Dict[str, Any]] = []
+        source_status: Dict[str, str] = {}
+        degraded_reasons: List[str] = []
+        fetch_method = self._resolve_fetcher_method("get_cyq_perf")
+        if fetch_method is None:
+            return self._payload(
+                source="tushare.cyq_perf",
+                trade_date=self._display_trade_date(trade_date),
+                rows=[],
+                status="unavailable",
+                degraded_reasons=["method_not_supported"],
+            )
+        for ts_code in ts_codes:
+            key = self._cache_key("cyq_perf", trade_date, ts_code)
+            cached = self._cache_get(key, self._resource_ttls["cyq_perf"])
+            if cached is None:
+                cached = self._safe_fetch("cyq_perf", lambda code=ts_code: fetch_method(trade_date, ts_code=code))
+                self._cache_set(key, cached)
+            source_status[ts_code] = str(cached.get("status") or "unknown")
+            rows.extend(_safe_list(cached.get("rows")))
+            if cached.get("is_degraded"):
+                degraded_reasons.extend(f"{ts_code}:{reason}" for reason in _safe_list(cached.get("degraded_reasons")))
+
+        status = "ok"
+        if degraded_reasons:
+            status = "partial" if rows else "unavailable"
+        return self._payload(
+            source="tushare.cyq_perf",
+            trade_date=self._display_trade_date(trade_date),
+            rows=rows,
+            status=status,
+            degraded_reasons=degraded_reasons,
+            extra={"source_status": source_status},
+        )
+
+    def _load_cyq_chips(self, trade_date: str, ts_codes: List[str]) -> Dict[str, Any]:
+        rows: List[Dict[str, Any]] = []
+        source_status: Dict[str, str] = {}
+        degraded_reasons: List[str] = []
+        fetch_method = self._resolve_fetcher_method("get_cyq_chips")
+        if fetch_method is None:
+            return self._payload(
+                source="tushare.cyq_chips",
+                trade_date=self._display_trade_date(trade_date),
+                rows=[],
+                status="unavailable",
+                degraded_reasons=["method_not_supported"],
+            )
+        for ts_code in ts_codes:
+            key = self._cache_key("cyq_chips", trade_date, ts_code)
+            cached = self._cache_get(key, self._resource_ttls["cyq_chips"])
+            if cached is None:
+                cached = self._safe_fetch("cyq_chips", lambda code=ts_code: fetch_method(trade_date, ts_code=code))
+                self._cache_set(key, cached)
+            source_status[ts_code] = str(cached.get("status") or "unknown")
+            rows.extend(_safe_list(cached.get("rows")))
+            if cached.get("is_degraded"):
+                degraded_reasons.extend(f"{ts_code}:{reason}" for reason in _safe_list(cached.get("degraded_reasons")))
+
+        status = "ok"
+        if degraded_reasons:
+            status = "partial" if rows else "unavailable"
+        return self._payload(
+            source="tushare.cyq_chips",
+            trade_date=self._display_trade_date(trade_date),
+            rows=rows,
+            status=status,
+            degraded_reasons=degraded_reasons,
+            extra={"source_status": source_status},
+        )
+
     def _load_kpl_list(self, trade_date: str) -> Dict[str, Any]:
         key = self._cache_key("kpl_list", trade_date)
         cached = self._cache_get(key, self._resource_ttls["kpl_list"])
@@ -743,6 +871,29 @@ class MomentumV13DataService:
                 continue
             grouped.setdefault(str(ts_code), []).append(row)
         return grouped
+
+    def _filter_rows_by_ts_codes(self, payload: Dict[str, Any], ts_codes: List[str]) -> Dict[str, Any]:
+        normalized_codes = {str(ts_code).strip().upper() for ts_code in ts_codes if str(ts_code).strip()}
+        rows = [
+            row
+            for row in _safe_list(payload.get("rows"))
+            if str(row.get("ts_code") or row.get("con_code") or "").strip().upper() in normalized_codes
+        ]
+        filtered = dict(payload)
+        filtered["rows"] = rows
+        return filtered
+
+    def _resolve_fetcher_method(self, name: str):
+        fetcher_dict = getattr(self.fetcher, "__dict__", {})
+        if isinstance(fetcher_dict, dict) and name in fetcher_dict:
+            method = getattr(self.fetcher, name, None)
+            if callable(method):
+                return method
+        if hasattr(type(self.fetcher), name):
+            method = getattr(self.fetcher, name, None)
+            if callable(method):
+                return method
+        return None
 
     @staticmethod
     def _build_stock_theme_map(ths_members: Dict[str, Any], ts_codes: List[str]) -> Dict[str, List[Dict[str, Any]]]:
@@ -1039,6 +1190,117 @@ class MomentumV13DataService:
         merged = {key: list(rows) for key, rows in primary.items()}
         for ts_code, rows in secondary.items():
             merged.setdefault(ts_code, []).extend(rows)
+        return merged
+
+    @classmethod
+    def _merge_stock_moneyflow_snapshots(
+        cls,
+        dc_payload: Dict[str, Any],
+        ths_payload: Dict[str, Any],
+        ts_codes: List[str],
+    ) -> Dict[str, Dict[str, Any]]:
+        dc_rows = {
+            str(row.get("ts_code") or "").strip().upper(): row
+            for row in _safe_list(dc_payload.get("rows"))
+            if str(row.get("ts_code") or "").strip()
+        }
+        ths_rows = {
+            str(row.get("ts_code") or "").strip().upper(): row
+            for row in _safe_list(ths_payload.get("rows"))
+            if str(row.get("ts_code") or "").strip()
+        }
+        merged: Dict[str, Dict[str, Any]] = {}
+        for ts_code in ts_codes:
+            normalized_code = str(ts_code).strip().upper()
+            dc_row = dc_rows.get(normalized_code) or {}
+            ths_row = ths_rows.get(normalized_code) or {}
+            if not dc_row and not ths_row:
+                continue
+            net_amount = cls._prefer_float(dc_row.get("net_amount"), ths_row.get("net_amount"))
+            net_amount_rate = cls._prefer_float(
+                dc_row.get("net_amount_rate"),
+                ths_row.get("buy_lg_amount_rate"),
+            )
+            merged[normalized_code] = {
+                "ts_code": normalized_code,
+                "close": cls._prefer_float(dc_row.get("close"), ths_row.get("close")),
+                "pct_change": cls._prefer_float(dc_row.get("pct_change"), ths_row.get("pct_change")),
+                "net_amount": net_amount,
+                "net_amount_rate": net_amount_rate,
+                "net_d5_amount": cls._prefer_float(None, ths_row.get("net_d5_amount")),
+                "buy_elg_amount": cls._prefer_float(None, dc_row.get("buy_elg_amount")),
+                "buy_elg_amount_rate": cls._prefer_float(None, dc_row.get("buy_elg_amount_rate")),
+                "buy_lg_amount": cls._prefer_float(dc_row.get("buy_lg_amount"), ths_row.get("buy_lg_amount")),
+                "buy_lg_amount_rate": cls._prefer_float(dc_row.get("buy_lg_amount_rate"), ths_row.get("buy_lg_amount_rate")),
+                "buy_md_amount": cls._prefer_float(dc_row.get("buy_md_amount"), ths_row.get("buy_md_amount")),
+                "buy_md_amount_rate": cls._prefer_float(dc_row.get("buy_md_amount_rate"), ths_row.get("buy_md_amount_rate")),
+                "buy_sm_amount": cls._prefer_float(dc_row.get("buy_sm_amount"), ths_row.get("buy_sm_amount")),
+                "buy_sm_amount_rate": cls._prefer_float(dc_row.get("buy_sm_amount_rate"), ths_row.get("buy_sm_amount_rate")),
+                "sources": sorted(
+                    {
+                        str(item)
+                        for item in (
+                            dc_row.get("data_source"),
+                            ths_row.get("data_source"),
+                        )
+                        if item
+                    }
+                ),
+            }
+        return merged
+
+    @classmethod
+    def _merge_chip_snapshots(
+        cls,
+        cyq_perf: Dict[str, Any],
+        cyq_chips: Dict[str, Any],
+        ts_codes: List[str],
+    ) -> Dict[str, Dict[str, Any]]:
+        perf_rows = {
+            str(row.get("ts_code") or "").strip().upper(): row
+            for row in _safe_list(cyq_perf.get("rows"))
+            if str(row.get("ts_code") or "").strip()
+        }
+        chip_rows = {
+            str(row.get("ts_code") or "").strip().upper(): row
+            for row in _safe_list(cyq_chips.get("rows"))
+            if str(row.get("ts_code") or "").strip()
+        }
+        merged: Dict[str, Dict[str, Any]] = {}
+        for ts_code in ts_codes:
+            normalized_code = str(ts_code).strip().upper()
+            perf_row = perf_rows.get(normalized_code) or {}
+            chip_row = chip_rows.get(normalized_code) or {}
+            if not perf_row and not chip_row:
+                continue
+            merged[normalized_code] = {
+                "ts_code": normalized_code,
+                "winner_rate": cls._prefer_float(perf_row.get("winner_rate"), chip_row.get("profit_ratio")),
+                "weight_avg": cls._prefer_float(perf_row.get("weight_avg"), chip_row.get("avg_cost")),
+                "avg_cost": cls._prefer_float(chip_row.get("avg_cost"), perf_row.get("weight_avg")),
+                "cost_5pct": cls._prefer_float(None, perf_row.get("cost_5pct")),
+                "cost_15pct": cls._prefer_float(None, perf_row.get("cost_15pct")),
+                "cost_50pct": cls._prefer_float(None, perf_row.get("cost_50pct")),
+                "cost_85pct": cls._prefer_float(None, perf_row.get("cost_85pct")),
+                "cost_95pct": cls._prefer_float(None, perf_row.get("cost_95pct")),
+                "cost_90_low": cls._prefer_float(None, chip_row.get("cost_90_low")),
+                "cost_90_high": cls._prefer_float(None, chip_row.get("cost_90_high")),
+                "concentration_90": cls._prefer_float(None, chip_row.get("concentration_90")),
+                "cost_70_low": cls._prefer_float(None, chip_row.get("cost_70_low")),
+                "cost_70_high": cls._prefer_float(None, chip_row.get("cost_70_high")),
+                "concentration_70": cls._prefer_float(None, chip_row.get("concentration_70")),
+                "distribution_points": int(float(chip_row.get("distribution_points") or 0)),
+                "sources": sorted(
+                    {
+                        str(item)
+                        for item in (
+                            perf_row.get("data_source"),
+                            chip_row.get("data_source"),
+                        )
+                        if item
+                    }
+                ),
+            }
         return merged
 
     @classmethod

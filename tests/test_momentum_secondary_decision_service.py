@@ -121,6 +121,58 @@ class _FakeV13DecisionDataService:
                     }
                 ],
             },
+            "stock_moneyflow": {
+                "600301.SH": {
+                    "ts_code": "600301.SH",
+                    "close": 10.25,
+                    "net_amount": 68000000.0,
+                    "net_amount_rate": 4.8,
+                    "net_d5_amount": 156000000.0,
+                    "buy_lg_amount": 42000000.0,
+                    "buy_lg_amount_rate": 2.3,
+                    "sources": ["tushare.moneyflow_dc", "tushare.moneyflow_ths"],
+                },
+                "600302.SH": {
+                    "ts_code": "600302.SH",
+                    "close": 20.3,
+                    "net_amount": -18000000.0,
+                    "net_amount_rate": -1.6,
+                    "net_d5_amount": -36000000.0,
+                    "buy_lg_amount": 6000000.0,
+                    "buy_lg_amount_rate": 0.3,
+                    "sources": ["tushare.moneyflow_dc"],
+                },
+            },
+            "chip_snapshots": {
+                "600301.SH": {
+                    "ts_code": "600301.SH",
+                    "winner_rate": 0.58,
+                    "weight_avg": 10.08,
+                    "avg_cost": 10.08,
+                    "cost_15pct": 9.82,
+                    "cost_50pct": 10.12,
+                    "cost_85pct": 10.38,
+                    "cost_95pct": 10.52,
+                    "concentration_90": 0.08,
+                    "concentration_70": 0.04,
+                    "distribution_points": 18,
+                    "sources": ["tushare.cyq_perf", "tushare.cyq_chips"],
+                },
+                "600302.SH": {
+                    "ts_code": "600302.SH",
+                    "winner_rate": 0.93,
+                    "weight_avg": 18.9,
+                    "avg_cost": 18.9,
+                    "cost_15pct": 18.1,
+                    "cost_50pct": 18.6,
+                    "cost_85pct": 19.0,
+                    "cost_95pct": 19.3,
+                    "concentration_90": 0.23,
+                    "concentration_70": 0.18,
+                    "distribution_points": 24,
+                    "sources": ["tushare.cyq_perf", "tushare.cyq_chips"],
+                },
+            },
         }
 
     def build_mainline_radar(self, *, candidates, context):
@@ -572,10 +624,13 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         self.assertGreater(result["portfolio"][0]["v13_shadow_score"], 80.0)
         self.assertGreater(result["portfolio"][0]["v13_fund_support_score"], 85.0)
         self.assertGreater(result["portfolio"][0]["v13_limit_structure_score"], 85.0)
+        self.assertLess(result["portfolio"][0]["v13_chip_risk_score"], 50.0)
         diagnostic = next(item for item in result["candidate_diagnostics"] if item["ts_code"] == "600301.SH")
         self.assertEqual(diagnostic["v13_theme_id"], "THS001")
         self.assertGreater(diagnostic["v13_shadow_score"], 80.0)
         self.assertIn("V1.3影子分", diagnostic["v13_shadow_summary"])
+        self.assertNotIn("暂用中性值", diagnostic["v13_shadow_summary"])
+        self.assertLess(diagnostic["v13_chip_risk_score"], 50.0)
 
     def test_build_from_screening_limits_v13_context_codes_for_full_ranked_pool(self) -> None:
         v13_data_service = _FakeV13DecisionDataService()

@@ -312,6 +312,13 @@ class TushareFetcher(BaseFetcher):
             return None
 
     @classmethod
+    def _safe_v13_money_yuan(cls, value: Any) -> Optional[float]:
+        numeric = cls._safe_v13_float(value)
+        if numeric is None:
+            return None
+        return numeric * 10000.0
+
+    @classmethod
     def _safe_v13_int(cls, value: Any) -> Optional[int]:
         value = cls._safe_v13_value(value)
         if value is None or value == "":
@@ -328,6 +335,60 @@ class TushareFetcher(BaseFetcher):
             return None
         text = str(value).strip()
         return text or None
+
+    @classmethod
+    def _compute_v13_cyq_snapshot(
+        cls,
+        distribution_df: pd.DataFrame,
+        current_price: float,
+    ) -> Optional[Dict[str, float]]:
+        price_series = pd.to_numeric(distribution_df.get("price"), errors="coerce")
+        percent_series = pd.to_numeric(distribution_df.get("percent"), errors="coerce")
+        if price_series is None or percent_series is None:
+            return None
+
+        normalized = pd.DataFrame({"price": price_series, "percent": percent_series}).dropna()
+        normalized = normalized[(normalized["price"] > 0) & (normalized["percent"] > 0)]
+        if normalized.empty:
+            return None
+
+        total_percent = float(normalized["percent"].sum())
+        if total_percent <= 0:
+            return None
+
+        normalized = normalized.sort_values(by="price", ascending=True).reset_index(drop=True)
+        normalized["norm_percent"] = normalized["percent"] / total_percent * 100.0
+        normalized["cumsum"] = normalized["norm_percent"].cumsum()
+
+        def percentile_price(target_pct: float) -> float:
+            idx = int(normalized["cumsum"].searchsorted(target_pct, side="left"))
+            idx = min(max(idx, 0), len(normalized) - 1)
+            return float(normalized.loc[idx, "price"])
+
+        winner_rate = float(normalized.loc[normalized["price"] <= current_price, "norm_percent"].sum()) / 100.0
+        avg_cost = float((normalized["price"] * normalized["norm_percent"]).sum() / normalized["norm_percent"].sum())
+        cost_90_low = percentile_price(5.0)
+        cost_90_high = percentile_price(95.0)
+        cost_70_low = percentile_price(15.0)
+        cost_70_high = percentile_price(85.0)
+
+        def concentration(low: float, high: float) -> float:
+            denominator = low + high
+            if denominator <= 0:
+                return 0.0
+            return (high - low) / denominator
+
+        return {
+            "profit_ratio": round(winner_rate, 4),
+            "avg_cost": round(avg_cost, 4),
+            "cost_90_low": round(cost_90_low, 4),
+            "cost_90_high": round(cost_90_high, 4),
+            "concentration_90": round(concentration(cost_90_low, cost_90_high), 4),
+            "cost_70_low": round(cost_70_low, 4),
+            "cost_70_high": round(cost_70_high, 4),
+            "concentration_70": round(concentration(cost_70_low, cost_70_high), 4),
+            "distribution_points": float(len(normalized.index)),
+        }
 
     @classmethod
     def _parse_ths_concepts(cls, value: Any) -> List[str]:
@@ -911,6 +972,304 @@ class TushareFetcher(BaseFetcher):
             )
 
         return self._v13_payload(source=source, trade_date=display_trade_date, rows=rows, data_as_of=data_as_of)
+
+    def get_stock_moneyflow_ths(
+        self,
+        trade_date: str,
+        *,
+        ts_code: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Get 同花顺个股资金流快照，统一转成元口径供 V1.3 使用。"""
+        source = "tushare.moneyflow_ths"
+        ts_trade_date = self._format_tushare_date(trade_date)
+        display_trade_date = self._format_display_trade_date(trade_date)
+        if self._api is None:
+            return self._v13_unavailable_payload(source=source, trade_date=display_trade_date, reason="api_not_initialized")
+
+        params: Dict[str, Any] = {
+            "trade_date": ts_trade_date,
+            "fields": (
+                "trade_date,ts_code,name,pct_change,latest,net_amount,net_d5_amount,"
+                "buy_lg_amount,buy_lg_amount_rate,buy_md_amount,buy_md_amount_rate,"
+                "buy_sm_amount,buy_sm_amount_rate"
+            ),
+        }
+        if ts_code:
+            params["ts_code"] = self._convert_stock_code(ts_code)
+
+        try:
+            df = self._call_api_with_rate_limit("moneyflow_ths", **params)
+        except Exception as exc:
+            return self._v13_unavailable_payload(source=source, trade_date=display_trade_date, reason=str(exc))
+
+        data_as_of = self._v13_data_as_of()
+        if df is None or df.empty:
+            return self._v13_payload(
+                source=source,
+                trade_date=display_trade_date,
+                rows=[],
+                status="partial",
+                data_as_of=data_as_of,
+                degraded_reasons=["empty_result"],
+            )
+
+        rows: List[Dict[str, Any]] = []
+        for _, row in df.iterrows():
+            row_trade_date = self._format_display_trade_date(row.get("trade_date")) or display_trade_date
+            rows.append(
+                {
+                    "ts_code": self._safe_v13_str(row.get("ts_code")),
+                    "trade_date": row_trade_date,
+                    "name": self._safe_v13_str(row.get("name")),
+                    "pct_change": self._safe_v13_float(row.get("pct_change")),
+                    "close": self._safe_v13_float(row.get("latest")),
+                    "net_amount": self._safe_v13_money_yuan(row.get("net_amount")),
+                    "net_d5_amount": self._safe_v13_money_yuan(row.get("net_d5_amount")),
+                    "buy_lg_amount": self._safe_v13_money_yuan(row.get("buy_lg_amount")),
+                    "buy_lg_amount_rate": self._safe_v13_float(row.get("buy_lg_amount_rate")),
+                    "buy_md_amount": self._safe_v13_money_yuan(row.get("buy_md_amount")),
+                    "buy_md_amount_rate": self._safe_v13_float(row.get("buy_md_amount_rate")),
+                    "buy_sm_amount": self._safe_v13_money_yuan(row.get("buy_sm_amount")),
+                    "buy_sm_amount_rate": self._safe_v13_float(row.get("buy_sm_amount_rate")),
+                    "data_source": source,
+                    "data_as_of": data_as_of,
+                    "is_degraded": False,
+                }
+            )
+
+        return self._v13_payload(source=source, trade_date=display_trade_date, rows=rows, data_as_of=data_as_of)
+
+    def get_stock_moneyflow_dc(
+        self,
+        trade_date: str,
+        *,
+        ts_code: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Get 东方财富个股资金流快照，统一转成元口径供 V1.3 使用。"""
+        source = "tushare.moneyflow_dc"
+        ts_trade_date = self._format_tushare_date(trade_date)
+        display_trade_date = self._format_display_trade_date(trade_date)
+        if self._api is None:
+            return self._v13_unavailable_payload(source=source, trade_date=display_trade_date, reason="api_not_initialized")
+
+        params: Dict[str, Any] = {
+            "trade_date": ts_trade_date,
+            "fields": (
+                "trade_date,ts_code,name,pct_change,close,net_amount,net_amount_rate,"
+                "buy_elg_amount,buy_elg_amount_rate,buy_lg_amount,buy_lg_amount_rate,"
+                "buy_md_amount,buy_md_amount_rate,buy_sm_amount,buy_sm_amount_rate"
+            ),
+        }
+        if ts_code:
+            params["ts_code"] = self._convert_stock_code(ts_code)
+
+        try:
+            df = self._call_api_with_rate_limit("moneyflow_dc", **params)
+        except Exception as exc:
+            return self._v13_unavailable_payload(source=source, trade_date=display_trade_date, reason=str(exc))
+
+        data_as_of = self._v13_data_as_of()
+        if df is None or df.empty:
+            return self._v13_payload(
+                source=source,
+                trade_date=display_trade_date,
+                rows=[],
+                status="partial",
+                data_as_of=data_as_of,
+                degraded_reasons=["empty_result"],
+            )
+
+        rows: List[Dict[str, Any]] = []
+        for _, row in df.iterrows():
+            row_trade_date = self._format_display_trade_date(row.get("trade_date")) or display_trade_date
+            rows.append(
+                {
+                    "ts_code": self._safe_v13_str(row.get("ts_code")),
+                    "trade_date": row_trade_date,
+                    "name": self._safe_v13_str(row.get("name")),
+                    "pct_change": self._safe_v13_float(row.get("pct_change")),
+                    "close": self._safe_v13_float(row.get("close")),
+                    "net_amount": self._safe_v13_money_yuan(row.get("net_amount")),
+                    "net_amount_rate": self._safe_v13_float(row.get("net_amount_rate")),
+                    "buy_elg_amount": self._safe_v13_money_yuan(row.get("buy_elg_amount")),
+                    "buy_elg_amount_rate": self._safe_v13_float(row.get("buy_elg_amount_rate")),
+                    "buy_lg_amount": self._safe_v13_money_yuan(row.get("buy_lg_amount")),
+                    "buy_lg_amount_rate": self._safe_v13_float(row.get("buy_lg_amount_rate")),
+                    "buy_md_amount": self._safe_v13_money_yuan(row.get("buy_md_amount")),
+                    "buy_md_amount_rate": self._safe_v13_float(row.get("buy_md_amount_rate")),
+                    "buy_sm_amount": self._safe_v13_money_yuan(row.get("buy_sm_amount")),
+                    "buy_sm_amount_rate": self._safe_v13_float(row.get("buy_sm_amount_rate")),
+                    "data_source": source,
+                    "data_as_of": data_as_of,
+                    "is_degraded": False,
+                }
+            )
+
+        return self._v13_payload(source=source, trade_date=display_trade_date, rows=rows, data_as_of=data_as_of)
+
+    def get_cyq_perf(
+        self,
+        trade_date: str,
+        *,
+        ts_code: str,
+    ) -> Dict[str, Any]:
+        """Get 指定交易日筹码成本快照，统一成 V1.3 可回放口径。"""
+        source = "tushare.cyq_perf"
+        ts_trade_date = self._format_tushare_date(trade_date)
+        display_trade_date = self._format_display_trade_date(trade_date)
+        if self._api is None:
+            return self._v13_unavailable_payload(source=source, trade_date=display_trade_date, reason="api_not_initialized")
+
+        params: Dict[str, Any] = {
+            "trade_date": ts_trade_date,
+            "ts_code": self._convert_stock_code(ts_code),
+            "fields": (
+                "ts_code,trade_date,his_low,his_high,cost_5pct,cost_15pct,cost_50pct,"
+                "cost_85pct,cost_95pct,weight_avg,winner_rate"
+            ),
+        }
+
+        try:
+            df = self._call_api_with_rate_limit("cyq_perf", **params)
+        except Exception as exc:
+            return self._v13_unavailable_payload(source=source, trade_date=display_trade_date, reason=str(exc))
+
+        data_as_of = self._v13_data_as_of()
+        if df is None or df.empty:
+            return self._v13_payload(
+                source=source,
+                trade_date=display_trade_date,
+                rows=[],
+                status="partial",
+                data_as_of=data_as_of,
+                degraded_reasons=["empty_result"],
+            )
+
+        rows: List[Dict[str, Any]] = []
+        for _, row in df.iterrows():
+            row_trade_date = self._format_display_trade_date(row.get("trade_date")) or display_trade_date
+            winner_rate = self._safe_v13_float(row.get("winner_rate"))
+            if winner_rate is not None and winner_rate > 1.0:
+                winner_rate = winner_rate / 100.0
+            rows.append(
+                {
+                    "ts_code": self._safe_v13_str(row.get("ts_code")),
+                    "trade_date": row_trade_date,
+                    "his_low": self._safe_v13_float(row.get("his_low")),
+                    "his_high": self._safe_v13_float(row.get("his_high")),
+                    "cost_5pct": self._safe_v13_float(row.get("cost_5pct")),
+                    "cost_15pct": self._safe_v13_float(row.get("cost_15pct")),
+                    "cost_50pct": self._safe_v13_float(row.get("cost_50pct")),
+                    "cost_85pct": self._safe_v13_float(row.get("cost_85pct")),
+                    "cost_95pct": self._safe_v13_float(row.get("cost_95pct")),
+                    "weight_avg": self._safe_v13_float(row.get("weight_avg")),
+                    "winner_rate": winner_rate,
+                    "data_source": source,
+                    "data_as_of": data_as_of,
+                    "is_degraded": False,
+                }
+            )
+
+        return self._v13_payload(source=source, trade_date=display_trade_date, rows=rows, data_as_of=data_as_of)
+
+    def get_cyq_chips(
+        self,
+        trade_date: str,
+        *,
+        ts_code: str,
+    ) -> Dict[str, Any]:
+        """Get 指定交易日筹码分布，并聚合成 V1.3 可直接消费的筹码快照。"""
+        source = "tushare.cyq_chips"
+        ts_trade_date = self._format_tushare_date(trade_date)
+        display_trade_date = self._format_display_trade_date(trade_date)
+        if self._api is None:
+            return self._v13_unavailable_payload(source=source, trade_date=display_trade_date, reason="api_not_initialized")
+
+        normalized_ts_code = self._convert_stock_code(ts_code)
+        try:
+            distribution_df = self._call_api_with_rate_limit(
+                "cyq_chips",
+                ts_code=normalized_ts_code,
+                start_date=ts_trade_date,
+                end_date=ts_trade_date,
+            )
+        except Exception as exc:
+            return self._v13_unavailable_payload(source=source, trade_date=display_trade_date, reason=str(exc))
+
+        data_as_of = self._v13_data_as_of()
+        if distribution_df is None or distribution_df.empty:
+            return self._v13_payload(
+                source=source,
+                trade_date=display_trade_date,
+                rows=[],
+                status="partial",
+                data_as_of=data_as_of,
+                degraded_reasons=["empty_result"],
+            )
+
+        try:
+            daily_df = self._call_api_with_rate_limit(
+                "daily",
+                ts_code=normalized_ts_code,
+                start_date=ts_trade_date,
+                end_date=ts_trade_date,
+            )
+        except Exception as exc:
+            return self._v13_unavailable_payload(
+                source=source,
+                trade_date=display_trade_date,
+                reason=f"daily_lookup_failed:{exc}",
+            )
+
+        if daily_df is None or daily_df.empty:
+            return self._v13_payload(
+                source=source,
+                trade_date=display_trade_date,
+                rows=[],
+                status="partial",
+                data_as_of=data_as_of,
+                degraded_reasons=["daily_empty_result"],
+            )
+
+        current_price = self._safe_v13_float(daily_df.iloc[0].get("close"))
+        if current_price is None or current_price <= 0:
+            return self._v13_payload(
+                source=source,
+                trade_date=display_trade_date,
+                rows=[],
+                status="partial",
+                data_as_of=data_as_of,
+                degraded_reasons=["invalid_close_price"],
+            )
+
+        metrics = self._compute_v13_cyq_snapshot(distribution_df, current_price)
+        if metrics is None:
+            return self._v13_payload(
+                source=source,
+                trade_date=display_trade_date,
+                rows=[],
+                status="partial",
+                data_as_of=data_as_of,
+                degraded_reasons=["invalid_distribution"],
+            )
+
+        row = {
+            "ts_code": normalized_ts_code,
+            "trade_date": display_trade_date,
+            "profit_ratio": self._safe_v13_float(metrics.get("profit_ratio")),
+            "avg_cost": self._safe_v13_float(metrics.get("avg_cost")),
+            "cost_90_low": self._safe_v13_float(metrics.get("cost_90_low")),
+            "cost_90_high": self._safe_v13_float(metrics.get("cost_90_high")),
+            "concentration_90": self._safe_v13_float(metrics.get("concentration_90")),
+            "cost_70_low": self._safe_v13_float(metrics.get("cost_70_low")),
+            "cost_70_high": self._safe_v13_float(metrics.get("cost_70_high")),
+            "concentration_70": self._safe_v13_float(metrics.get("concentration_70")),
+            "distribution_points": self._safe_v13_int(metrics.get("distribution_points")) or 0,
+            "data_source": source,
+            "data_as_of": data_as_of,
+            "is_degraded": False,
+        }
+        return self._v13_payload(source=source, trade_date=display_trade_date, rows=[row], data_as_of=data_as_of)
 
     def get_kpl_list(
         self,
