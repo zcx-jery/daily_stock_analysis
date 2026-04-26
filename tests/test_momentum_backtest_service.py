@@ -874,6 +874,34 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
         self.assertEqual(cached["run"]["strategy_health_mode"], "cached_only")
         self.assertEqual(strict["run"]["strategy_health_mode"], "strict_final")
 
+    def test_async_run_reuse_isolated_by_entry_baseline_version(self) -> None:
+        original = self.service.create_run_async(
+            start_trade_date="2026-04-08",
+            end_trade_date="2026-04-10",
+            profile="standard",
+            top_n=20,
+        )
+
+        with patch(
+            "src.services.momentum_backtest_service.MOMENTUM_ENTRY_BASELINE_VERSION",
+            "v_test_new_baseline",
+        ):
+            upgraded = self.service.create_run_async(
+                start_trade_date="2026-04-08",
+                end_trade_date="2026-04-10",
+                profile="standard",
+                top_n=20,
+            )
+
+        self.assertTrue(original["created_new"])
+        self.assertTrue(upgraded["created_new"])
+        self.assertNotEqual(original["run"]["run_id"], upgraded["run"]["run_id"])
+        self.assertNotEqual(
+            original["run"]["entry_baseline_version"],
+            upgraded["run"]["entry_baseline_version"],
+        )
+        self.assertEqual(upgraded["run"]["entry_baseline_version"], "v_test_new_baseline")
+
     def test_async_run_refreshes_heartbeat_during_long_secondary_decision(self) -> None:
         self.service.stage_heartbeat_interval_seconds = 0.05
         original_build_from_screening = self.service.decision_service.build_from_screening

@@ -237,6 +237,9 @@ class MomentumBacktestService:
                     profile=profile,
                     top_n=top_n,
                     strategy_health_mode=strategy_health_mode,
+                    engine_version=MOMENTUM_BACKTEST_ENGINE_VERSION,
+                    entry_baseline_version=MOMENTUM_ENTRY_BASELINE_VERSION,
+                    market_scope_version=MOMENTUM_MARKET_SCOPE_VERSION,
                 )
                 if existing is not None:
                     return (

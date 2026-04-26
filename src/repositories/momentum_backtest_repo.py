@@ -102,6 +102,9 @@ class MomentumBacktestRepository:
         profile: str,
         top_n: int,
         strategy_health_mode: Optional[str] = None,
+        engine_version: Optional[str] = None,
+        entry_baseline_version: Optional[str] = None,
+        market_scope_version: Optional[str] = None,
     ) -> Optional[MomentumBacktestRun]:
         with self.db.get_session() as session:
             filters = [
@@ -112,6 +115,12 @@ class MomentumBacktestRepository:
             ]
             if strategy_health_mode:
                 filters.append(MomentumBacktestRun.strategy_health_mode == strategy_health_mode)
+            if engine_version:
+                filters.append(MomentumBacktestRun.engine_version == engine_version)
+            if entry_baseline_version:
+                filters.append(MomentumBacktestRun.entry_baseline_version == entry_baseline_version)
+            if market_scope_version:
+                filters.append(MomentumBacktestRun.market_scope_version == market_scope_version)
             return session.execute(
                 select(MomentumBacktestRun)
                 .where(and_(*filters))
