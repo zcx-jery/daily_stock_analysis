@@ -102,6 +102,13 @@ export interface MomentumDecisionPortfolioSlot {
   v13MainlineScore?: number | null;
   v13MainlineLevel?: string | null;
   v13MainlineLevelLabel?: string | null;
+  v13ThemeStrengthScore?: number | null;
+  v13FundSupportScore?: number | null;
+  v13LimitStructureScore?: number | null;
+  v13BuyabilityScore?: number | null;
+  v13ChipRiskScore?: number | null;
+  v13ShadowScore?: number | null;
+  v13ShadowSummary?: string | null;
   role: string;
   score: number;
   rankScore: number;
@@ -144,6 +151,13 @@ export interface MomentumDecisionCandidateDiagnostic {
   v13MainlineScore?: number | null;
   v13MainlineLevel?: string | null;
   v13MainlineLevelLabel?: string | null;
+  v13ThemeStrengthScore?: number | null;
+  v13FundSupportScore?: number | null;
+  v13LimitStructureScore?: number | null;
+  v13BuyabilityScore?: number | null;
+  v13ChipRiskScore?: number | null;
+  v13ShadowScore?: number | null;
+  v13ShadowSummary?: string | null;
   roleKey: string;
   role: string;
   buyPointStatus: MomentumBuyPointStatus;

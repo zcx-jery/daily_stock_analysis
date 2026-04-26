@@ -824,8 +824,133 @@ class MomentumSecondaryDecisionService:
                 themes = list(updated.get("themes") or [])
                 if theme_name and theme_name not in themes:
                     updated["themes"] = [theme_name, *themes]
+                self._attach_v13_shadow_scores(updated, context=context, radar=best_radar)
             enhanced.append(updated)
         return enhanced
+
+    def _attach_v13_shadow_scores(
+        self,
+        candidate: Dict[str, Any],
+        *,
+        context: Dict[str, Any],
+        radar: Dict[str, Any],
+    ) -> None:
+        theme_strength_score = round(_safe_float(radar.get("score"), 50.0), 2)
+        fund_support_score = round(self._v13_fund_support_score(radar), 2)
+        limit_structure_score = round(self._v13_limit_structure_score(candidate, context), 2)
+        buyability_score = round(self._v13_buyability_shadow_score(candidate, context), 2)
+        chip_risk_score = 50.0
+        shadow_score = round(
+            _clamp_float(
+                theme_strength_score * 0.30
+                + fund_support_score * 0.25
+                + limit_structure_score * 0.20
+                + buyability_score * 0.15
+                + (100.0 - chip_risk_score) * 0.10
+            ),
+            2,
+        )
+        candidate["_v13_theme_strength_score"] = theme_strength_score
+        candidate["_v13_fund_support_score"] = fund_support_score
+        candidate["_v13_limit_structure_score"] = limit_structure_score
+        candidate["_v13_buyability_score"] = buyability_score
+        candidate["_v13_chip_risk_score"] = chip_risk_score
+        candidate["_v13_shadow_score"] = shadow_score
+        candidate["_v13_shadow_summary"] = (
+            f"V1.3影子分 {shadow_score:.1f}：题材 {theme_strength_score:.1f}、"
+            f"资金 {fund_support_score:.1f}、涨停结构 {limit_structure_score:.1f}、"
+            f"买点 {buyability_score:.1f}；筹码风险暂用中性值。"
+        )
+
+    @staticmethod
+    def _v13_fund_support_score(radar: Dict[str, Any]) -> float:
+        score = _safe_float(radar.get("fund_strength_score"), 50.0)
+        if radar.get("fund_strength_score") is not None:
+            return _clamp_float(score)
+
+        net_amount = _safe_float(radar.get("net_amount"))
+        if net_amount > 0:
+            score += min(28.0, net_amount / 500000000.0 * 6.0)
+        elif net_amount < 0:
+            score -= min(22.0, abs(net_amount) / 500000000.0 * 6.0)
+
+        board_rank = int(_safe_float(radar.get("board_rank") or radar.get("rank"), 0.0))
+        if 0 < board_rank <= 5:
+            score += 18.0
+        elif board_rank <= 15 and board_rank > 0:
+            score += 10.0
+        elif board_rank <= 30 and board_rank > 0:
+            score += 5.0
+
+        net_amount_rate = _safe_float(radar.get("net_amount_rate"))
+        if net_amount_rate > 0:
+            score += min(10.0, net_amount_rate * 1.5)
+        elif net_amount_rate < 0:
+            score -= min(10.0, abs(net_amount_rate) * 1.5)
+
+        pct_change = _safe_float(radar.get("pct_change"))
+        if pct_change > 0:
+            score += min(8.0, pct_change * 1.2)
+        elif pct_change < 0:
+            score -= min(8.0, abs(pct_change) * 1.2)
+        return _clamp_float(score)
+
+    @staticmethod
+    def _v13_limit_structure_score(candidate: Dict[str, Any], context: Dict[str, Any]) -> float:
+        limit_events = context.get("limit_events") or {}
+        events = limit_events.get(_safe_str(candidate.get("ts_code"))) or []
+        score = 50.0
+        if events:
+            for event in events:
+                limit_flag = _safe_str(event.get("limit")).upper()
+                if limit_flag == "U":
+                    score += 26.0
+                elif limit_flag == "Z":
+                    score -= 22.0
+                elif limit_flag == "D":
+                    score -= 35.0
+                limit_times = int(_safe_float(event.get("limit_times")))
+                open_times = int(_safe_float(event.get("open_times")))
+                score += min(16.0, limit_times * 8.0)
+                score -= min(18.0, open_times * 4.0)
+                score += min(10.0, _safe_float(event.get("fd_amount")) / 100000000.0 * 2.0)
+            return _clamp_float(score)
+
+        pct_chg = _safe_float(candidate.get("pct_chg"))
+        extension_score = _safe_float(candidate.get("extension_score"))
+        if pct_chg >= 9.7:
+            score += 18.0
+        elif pct_chg >= 7.0:
+            score += 10.0
+        elif pct_chg <= 0:
+            score -= 8.0
+        if extension_score >= 90:
+            score += 8.0
+        elif extension_score < 60:
+            score -= 6.0
+        return _clamp_float(score)
+
+    @staticmethod
+    def _v13_buyability_shadow_score(candidate: Dict[str, Any], context: Dict[str, Any]) -> float:
+        del context
+        score = _safe_float(candidate.get("buyability_score"), 55.0)
+        if candidate.get("entry_range_low") is not None and candidate.get("entry_range_high") is not None:
+            score += 12.0
+        buy_point_status = _safe_str(candidate.get("_buy_point_status"))
+        if buy_point_status == "clear":
+            score += 10.0
+        elif buy_point_status == "waiting":
+            score += 4.0
+        risk_score = _safe_float(candidate.get("risk_score"))
+        if risk_score >= 70:
+            score -= 22.0
+        elif risk_score >= 55:
+            score -= 12.0
+        elif risk_score <= 25:
+            score += 8.0
+        if "high_acceleration" in set(candidate.get("risk_tags") or []):
+            score -= 8.0
+        return _clamp_float(score)
 
     def build_intraday_from_decision(
         self,
@@ -1192,6 +1317,37 @@ class MomentumSecondaryDecisionService:
                     ),
                     "v13_mainline_level": candidate.get("_v13_mainline_level"),
                     "v13_mainline_level_label": candidate.get("_v13_mainline_level_label"),
+                    "v13_theme_strength_score": (
+                        round(_safe_float(candidate.get("_v13_theme_strength_score")), 2)
+                        if candidate.get("_v13_theme_strength_score") is not None
+                        else None
+                    ),
+                    "v13_fund_support_score": (
+                        round(_safe_float(candidate.get("_v13_fund_support_score")), 2)
+                        if candidate.get("_v13_fund_support_score") is not None
+                        else None
+                    ),
+                    "v13_limit_structure_score": (
+                        round(_safe_float(candidate.get("_v13_limit_structure_score")), 2)
+                        if candidate.get("_v13_limit_structure_score") is not None
+                        else None
+                    ),
+                    "v13_buyability_score": (
+                        round(_safe_float(candidate.get("_v13_buyability_score")), 2)
+                        if candidate.get("_v13_buyability_score") is not None
+                        else None
+                    ),
+                    "v13_chip_risk_score": (
+                        round(_safe_float(candidate.get("_v13_chip_risk_score")), 2)
+                        if candidate.get("_v13_chip_risk_score") is not None
+                        else None
+                    ),
+                    "v13_shadow_score": (
+                        round(_safe_float(candidate.get("_v13_shadow_score")), 2)
+                        if candidate.get("_v13_shadow_score") is not None
+                        else None
+                    ),
+                    "v13_shadow_summary": candidate.get("_v13_shadow_summary"),
                     "role_key": candidate["_role_key"],
                     "role": candidate["_role_label"],
                     "buy_point_status": candidate["_buy_point_status"],
@@ -4576,6 +4732,37 @@ class MomentumSecondaryDecisionService:
             ),
             "v13_mainline_level": candidate.get("_v13_mainline_level"),
             "v13_mainline_level_label": candidate.get("_v13_mainline_level_label"),
+            "v13_theme_strength_score": (
+                round(_safe_float(candidate.get("_v13_theme_strength_score")), 1)
+                if candidate.get("_v13_theme_strength_score") is not None
+                else None
+            ),
+            "v13_fund_support_score": (
+                round(_safe_float(candidate.get("_v13_fund_support_score")), 1)
+                if candidate.get("_v13_fund_support_score") is not None
+                else None
+            ),
+            "v13_limit_structure_score": (
+                round(_safe_float(candidate.get("_v13_limit_structure_score")), 1)
+                if candidate.get("_v13_limit_structure_score") is not None
+                else None
+            ),
+            "v13_buyability_score": (
+                round(_safe_float(candidate.get("_v13_buyability_score")), 1)
+                if candidate.get("_v13_buyability_score") is not None
+                else None
+            ),
+            "v13_chip_risk_score": (
+                round(_safe_float(candidate.get("_v13_chip_risk_score")), 1)
+                if candidate.get("_v13_chip_risk_score") is not None
+                else None
+            ),
+            "v13_shadow_score": (
+                round(_safe_float(candidate.get("_v13_shadow_score")), 1)
+                if candidate.get("_v13_shadow_score") is not None
+                else None
+            ),
+            "v13_shadow_summary": candidate.get("_v13_shadow_summary"),
             "role": candidate["_role_label"],
             "score": round(self._portfolio_priority(candidate, theme_score_map), 1),
             "rank_score": round(_safe_float(candidate.get("rank_score")), 1),

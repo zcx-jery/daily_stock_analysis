@@ -23,6 +23,7 @@
 - [强势筛选 V1 产品原则 + 总闸门规则](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-v1-product-principles-and-gate-rules.md)
 - [强势筛选 V1.3 主线增强版产品设计](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-v1-3-mainline-enhancement-product-design.md)
 - [强势筛选 V1.3 主线增强版技术开发文档](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-v1-3-mainline-enhancement-technical-design.md)
+- [强势筛选 V1.3 Standard / Aggressive 评分升级方案](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-v1-3-profile-scoring-upgrade.md)
 - [强势筛选 V1.3 主线增强版开发任务清单](d:\AI_Project\_remote_edit\daily_stock_analysis\docs\architecture\momentum-screener-v1-3-development-tasks.md)
 
 用途：
@@ -34,6 +35,7 @@
 - 记录 V1 入口标准、画像边界与总闸门规则
 - 记录 V1.3 在 6000 积分数据权限下的主线增强、短线情绪、盘中快照辅助和回测诊断边界
 - 记录 V1.3 的数据适配、缓存、服务层、API、前端、回测和 AI 点评实现方案
+- 记录 Standard 主引擎与 Aggressive 进攻补充引擎如何接入 6000 积分新增数据能力
 - 记录 V1.3 的里程碑拆分、文件落点、测试验收和最小可交付范围
 
 ### 3. Standard 评分规则

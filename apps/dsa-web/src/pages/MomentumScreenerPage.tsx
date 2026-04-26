@@ -886,8 +886,19 @@ const PortfolioDecisionCard: React.FC<{ item: MomentumDecisionPortfolioSlot }> =
       {item.v13MainlineScore != null ? (
         <Badge variant="success">题材强度 {item.v13MainlineScore.toFixed(1)}</Badge>
       ) : null}
+      {item.v13ShadowScore != null ? (
+        <Badge variant="info">V1.3影子分 {item.v13ShadowScore.toFixed(1)}</Badge>
+      ) : null}
       {item.opportunityTag ? <Badge variant="warning">{item.opportunityTag}</Badge> : null}
     </div>
+
+    {item.v13ShadowScore != null ? (
+      <p className="mt-3 text-xs leading-5 text-secondary-text">
+        题材 {item.v13ThemeStrengthScore?.toFixed(1) ?? '-'} / 资金 {item.v13FundSupportScore?.toFixed(1) ?? '-'} /
+        涨停结构 {item.v13LimitStructureScore?.toFixed(1) ?? '-'} / 买点 {item.v13BuyabilityScore?.toFixed(1) ?? '-'} /
+        筹码风险 {item.v13ChipRiskScore?.toFixed(1) ?? '-'}
+      </p>
+    ) : null}
 
     <div className="mt-4 space-y-3 text-sm leading-6 text-secondary-text">
       <p>

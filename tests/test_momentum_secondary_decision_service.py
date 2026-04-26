@@ -92,6 +92,18 @@ class _FakeV13DecisionDataService:
                 "limit_list_d": "ok",
                 "ths_member": "ok",
                 "ths_hot": "ok",
+                "moneyflow_ind_dc": "ok",
+            },
+            "limit_events": {
+                "600301.SH": [
+                    {
+                        "ts_code": "600301.SH",
+                        "limit": "U",
+                        "limit_times": 1,
+                        "open_times": 0,
+                        "fd_amount": 300000000,
+                    }
+                ]
             },
             "stock_theme_map": {
                 "600301.SH": [
@@ -121,6 +133,10 @@ class _FakeV13DecisionDataService:
                 "level": "strong",
                 "level_label": "强",
                 "summary": "机器人主线热度、涨停强度和候选密度同步占优。",
+                "net_amount": 1000000000,
+                "net_amount_rate": 5.0,
+                "board_rank": 3,
+                "pct_change": 3.0,
                 "evidence": [],
             },
             {
@@ -553,8 +569,13 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         self.assertEqual(result["portfolio"][0]["ts_code"], "600301.SH")
         self.assertEqual(result["portfolio"][0]["theme"], "机器人主线")
         self.assertEqual(result["portfolio"][0]["v13_mainline_score"], 90.0)
+        self.assertGreater(result["portfolio"][0]["v13_shadow_score"], 80.0)
+        self.assertGreater(result["portfolio"][0]["v13_fund_support_score"], 85.0)
+        self.assertGreater(result["portfolio"][0]["v13_limit_structure_score"], 85.0)
         diagnostic = next(item for item in result["candidate_diagnostics"] if item["ts_code"] == "600301.SH")
         self.assertEqual(diagnostic["v13_theme_id"], "THS001")
+        self.assertGreater(diagnostic["v13_shadow_score"], 80.0)
+        self.assertIn("V1.3影子分", diagnostic["v13_shadow_summary"])
 
     def test_build_from_screening_limits_v13_context_codes_for_full_ranked_pool(self) -> None:
         v13_data_service = _FakeV13DecisionDataService()
