@@ -73,6 +73,49 @@ class TestMomentumV13DataService(unittest.TestCase):
             "tushare.ths_hot",
             [{"ts_code": "600519.SH", "rank": 1, "concepts": ["白酒"]}],
         )
+        fetcher.get_dc_concepts.return_value = self._payload(
+            "tushare.dc_index",
+            [
+                {
+                    "theme_code": "BK0574.DC",
+                    "theme_name": "锂电池概念",
+                    "pct_change": 5.2,
+                    "up_num": 58,
+                    "down_num": 8,
+                    "leading": "多氟多",
+                }
+            ],
+        )
+        fetcher.get_dc_moneyflow_themes.side_effect = lambda trade_date, content_type=None: self._payload(
+            "tushare.moneyflow_ind_dc",
+            [
+                {
+                    "theme_code": "BK0574.DC" if content_type == "概念" else "电池",
+                    "theme_name": "锂电池概念" if content_type == "概念" else "电池",
+                    "content_type": content_type,
+                    "rank": 1,
+                    "net_amount": 10898035456.0,
+                    "net_amount_rate": 3.2,
+                    "pct_change": 5.2,
+                }
+            ],
+        )
+        fetcher.get_dc_members.side_effect = lambda trade_date, con_code: self._payload(
+            "tushare.dc_member",
+            [
+                {
+                    "theme_code": "BK0574.DC",
+                    "con_code": con_code,
+                    "con_name": f"name-{con_code}",
+                }
+            ]
+            if con_code == "300750.SZ"
+            else [],
+        )
+        fetcher.get_kpl_list.return_value = self._payload(
+            "tushare.kpl_list",
+            [{"ts_code": "300750.SZ", "name": "宁德时代", "theme": "锂电池", "lu_desc": "电池产业链"}],
+        )
         fetcher.get_realtime_quote.return_value = _Quote(code="600519.SH", price=1688.0)
         return fetcher
 
@@ -85,11 +128,16 @@ class TestMomentumV13DataService(unittest.TestCase):
         self.assertEqual(context["trade_date"], "2026-04-23")
         self.assertFalse(context["is_degraded"])
         self.assertEqual(context["source_status"]["stk_limit"], "ok")
+        self.assertEqual(context["source_status"]["dc_concept"], "ok")
+        self.assertEqual(context["source_status"]["moneyflow_ind_dc"], "ok")
         self.assertIn("600519.SH", context["limit_prices"])
         self.assertIn("600519.SH", context["limit_events"])
         self.assertEqual(len(context["stock_raw_theme_map"]["600519.SH"]), 2)
         self.assertEqual(context["stock_capital_theme_map"]["600519.SH"][0]["theme_name"], "机器人")
         self.assertEqual(len(context["stock_theme_map"]["600519.SH"]), 3)
+        self.assertEqual(context["stock_dc_theme_map"]["300750.SZ"][0]["theme_name"], "锂电池概念")
+        self.assertEqual(context["theme_strength"]["capital_theme:battery"]["theme_name"], "电池")
+        self.assertGreater(context["theme_strength"]["capital_theme:battery"]["net_amount"], 0)
         self.assertEqual(context["theme_members"]["885800.TI"], ["600519.SH", "300750.SZ"])
         self.assertEqual(context["theme_name_map"]["885800.TI"], "白酒")
         self.assertEqual(context["source_status"]["ths_index"], "ok")
@@ -98,6 +146,10 @@ class TestMomentumV13DataService(unittest.TestCase):
         fetcher.get_stock_limit_prices.assert_called_once_with("2026/04/23")
         fetcher.get_limit_list.assert_called_once_with("2026/04/23")
         fetcher.get_ths_hot.assert_called_once_with("2026/04/23")
+        fetcher.get_dc_concepts.assert_called_once_with("2026/04/23")
+        self.assertEqual(fetcher.get_dc_moneyflow_themes.call_count, 2)
+        self.assertEqual(fetcher.get_dc_members.call_count, 2)
+        fetcher.get_kpl_list.assert_called_once_with("2026/04/23", tag="涨停")
         self.assertEqual(fetcher.get_ths_members.call_count, 2)
         self.assertEqual(fetcher.get_ths_index.call_count, 2)
 
@@ -112,6 +164,10 @@ class TestMomentumV13DataService(unittest.TestCase):
         fetcher.get_stock_limit_prices.assert_called_once()
         fetcher.get_limit_list.assert_called_once()
         fetcher.get_ths_hot.assert_called_once()
+        fetcher.get_dc_concepts.assert_called_once()
+        self.assertEqual(fetcher.get_dc_moneyflow_themes.call_count, 2)
+        fetcher.get_dc_members.assert_called_once()
+        fetcher.get_kpl_list.assert_called_once()
         fetcher.get_ths_members.assert_called_once()
         self.assertEqual(fetcher.get_ths_index.call_count, 2)
         self.assertGreaterEqual(MomentumV13DataService.get_cache_stats()["hit"], 1)

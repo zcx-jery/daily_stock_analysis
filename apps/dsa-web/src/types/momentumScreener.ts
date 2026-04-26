@@ -260,6 +260,14 @@ export interface MomentumMainlineRadarItem {
   limitUpCount?: number;
   brokenLimitCount?: number;
   hotRank?: number | null;
+  netAmount?: number | null;
+  netAmountRate?: number | null;
+  boardRank?: number | null;
+  pctChange?: number | null;
+  upNum?: number | null;
+  downNum?: number | null;
+  leaderStock?: string | null;
+  dataSources?: string[];
   sourceThemeNames?: string[];
   representatives?: Record<string, unknown>[];
   evidence?: Record<string, unknown>[];

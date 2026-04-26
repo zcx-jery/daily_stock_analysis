@@ -87,6 +87,10 @@ class MomentumV13DataService:
     _shared_cache_stats: Dict[str, int] = {"hit": 0, "miss": 0, "expired": 0}
 
     _DEFAULT_RESOURCE_TTLS = {
+        "dc_concept": 30 * 60,
+        "dc_moneyflow": 7 * 24 * 60 * 60,
+        "dc_member": 7 * 24 * 60 * 60,
+        "kpl_list": 7 * 24 * 60 * 60,
         "stk_limit": 7 * 24 * 60 * 60,
         "limit_list_d": 7 * 24 * 60 * 60,
         "ths_member": 7 * 24 * 60 * 60,
@@ -125,11 +129,19 @@ class MomentumV13DataService:
 
         limit_prices = self._load_limit_prices(trade_date)
         limit_events = self._load_limit_events(trade_date)
+        dc_concepts = self._load_dc_concepts(trade_date)
+        dc_moneyflow = self._load_dc_moneyflow(trade_date)
+        dc_members = self._load_dc_members(trade_date, normalized_codes)
+        kpl_list = self._load_kpl_list(trade_date)
         ths_hot = self._load_ths_hot(trade_date)
         ths_members = self._load_ths_members(normalized_codes)
         theme_name_map = self._load_ths_index_names(ths_members)
 
         payloads = {
+            "dc_concept": dc_concepts,
+            "moneyflow_ind_dc": dc_moneyflow,
+            "dc_member": dc_members,
+            "kpl_list": kpl_list,
             "stk_limit": limit_prices,
             "limit_list_d": limit_events,
             "ths_member": ths_members,
@@ -140,15 +152,26 @@ class MomentumV13DataService:
         if ths_index_payload:
             source_status["ths_index"] = str(ths_index_payload.get("status") or "unknown")
         hot_items = _safe_list(ths_hot.get("rows"))
+        dc_theme_name_map = self._build_dc_theme_name_map(dc_concepts, dc_moneyflow)
+        theme_strength = self._build_theme_strength_map(dc_concepts, dc_moneyflow)
+        dc_stock_theme_map = self._build_stock_dc_theme_map(dc_members, normalized_codes, dc_theme_name_map)
+        kpl_stock_theme_map = self._build_stock_kpl_theme_map(kpl_list, normalized_codes)
         raw_stock_theme_map = self._build_stock_theme_map(ths_members, normalized_codes)
-        stock_capital_theme_map = self._build_stock_capital_theme_map(
+        source_stock_theme_map = self._merge_stock_theme_maps(
+            self._merge_stock_theme_maps(dc_stock_theme_map, kpl_stock_theme_map),
             raw_stock_theme_map,
+        )
+        stock_capital_theme_map = self._build_stock_capital_theme_map(
+            source_stock_theme_map,
             hot_items=hot_items,
             theme_name_map={
-                key: value
-                for key, value in theme_name_map.items()
-                if key != "_payload"
+                **dc_theme_name_map,
+                **{key: value for key, value in theme_name_map.items() if key != "_payload"},
             },
+        )
+        combined_theme_members = self._merge_theme_members(
+            self._merge_theme_members(self._build_theme_members(dc_members), self._build_theme_members(ths_members)),
+            self._build_kpl_theme_members(kpl_list),
         )
         context = {
             "trade_date": self._display_trade_date(trade_date),
@@ -156,18 +179,21 @@ class MomentumV13DataService:
             "is_degraded": self._is_any_degraded(payloads.values()),
             "degraded_reasons": self._collect_degraded_reasons(payloads),
             "source_status": source_status,
-            "stock_theme_map": self._merge_stock_theme_maps(raw_stock_theme_map, stock_capital_theme_map),
+            "stock_theme_map": self._merge_stock_theme_maps(source_stock_theme_map, stock_capital_theme_map),
             "stock_raw_theme_map": raw_stock_theme_map,
+            "stock_dc_theme_map": dc_stock_theme_map,
+            "stock_kpl_theme_map": kpl_stock_theme_map,
             "stock_capital_theme_map": stock_capital_theme_map,
-            "theme_members": self._build_theme_members(ths_members),
+            "theme_members": combined_theme_members,
             "theme_name_map": {
-                key: value
-                for key, value in theme_name_map.items()
-                if key != "_payload"
+                **dc_theme_name_map,
+                **{key: value for key, value in theme_name_map.items() if key != "_payload"},
             },
+            "theme_strength": theme_strength,
             "limit_events": self._index_rows_by_ts_code(limit_events),
             "limit_prices": self._index_rows_by_ts_code(limit_prices),
             "hot_items": hot_items,
+            "kpl_items": _safe_list(kpl_list.get("rows")),
             "raw_sources": {**payloads, "ths_index": ths_index_payload},
         }
         self._cache_set(context_key, context)
@@ -239,10 +265,12 @@ class MomentumV13DataService:
             theme_candidates = theme_payload["candidates"]
             theme_member_codes = set(theme_payload["member_codes"])
             theme_candidate_codes = {item["ts_code"] for item in theme_candidates}
+            theme_strength = theme_payload.get("theme_strength") or {}
             evidence = self._score_mainline_evidence(
                 theme_candidates=theme_candidates,
                 theme_member_codes=theme_member_codes,
                 theme_candidate_codes=theme_candidate_codes,
+                theme_strength=theme_strength,
                 limit_events=limit_events,
                 hot_by_code=hot_by_code,
                 previous_feedback=feedback.get(theme_id) or feedback,
@@ -265,8 +293,19 @@ class MomentumV13DataService:
                     "limit_up_count": limit_up_count,
                     "broken_limit_count": broken_limit_count,
                     "hot_rank": hot_rank,
+                    "net_amount": theme_strength.get("net_amount"),
+                    "net_amount_rate": theme_strength.get("net_amount_rate"),
+                    "board_rank": theme_strength.get("rank"),
+                    "pct_change": theme_strength.get("pct_change"),
+                    "up_num": theme_strength.get("up_num"),
+                    "down_num": theme_strength.get("down_num"),
+                    "leader_stock": theme_strength.get("leading"),
+                    "data_sources": theme_strength.get("sources") or [],
                     "representatives": representatives,
-                    "source_theme_names": sorted(theme_payload.get("source_theme_names") or [])[:8],
+                    "source_theme_names": sorted(
+                        set(theme_payload.get("source_theme_names") or [])
+                        | set(theme_strength.get("source_theme_names") or [])
+                    )[:8],
                     "evidence": [
                         {
                             "key": item["key"],
@@ -356,6 +395,94 @@ class MomentumV13DataService:
         if cached is not None:
             return cached
         payload = self._safe_fetch("limit_list_d", lambda: self.fetcher.get_limit_list(trade_date))
+        self._cache_set(key, payload)
+        return payload
+
+    def _load_dc_concepts(self, trade_date: str) -> Dict[str, Any]:
+        key = self._cache_key("dc_concept", trade_date)
+        cached = self._cache_get(key, self._resource_ttls["dc_concept"])
+        if cached is not None:
+            return cached
+        payload = self._safe_fetch("dc_concept", lambda: self.fetcher.get_dc_concepts(trade_date))
+        self._cache_set(key, payload)
+        return payload
+
+    def _load_dc_moneyflow(self, trade_date: str) -> Dict[str, Any]:
+        key = self._cache_key("dc_moneyflow", trade_date)
+        cached = self._cache_get(key, self._resource_ttls["dc_moneyflow"])
+        if cached is not None:
+            return cached
+
+        rows: List[Dict[str, Any]] = []
+        source_status: Dict[str, str] = {}
+        degraded_reasons: List[str] = []
+        for content_type in ("概念", "行业"):
+            payload = self._safe_fetch(
+                f"moneyflow_ind_dc:{content_type}",
+                lambda value=content_type: self.fetcher.get_dc_moneyflow_themes(
+                    trade_date,
+                    content_type=value,
+                ),
+            )
+            source_status[content_type] = str(payload.get("status") or "unknown")
+            rows.extend(_safe_list(payload.get("rows")))
+            if payload.get("is_degraded"):
+                degraded_reasons.extend(
+                    f"{content_type}:{reason}" for reason in _safe_list(payload.get("degraded_reasons"))
+                )
+
+        status = "ok"
+        if degraded_reasons:
+            status = "partial" if rows else "unavailable"
+        result = self._payload(
+            source="tushare.moneyflow_ind_dc",
+            trade_date=self._display_trade_date(trade_date),
+            rows=rows,
+            status=status,
+            degraded_reasons=degraded_reasons,
+            extra={"source_status": source_status},
+        )
+        self._cache_set(key, result)
+        return result
+
+    def _load_dc_members(self, trade_date: str, ts_codes: List[str]) -> Dict[str, Any]:
+        rows: List[Dict[str, Any]] = []
+        source_status: Dict[str, str] = {}
+        degraded_reasons: List[str] = []
+        for ts_code in ts_codes:
+            key = self._cache_key("dc_member", trade_date, ts_code)
+            cached = self._cache_get(key, self._resource_ttls["dc_member"])
+            if cached is None:
+                cached = self._safe_fetch(
+                    "dc_member",
+                    lambda code=ts_code: self.fetcher.get_dc_members(trade_date, con_code=code),
+                )
+                self._cache_set(key, cached)
+            source_status[ts_code] = str(cached.get("status") or "unknown")
+            rows.extend(_safe_list(cached.get("rows")))
+            if cached.get("is_degraded"):
+                degraded_reasons.extend(
+                    f"{ts_code}:{reason}" for reason in _safe_list(cached.get("degraded_reasons"))
+                )
+
+        status = "ok"
+        if degraded_reasons:
+            status = "partial" if rows else "unavailable"
+        return self._payload(
+            source="tushare.dc_member",
+            trade_date=self._display_trade_date(trade_date),
+            rows=rows,
+            status=status,
+            degraded_reasons=degraded_reasons,
+            extra={"source_status": source_status},
+        )
+
+    def _load_kpl_list(self, trade_date: str) -> Dict[str, Any]:
+        key = self._cache_key("kpl_list", trade_date)
+        cached = self._cache_get(key, self._resource_ttls["kpl_list"])
+        if cached is not None:
+            return cached
+        payload = self._safe_fetch("kpl_list", lambda: self.fetcher.get_kpl_list(trade_date, tag="涨停"))
         self._cache_set(key, payload)
         return payload
 
@@ -640,6 +767,221 @@ class MomentumV13DataService:
                 members.append(con_code)
         return result
 
+    @staticmethod
+    def _merge_theme_members(
+        primary: Dict[str, List[str]],
+        secondary: Dict[str, List[str]],
+    ) -> Dict[str, List[str]]:
+        merged = {key: list(values) for key, values in primary.items()}
+        for theme_code, values in secondary.items():
+            members = merged.setdefault(theme_code, [])
+            for value in values:
+                if value not in members:
+                    members.append(value)
+        return merged
+
+    @staticmethod
+    def _build_dc_theme_name_map(dc_concepts: Dict[str, Any], dc_moneyflow: Dict[str, Any]) -> Dict[str, str]:
+        result: Dict[str, str] = {}
+        for payload in (dc_concepts, dc_moneyflow):
+            for row in _safe_list(payload.get("rows")):
+                theme_code = str(row.get("theme_code") or row.get("ts_code") or "").strip().upper()
+                theme_name = str(row.get("theme_name") or row.get("name") or "").strip()
+                if theme_code and theme_name:
+                    result[theme_code] = theme_name
+        return result
+
+    @classmethod
+    def _build_stock_dc_theme_map(
+        cls,
+        dc_members: Dict[str, Any],
+        ts_codes: List[str],
+        dc_theme_name_map: Dict[str, str],
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        result: Dict[str, List[Dict[str, Any]]] = {ts_code: [] for ts_code in ts_codes}
+        for row in _safe_list(dc_members.get("rows")):
+            con_code = str(row.get("con_code") or "").strip().upper()
+            theme_code = str(row.get("theme_code") or row.get("ts_code") or "").strip().upper()
+            if not con_code or not theme_code:
+                continue
+            theme_name = str(dc_theme_name_map.get(theme_code) or row.get("theme_name") or theme_code).strip()
+            child_theme_names = [theme_name] if theme_name and theme_name != theme_code else []
+            result.setdefault(con_code, []).append(
+                {
+                    "theme_code": theme_code,
+                    "theme_name": theme_name,
+                    "source": "dc_member",
+                    "con_code": con_code,
+                    "con_name": row.get("con_name") or row.get("name"),
+                    "child_theme_names": child_theme_names,
+                }
+            )
+            for theme_id, parent_name in cls._capital_theme_refs_from_texts([theme_name, row.get("con_name") or row.get("name")]):
+                result[con_code].append(
+                    {
+                        "theme_code": theme_id,
+                        "theme_name": parent_name,
+                        "source": "capital_theme",
+                        "con_code": con_code,
+                        "child_theme_names": child_theme_names,
+                    }
+                )
+        return result
+
+    @classmethod
+    def _build_stock_kpl_theme_map(
+        cls,
+        kpl_list: Dict[str, Any],
+        ts_codes: List[str],
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        result: Dict[str, List[Dict[str, Any]]] = {ts_code: [] for ts_code in ts_codes}
+        for row in _safe_list(kpl_list.get("rows")):
+            ts_code = str(row.get("ts_code") or "").strip().upper()
+            if not ts_code:
+                continue
+            theme_texts = cls._split_theme_text(row.get("theme"))
+            if not theme_texts and row.get("lu_desc"):
+                theme_texts = cls._split_theme_text(row.get("lu_desc"))
+            for theme_name in theme_texts:
+                theme_code = f"kpl:{theme_name}"
+                result.setdefault(ts_code, []).append(
+                    {
+                        "theme_code": theme_code,
+                        "theme_name": theme_name,
+                        "source": "kpl_list",
+                        "con_code": ts_code,
+                        "con_name": row.get("name"),
+                        "lu_desc": row.get("lu_desc"),
+                        "child_theme_names": [theme_name],
+                    }
+                )
+            for theme_id, parent_name in cls._capital_theme_refs_from_texts([*theme_texts, row.get("name"), row.get("lu_desc")]):
+                result.setdefault(ts_code, []).append(
+                    {
+                        "theme_code": theme_id,
+                        "theme_name": parent_name,
+                        "source": "capital_theme",
+                        "con_code": ts_code,
+                        "con_name": row.get("name"),
+                        "child_theme_names": theme_texts,
+                    }
+                )
+        return result
+
+    @classmethod
+    def _build_kpl_theme_members(cls, kpl_list: Dict[str, Any]) -> Dict[str, List[str]]:
+        result: Dict[str, List[str]] = {}
+        for row in _safe_list(kpl_list.get("rows")):
+            ts_code = str(row.get("ts_code") or "").strip().upper()
+            if not ts_code:
+                continue
+            for theme_name in cls._split_theme_text(row.get("theme")):
+                theme_code = f"kpl:{theme_name}"
+                result.setdefault(theme_code, [])
+                if ts_code not in result[theme_code]:
+                    result[theme_code].append(ts_code)
+        return result
+
+    @classmethod
+    def _build_theme_strength_map(
+        cls,
+        dc_concepts: Dict[str, Any],
+        dc_moneyflow: Dict[str, Any],
+    ) -> Dict[str, Dict[str, Any]]:
+        result: Dict[str, Dict[str, Any]] = {}
+
+        def ensure_entry(theme_code: str, theme_name: str, source: str) -> Dict[str, Any]:
+            entry = result.setdefault(
+                theme_code,
+                {
+                    "theme_code": theme_code,
+                    "theme_name": theme_name or theme_code,
+                    "source": source,
+                    "sources": set(),
+                    "source_theme_names": set(),
+                    "net_amount": 0.0,
+                    "net_amount_rate": None,
+                    "rank": None,
+                    "pct_change": None,
+                    "up_num": None,
+                    "down_num": None,
+                    "turnover_rate": None,
+                    "leading": "",
+                    "leading_code": "",
+                },
+            )
+            entry["sources"].add(source)
+            if theme_name:
+                entry["source_theme_names"].add(theme_name)
+            return entry
+
+        for row in _safe_list(dc_concepts.get("rows")):
+            theme_code = str(row.get("theme_code") or row.get("ts_code") or "").strip().upper()
+            theme_name = str(row.get("theme_name") or row.get("name") or theme_code).strip()
+            if not theme_code:
+                continue
+            entry = ensure_entry(theme_code, theme_name, "dc_concept")
+            entry["pct_change"] = cls._prefer_float(entry.get("pct_change"), row.get("pct_change"))
+            entry["up_num"] = row.get("up_num")
+            entry["down_num"] = row.get("down_num")
+            entry["turnover_rate"] = cls._prefer_float(entry.get("turnover_rate"), row.get("turnover_rate"))
+            entry["leading"] = row.get("leading") or entry.get("leading") or ""
+            entry["leading_code"] = row.get("leading_code") or entry.get("leading_code") or ""
+
+        for row in _safe_list(dc_moneyflow.get("rows")):
+            theme_code = str(row.get("theme_code") or row.get("ts_code") or row.get("name") or "").strip().upper()
+            theme_name = str(row.get("theme_name") or row.get("name") or theme_code).strip()
+            if not theme_code:
+                continue
+            entry = ensure_entry(theme_code, theme_name, "moneyflow_ind_dc")
+            entry["net_amount"] = float(entry.get("net_amount") or 0.0) + cls._safe_float_like(row.get("net_amount"))
+            entry["net_amount_rate"] = cls._prefer_float(entry.get("net_amount_rate"), row.get("net_amount_rate"))
+            entry["rank"] = cls._min_rank(entry.get("rank"), row.get("rank"))
+            entry["pct_change"] = cls._prefer_float(entry.get("pct_change"), row.get("pct_change"))
+
+        parent_accumulator: Dict[str, Dict[str, Any]] = {}
+        for entry in list(result.values()):
+            parent_refs = cls._capital_theme_refs_from_texts([entry.get("theme_name")])
+            for parent_id, parent_name in parent_refs:
+                parent = parent_accumulator.setdefault(
+                    parent_id,
+                    {
+                        "theme_code": parent_id,
+                        "theme_name": parent_name,
+                        "source": "theme_strength_provider",
+                        "sources": set(),
+                        "source_theme_names": set(),
+                        "net_amount": 0.0,
+                        "net_amount_rate": None,
+                        "rank": None,
+                        "pct_change": None,
+                        "up_num": 0,
+                        "down_num": 0,
+                        "turnover_rate": None,
+                        "leading": "",
+                        "leading_code": "",
+                    },
+                )
+                parent["sources"].update(entry.get("sources") or [])
+                parent["source_theme_names"].update(entry.get("source_theme_names") or [])
+                parent["net_amount"] = float(parent.get("net_amount") or 0.0) + float(entry.get("net_amount") or 0.0)
+                parent["net_amount_rate"] = cls._prefer_float(parent.get("net_amount_rate"), entry.get("net_amount_rate"))
+                parent["rank"] = cls._min_rank(parent.get("rank"), entry.get("rank"))
+                parent["pct_change"] = cls._prefer_float(parent.get("pct_change"), entry.get("pct_change"))
+                parent["turnover_rate"] = cls._prefer_float(parent.get("turnover_rate"), entry.get("turnover_rate"))
+                parent["up_num"] = int(parent.get("up_num") or 0) + int(entry.get("up_num") or 0)
+                parent["down_num"] = int(parent.get("down_num") or 0) + int(entry.get("down_num") or 0)
+                if not parent.get("leading") and entry.get("leading"):
+                    parent["leading"] = entry.get("leading")
+                    parent["leading_code"] = entry.get("leading_code")
+
+        result.update(parent_accumulator)
+        for entry in result.values():
+            entry["sources"] = sorted(str(item) for item in entry.get("sources") or [])
+            entry["source_theme_names"] = sorted(str(item) for item in entry.get("source_theme_names") or [])[:12]
+            entry["fund_strength_score"] = cls._theme_fund_strength_score(entry)
+        return result
+
     @classmethod
     def _build_stock_capital_theme_map(
         cls,
@@ -721,6 +1063,7 @@ class MomentumV13DataService:
         stock_theme_map = context.get("stock_theme_map") or {}
         theme_members = context.get("theme_members") or {}
         theme_name_map = context.get("theme_name_map") or {}
+        theme_strength_map = context.get("theme_strength") or {}
         groups: Dict[str, Dict[str, Any]] = {}
         for candidate in candidates:
             ts_code = candidate.get("ts_code")
@@ -742,10 +1085,13 @@ class MomentumV13DataService:
                         "candidates": [],
                         "member_codes": set(theme_members.get(theme_id) or []),
                         "source_theme_names": set(),
+                        "theme_strength": theme_strength_map.get(theme_id) or theme_strength_map.get(theme_name) or {},
                     },
                 )
                 payload["candidates"].append(candidate)
                 payload["member_codes"].add(ts_code)
+                if not payload.get("theme_strength") and theme_strength_map.get(theme_id):
+                    payload["theme_strength"] = theme_strength_map[theme_id]
                 if not theme_id.startswith("capital_theme:") and theme_name:
                     payload["source_theme_names"].add(theme_name)
                 if theme_id.startswith("capital_theme:"):
@@ -809,6 +1155,86 @@ class MomentumV13DataService:
         return refs or [("未分类", "未分类")]
 
     @staticmethod
+    def _split_theme_text(value: Any) -> List[str]:
+        text = str(value or "").strip()
+        if not text:
+            return []
+        separators = [",", "，", "、", "/", "|", ";", "；", "+"]
+        parts = [text]
+        for separator in separators:
+            next_parts: List[str] = []
+            for part in parts:
+                next_parts.extend(part.split(separator))
+            parts = next_parts
+        return [part.strip() for part in parts if part.strip()]
+
+    @staticmethod
+    def _safe_float_like(value: Any) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @classmethod
+    def _prefer_float(cls, current: Any, incoming: Any) -> Optional[float]:
+        if incoming is None:
+            try:
+                return float(current) if current is not None else None
+            except (TypeError, ValueError):
+                return None
+        try:
+            incoming_value = float(incoming)
+        except (TypeError, ValueError):
+            try:
+                return float(current) if current is not None else None
+            except (TypeError, ValueError):
+                return None
+        if current is None:
+            return incoming_value
+        try:
+            current_value = float(current)
+        except (TypeError, ValueError):
+            return incoming_value
+        return incoming_value if abs(incoming_value) > abs(current_value) else current_value
+
+    @staticmethod
+    def _min_rank(current: Any, incoming: Any) -> Optional[int]:
+        ranks: List[int] = []
+        for value in (current, incoming):
+            try:
+                parsed = int(float(value))
+            except (TypeError, ValueError):
+                continue
+            if parsed > 0:
+                ranks.append(parsed)
+        return min(ranks) if ranks else None
+
+    @classmethod
+    def _theme_fund_strength_score(cls, entry: Dict[str, Any]) -> float:
+        score = 50.0
+        rank = entry.get("rank")
+        if rank is not None:
+            try:
+                score += max(0.0, 38.0 - float(rank) * 1.2)
+            except (TypeError, ValueError):
+                pass
+        net_amount = cls._safe_float_like(entry.get("net_amount"))
+        if net_amount > 0:
+            score += min(28.0, net_amount / 500000000.0 * 6.0)
+        elif net_amount < 0:
+            score -= min(22.0, abs(net_amount) / 500000000.0 * 6.0)
+        pct_change = cls._safe_float_like(entry.get("pct_change"))
+        if pct_change > 0:
+            score += min(16.0, pct_change * 2.0)
+        elif pct_change < 0:
+            score += max(-12.0, pct_change * 2.0)
+        up_num = int(entry.get("up_num") or 0)
+        down_num = int(entry.get("down_num") or 0)
+        if up_num + down_num > 0:
+            score += (up_num / max(1, up_num + down_num) - 0.5) * 18.0
+        return max(0.0, min(100.0, score))
+
+    @staticmethod
     def _capital_theme_refs_from_texts(texts: Iterable[Any]) -> List[tuple[str, str]]:
         refs: List[tuple[str, str]] = []
         normalized_texts = [str(text or "").strip() for text in texts if str(text or "").strip()]
@@ -847,22 +1273,42 @@ class MomentumV13DataService:
         theme_candidates: List[Dict[str, Any]],
         theme_member_codes: set[str],
         theme_candidate_codes: set[str],
+        theme_strength: Dict[str, Any],
         limit_events: Dict[str, List[Dict[str, Any]]],
         hot_by_code: Dict[str, List[Dict[str, Any]]],
         previous_feedback: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
+        fund_raw = self._score_fund_strength(theme_strength)
         density_raw = self._score_density(theme_candidates)
         limit_raw = self._score_limit_strength(theme_member_codes | theme_candidate_codes, limit_events)
         break_raw = self._score_break_risk(theme_member_codes | theme_candidate_codes, limit_events)
         hot_raw = self._score_hot_concentration(theme_member_codes | theme_candidate_codes, hot_by_code)
         feedback_raw = self._score_previous_feedback(previous_feedback)
         return [
-            self._evidence_item("density", "候选池密度", density_raw["score"], 30.0, density_raw),
-            self._evidence_item("limit_strength", "涨停强度", limit_raw["score"], 25.0, limit_raw),
-            self._evidence_item("break_risk", "炸板风险", break_raw["score"], -15.0, break_raw),
-            self._evidence_item("hot_concentration", "热榜集中度", hot_raw["score"], 15.0, hot_raw),
-            self._evidence_item("previous_feedback", "昨日强势反馈", feedback_raw["score"], 25.0, feedback_raw),
+            self._evidence_item("fund_strength", "板块资金强度", fund_raw["score"], 30.0, fund_raw),
+            self._evidence_item("density", "候选池密度", density_raw["score"], 20.0, density_raw),
+            self._evidence_item("limit_strength", "涨停强度", limit_raw["score"], 20.0, limit_raw),
+            self._evidence_item("break_risk", "炸板风险", break_raw["score"], -10.0, break_raw),
+            self._evidence_item("hot_concentration", "热榜集中度", hot_raw["score"], 10.0, hot_raw),
+            self._evidence_item("previous_feedback", "昨日强势反馈", feedback_raw["score"], 15.0, feedback_raw),
         ]
+
+    @staticmethod
+    def _score_fund_strength(theme_strength: Dict[str, Any]) -> Dict[str, Any]:
+        if not theme_strength:
+            return {"score": 50.0, "net_amount": None, "rank": None, "source_count": 0}
+        score = float(theme_strength.get("fund_strength_score") or 50.0)
+        return {
+            "score": max(0.0, min(100.0, score)),
+            "net_amount": theme_strength.get("net_amount"),
+            "net_amount_rate": theme_strength.get("net_amount_rate"),
+            "rank": theme_strength.get("rank"),
+            "pct_change": theme_strength.get("pct_change"),
+            "up_num": theme_strength.get("up_num"),
+            "down_num": theme_strength.get("down_num"),
+            "sources": theme_strength.get("sources") or [],
+            "source_count": len(theme_strength.get("sources") or []),
+        }
 
     @staticmethod
     def _score_density(theme_candidates: List[Dict[str, Any]]) -> Dict[str, Any]:

@@ -391,23 +391,29 @@ function buildDecisionResponse(screening: MomentumScreenerResponse): MomentumScr
         summary: '最近 60 日主线识别整体仍稳定。',
       },
       riskBanner: null,
-      mainlineRadar: [
-        {
-          themeId: '886089.TI',
-          themeName: '886089.TI',
-          score: 82.5,
-          level: 'strong',
-          levelLabel: '主线强',
-          candidateCount: 5,
-          top10Count: 2,
-          limitUpCount: 3,
-          brokenLimitCount: 0,
-          hotRank: 5,
-          sourceThemeNames: ['电解液', '隔膜', '锂矿'],
-          summary: '886089.TI 聚集 5 只候选，Top10 有 2 只，主线强度为主线强。',
-          evidence: [
-            {
-              key: 'candidate_density',
+        mainlineRadar: [
+          {
+            themeId: 'capital_theme:battery',
+            themeName: '电池',
+            score: 82.5,
+            level: 'strong',
+            levelLabel: '主线强',
+            candidateCount: 5,
+            top10Count: 2,
+            limitUpCount: 3,
+            brokenLimitCount: 0,
+            hotRank: 5,
+            boardRank: 1,
+            netAmount: 10898035456,
+            pctChange: 5.2,
+            upNum: 58,
+            downNum: 8,
+            leaderStock: '多氟多',
+            sourceThemeNames: ['电解液', '隔膜', '锂矿'],
+            summary: '电池 聚集 5 只候选，Top10 有 2 只，主线强度为主线强。',
+            evidence: [
+              {
+                key: 'candidate_density',
               label: '候选池密度',
               summary: '候选池密度贡献 30.0。',
             },
@@ -947,11 +953,15 @@ describe('MomentumScreenerPage', () => {
     expect(within(panel).getByText('20日进攻许可')).toBeInTheDocument();
     expect(within(panel).getByText('60日主线可信度')).toBeInTheDocument();
     expect(within(panel).getByText('V1.3 题材强弱诊断')).toBeInTheDocument();
-    expect(within(panel).getByText('同花顺概念 886089')).toBeInTheDocument();
-    expect(within(panel).getByText('概念代码 886089.TI')).toBeInTheDocument();
+    expect(within(panel).getByText('电池')).toBeInTheDocument();
+    expect(within(panel).getByText('板块第 1')).toBeInTheDocument();
     expect(within(panel).getByText('题材强')).toBeInTheDocument();
     expect(within(panel).getByText('强弱分 82.5')).toBeInTheDocument();
     expect(within(panel).getByText('候选股 5 只')).toBeInTheDocument();
+    expect(within(panel).getByText('主力净额 +108.98亿')).toBeInTheDocument();
+    expect(within(panel).getByText('板块涨跌 +5.20%')).toBeInTheDocument();
+    expect(within(panel).getByText('上涨家数 58 / 下跌家数 8')).toBeInTheDocument();
+    expect(within(panel).getByText('领涨股 多氟多')).toBeInTheDocument();
     expect(within(panel).getByText('覆盖子题材：电解液、隔膜、锂矿')).toBeInTheDocument();
     expect(within(panel).getByText('默认 1-3 票组合')).toBeInTheDocument();
     expect(within(panel).getByText('明日行动清单')).toBeInTheDocument();

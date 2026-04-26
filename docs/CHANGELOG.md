@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [改进] 强势筛选 V1.3 接入真实板块强度 Provider 第一阶段，实现东财板块行情、板块资金流、东财成分、开盘啦榜单的 Tushare 适配与页面资金主线展示。
 - [文档] 补充强势筛选 V1.3 真实板块强度 Provider 规划，明确 Tushare 6000 积分可接入的东财题材强度、板块资金流、板块成分、开盘啦题材和个股承接增强口径。
 - [文档] 新增《强势筛选 V1 回测验收标准》，统一 60 交易日验收窗口、短线延续合格率、相对基准、风险指标、总闸门质量和诊断报告模板，方便开发者按最新口径进行回测诊断。
 - [改进] V1 强势筛选回测主胜率切换为“短线延续合格率”：`T+1 收盘价 > T+1 开盘价` 且 `T+2 最高价 > T+1 收盘价`，并在 outcome、API Schema、前端回测面板和产品文档中同步表达。

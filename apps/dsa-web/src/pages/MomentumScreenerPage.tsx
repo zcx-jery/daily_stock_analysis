@@ -383,6 +383,21 @@ function formatSignedPercent(value?: number | null): string {
   return `${prefix}${value.toFixed(2)}%`;
 }
 
+function formatCapitalAmount(value?: number | null): string {
+  if (value == null || Number.isNaN(value)) {
+    return '--';
+  }
+  const abs = Math.abs(value);
+  const prefix = value > 0 ? '+' : value < 0 ? '-' : '';
+  if (abs >= 100_000_000) {
+    return `${prefix}${(abs / 100_000_000).toFixed(2)}亿`;
+  }
+  if (abs >= 10_000) {
+    return `${prefix}${(abs / 10_000).toFixed(1)}万`;
+  }
+  return `${prefix}${abs.toFixed(0)}`;
+}
+
 function sortResults(results: MomentumScreenerResult[], sortBy: SortKey): MomentumScreenerResult[] {
   const sorted = [...results];
   sorted.sort((a, b) => {
@@ -993,7 +1008,7 @@ function formatMainlineThemeDisplay(item: MomentumMainlineRadarItem): { name: st
   }
 
   if (rawCode) {
-    return { name: `同花顺概念 ${rawCode.replace(/\.TI$/i, '')}`, rawCode };
+    return { name: '题材待翻译', rawCode };
   }
 
   return { name: themeName || themeId || '未命名题材', rawCode: null };
@@ -1039,9 +1054,9 @@ const V13MainlineInsightPanel: React.FC<{ decision: MomentumSecondaryDecision }>
               </Badge>
             ) : null}
           </div>
-          <p className="mt-2 text-sm leading-6 text-secondary-text">
-            这块用同花顺概念成分、候选股集中度、涨停/炸板和热榜排名解释短线情绪来源；它只增强排序理解，不替代总闸门和买点判断。
-          </p>
+            <p className="mt-2 text-sm leading-6 text-secondary-text">
+              这块优先用东财板块强度、板块资金流、东财成分和开盘啦题材解释资金去了哪些方向；它只增强排序理解，不替代总闸门和买点判断。
+            </p>
         </div>
         {sentiment ? (
           <div className="rounded-2xl border border-border/40 bg-card/60 px-4 py-3 text-right">
@@ -1071,9 +1086,10 @@ const V13MainlineInsightPanel: React.FC<{ decision: MomentumSecondaryDecision }>
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <p className="text-sm font-semibold text-foreground">{themeDisplay.name}</p>
-                    {themeDisplay.rawCode ? <Badge variant="default">概念代码 {themeDisplay.rawCode}</Badge> : null}
-                  </div>
+                      <p className="text-sm font-semibold text-foreground">{themeDisplay.name}</p>
+                      {themeDisplay.rawCode ? <Badge variant="warning">待翻译代码</Badge> : null}
+                      {item.boardRank != null ? <Badge variant="info">板块第 {item.boardRank}</Badge> : null}
+                    </div>
                   <p className="mt-1 text-xs text-secondary-text">
                     {formatMainlineSummary(item, themeDisplay.name)}
                   </p>
@@ -1094,10 +1110,16 @@ const V13MainlineInsightPanel: React.FC<{ decision: MomentumSecondaryDecision }>
               <div className="mt-4 grid gap-2 text-xs text-secondary-text sm:grid-cols-2">
                 <p>候选股 {item.candidateCount ?? '--'} 只</p>
                 <p>前 10 名 {item.top10Count ?? '--'} 只</p>
-                <p>涨停数 {item.limitUpCount ?? '--'}</p>
-                <p>炸板数 {item.brokenLimitCount ?? '--'}</p>
-                <p>热榜排名 {item.hotRank != null ? `第 ${item.hotRank}` : '--'}</p>
-              </div>
+                  <p>涨停数 {item.limitUpCount ?? '--'}</p>
+                  <p>炸板数 {item.brokenLimitCount ?? '--'}</p>
+                  <p>热榜排名 {item.hotRank != null ? `第 ${item.hotRank}` : '--'}</p>
+                  <p>主力净额 {formatCapitalAmount(item.netAmount)}</p>
+                  <p>板块涨跌 {formatSignedPercent(item.pctChange)}</p>
+                  <p>
+                    上涨家数 {item.upNum ?? '--'} / 下跌家数 {item.downNum ?? '--'}
+                  </p>
+                  <p>领涨股 {item.leaderStock || '--'}</p>
+                </div>
 
               {item.evidence && item.evidence.length > 0 ? (
                 <div className="mt-4 space-y-2">
