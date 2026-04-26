@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [chore] 支持手动部署 workflow 指定 Git ref，便于测试服切换到当前测试分支后重建服务。
 - [文档] 新增强势筛选 V1.3 Standard / Aggressive 评分升级方案，明确 6000 积分数据如何进入官方主引擎与进攻补充引擎的评分、风险和回测口径。
 - [改进] 强势筛选二次决策新增 V1.3 影子分诊断字段，先观察真实题材、资金、涨停结构、买点和筹码风险分项，不改变官方排序。
 - [改进] 强势筛选 V1.3 接入真实板块强度 Provider 第一阶段，实现东财板块行情、板块资金流、东财成分、开盘啦榜单的 Tushare 适配与页面资金主线展示。
