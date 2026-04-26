@@ -27,6 +27,7 @@ MOMENTUM_ENTRY_BASELINE_VERSION = "v1_4_3_0"
 MOMENTUM_MARKET_SCOPE_VERSION = "v1_a_share_main_chinext_star"
 MOMENTUM_SCREENING_CACHE_VERSION = "v1_4_3_0_ranked_screening_v13_standard_v1"
 MOMENTUM_DEFAULT_TOP_N = 30
+MOMENTUM_V13_PROFILE_MAX_CANDIDATES = 30
 MOMENTUM_DEFAULT_MIN_CHANGE_PCT = 4.0
 MOMENTUM_DEFAULT_MIN_AMOUNT = 2e8
 MOMENTUM_DEFAULT_MIN_TURNOVER = 2.0
@@ -918,15 +919,22 @@ class MomentumScreenerService:
         for rank, item in enumerate(ranked_candidates, start=1):
             item["rank"] = rank
 
+        # V1.3 正式增强里最重的个股级资金流 / 筹码 / 成分查询只覆盖前排候选。
+        # 这样能保证官方 Top30 的主路径继续吸收 6000 积分增强，同时避免大候选池日
+        # 因为逐股补全几百只尾部样本而把筛选请求拖到网关超时。
+        v13_ranked_candidates = ranked_candidates[:MOMENTUM_V13_PROFILE_MAX_CANDIDATES]
+        if not v13_ranked_candidates:
+            return {}
+
         try:
             context = v13_service.build_context(
                 trade_date=trade_date,
-                ts_codes=[_safe_str(item.get("ts_code")) for item in ranked_candidates],
+                ts_codes=[_safe_str(item.get("ts_code")) for item in v13_ranked_candidates],
             )
             mainline_radar = v13_service.build_mainline_radar(
-                candidates=ranked_candidates,
+                candidates=v13_ranked_candidates,
                 context=context,
-                limit=max(2, len(ranked_candidates)),
+                limit=max(2, len(v13_ranked_candidates)),
             )
         except Exception as exc:  # pragma: no cover - fallback to legacy scoring on provider issues
             logger.warning(
@@ -937,7 +945,7 @@ class MomentumScreenerService:
             return {}
 
         return self._index_standard_v13_profiles(
-            candidates=ranked_candidates,
+            candidates=v13_ranked_candidates,
             context=context,
             mainline_radar=mainline_radar,
         )

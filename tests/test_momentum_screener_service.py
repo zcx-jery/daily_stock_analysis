@@ -393,6 +393,60 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
             "电池",
         )
 
+    def test_standard_v13_profile_context_limits_expensive_enrichment_to_top30(self) -> None:
+        service = self._build_service()
+        for method_name in (
+            "get_stock_limit_prices",
+            "get_limit_list",
+            "get_dc_concepts",
+            "get_dc_members",
+            "get_dc_moneyflow_themes",
+            "get_kpl_list",
+        ):
+            setattr(service.fetcher, method_name, lambda *args, **kwargs: {})
+
+        captured: dict[str, list[str]] = {}
+
+        class _FakeV13Service:
+            def build_context(self, *, trade_date: str, ts_codes: list[str]) -> dict[str, object]:
+                captured["ts_codes"] = list(ts_codes)
+                return {
+                    "stock_theme_map": {},
+                    "theme_strength": {},
+                    "theme_members": {},
+                    "limit_events": {},
+                    "stock_moneyflow": {},
+                    "chip_snapshots": {},
+                    "kpl_items": [],
+                    "is_degraded": False,
+                    "degraded_reasons": [],
+                }
+
+            def build_mainline_radar(self, *, candidates, context, limit):  # type: ignore[no-untyped-def]
+                return []
+
+        service._v13_data_service = _FakeV13Service()  # type: ignore[assignment]
+
+        provisional_results = [
+            {
+                "ts_code": f"600{i:03d}.SH",
+                "name": f"测试{i:03d}",
+                "rank_score": float(200 - i),
+                "final_score": float(200 - i),
+            }
+            for i in range(45)
+        ]
+
+        result = service._build_standard_v13_profile_map(
+            trade_date="2026-04-10",
+            provisional_results=provisional_results,
+        )
+
+        self.assertEqual(result, {})
+        self.assertEqual(len(captured["ts_codes"]), 30)
+        self.assertEqual(captured["ts_codes"][0], "600000.SH")
+        self.assertEqual(captured["ts_codes"][-1], "600029.SH")
+
     def test_screen_prefers_current_trade_date_after_close_when_eod_snapshot_ready(self) -> None:
         fetcher = _FakeFetcher(current_time=datetime(2026, 4, 11, 15, 10, 0))
         fetcher.trade_snapshots["20260411"] = fetcher.build_trade_snapshot("20260411", ready=True)
