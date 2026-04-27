@@ -22,6 +22,7 @@ from fastapi.responses import StreamingResponse
 from api.deps import (
     get_momentum_backtest_service,
     get_momentum_screener_ai_commentary_service,
+    get_momentum_screening_run_service,
     get_momentum_screener_service,
     get_momentum_secondary_decision_service,
 )
@@ -42,6 +43,11 @@ from api.v1.schemas.stocks import (
     MomentumBacktestRunListResponse,
     MomentumBacktestRunResponse,
     MomentumBacktestSummaryResponse,
+    MomentumScreeningRunCreateRequest,
+    MomentumScreeningRunCreateResponse,
+    MomentumScreeningRunListResponse,
+    MomentumScreeningRunResponse,
+    MomentumScreeningRunResultResponse,
     MomentumScreenerRequest,
     MomentumScreenerResponse,
     MomentumSecondaryDecisionIntradayResponse,
@@ -62,6 +68,7 @@ from src.services.import_parser import (
     parse_import_from_text,
 )
 from src.services.momentum_backtest_service import MomentumBacktestService
+from src.services.momentum_screening_run_service import MomentumScreeningRunService
 from src.services.momentum_secondary_decision_service import MomentumSecondaryDecisionService
 from src.services.stock_service import StockService
 from src.services.momentum_screener_service import MOMENTUM_DEFAULT_TOP_N, MomentumScreenerService
@@ -118,6 +125,182 @@ def screen_momentum_stocks(
         raise HTTPException(
             status_code=500,
             detail={"error": "internal_error", "message": f"筛选失败: {str(e)}"},
+        )
+
+
+@router.post(
+    "/screener/momentum/runs",
+    response_model=MomentumScreeningRunCreateResponse,
+    responses={
+        200: {"description": "已创建或复用任务化强势筛选任务"},
+        400: {"description": "参数错误", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="创建任务化强势筛选",
+    description="参照回测模式创建异步强势筛选任务，返回 run_id 供前端轮询进度与结果。",
+)
+def create_momentum_screening_run(
+    payload: MomentumScreeningRunCreateRequest,
+    service: MomentumScreeningRunService = Depends(get_momentum_screening_run_service),
+) -> MomentumScreeningRunCreateResponse:
+    try:
+        result = service.create_run_async(
+            top_n=payload.top_n,
+            min_change_pct=payload.min_change_pct,
+            min_amount=payload.min_amount,
+            min_turnover=payload.min_turnover,
+            exclude_st=payload.exclude_st,
+            main_board_only=payload.main_board_only,
+            trade_date=payload.trade_date,
+            profile=payload.profile,
+            truth_mode=payload.truth_mode,
+            use_sector_context=payload.use_sector_context,
+            max_scored_candidates=payload.max_scored_candidates,
+        )
+        return MomentumScreeningRunCreateResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "bad_request", "message": str(e)},
+        )
+    except Exception as e:
+        logger.error("创建任务化强势筛选失败: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"创建筛选任务失败: {str(e)}"},
+        )
+
+
+@router.get(
+    "/screener/momentum/runs",
+    response_model=MomentumScreeningRunListResponse,
+    responses={
+        200: {"description": "任务化强势筛选任务列表"},
+        400: {"description": "参数错误", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="列出任务化强势筛选任务",
+    description="返回当前运行中、排队中和历史任务列表，供前端轮询状态区使用。",
+)
+def list_momentum_screening_runs(
+    limit: int = Query(20, ge=1, le=50, description="历史任务返回上限"),
+    profile: Optional[str] = Query(None, description="可选过滤 standard/aggressive"),
+    service: MomentumScreeningRunService = Depends(get_momentum_screening_run_service),
+) -> MomentumScreeningRunListResponse:
+    try:
+        result = service.list_runs(limit=limit, profile=profile)
+        return MomentumScreeningRunListResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "bad_request", "message": str(e)},
+        )
+    except Exception as e:
+        logger.error("列出任务化强势筛选失败: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"读取筛选任务失败: {str(e)}"},
+        )
+
+
+@router.get(
+    "/screener/momentum/runs/{run_id}",
+    response_model=MomentumScreeningRunResponse,
+    responses={
+        200: {"description": "任务化强势筛选任务详情"},
+        404: {"description": "任务不存在", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="读取任务化强势筛选状态",
+    description="按 run_id 获取任务当前阶段、进度和缓存命中情况。",
+)
+def get_momentum_screening_run(
+    run_id: str,
+    service: MomentumScreeningRunService = Depends(get_momentum_screening_run_service),
+) -> MomentumScreeningRunResponse:
+    try:
+        result = service.get_run(run_id)
+        return MomentumScreeningRunResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "not_found", "message": str(e)},
+        )
+    except Exception as e:
+        logger.error("读取任务化强势筛选状态失败: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"读取筛选任务状态失败: {str(e)}"},
+        )
+
+
+@router.get(
+    "/screener/momentum/runs/{run_id}/result",
+    response_model=MomentumScreeningRunResultResponse,
+    responses={
+        200: {"description": "任务化强势筛选结果"},
+        404: {"description": "任务不存在", "model": ErrorResponse},
+        409: {"description": "结果尚未完成", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="读取任务化强势筛选结果",
+    description="任务完成后返回完整筛选结果和二次决策，用于结果页一次性展示。",
+)
+def get_momentum_screening_run_result(
+    run_id: str,
+    service: MomentumScreeningRunService = Depends(get_momentum_screening_run_service),
+) -> MomentumScreeningRunResultResponse:
+    try:
+        result = service.get_result(run_id)
+        return MomentumScreeningRunResultResponse(**result)
+    except ValueError as e:
+        message = str(e)
+        status_code = 409 if "not ready" in message.lower() or "incomplete" in message.lower() else 404
+        error_code = "conflict" if status_code == 409 else "not_found"
+        raise HTTPException(
+            status_code=status_code,
+            detail={"error": error_code, "message": message},
+        )
+    except Exception as e:
+        logger.error("读取任务化强势筛选结果失败: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"读取筛选任务结果失败: {str(e)}"},
+        )
+
+
+@router.post(
+    "/screener/momentum/runs/{run_id}/cancel",
+    response_model=MomentumScreeningRunResponse,
+    responses={
+        200: {"description": "任务取消请求已受理"},
+        400: {"description": "任务状态不允许取消", "model": ErrorResponse},
+        404: {"description": "任务不存在", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="取消任务化强势筛选",
+    description="取消排队中或运行中的任务化强势筛选任务。",
+)
+def cancel_momentum_screening_run(
+    run_id: str,
+    service: MomentumScreeningRunService = Depends(get_momentum_screening_run_service),
+) -> MomentumScreeningRunResponse:
+    try:
+        result = service.cancel_run(run_id)
+        return MomentumScreeningRunResponse(**result)
+    except ValueError as e:
+        message = str(e)
+        status_code = 404 if "not found" in message.lower() else 400
+        error_code = "not_found" if status_code == 404 else "bad_request"
+        raise HTTPException(
+            status_code=status_code,
+            detail={"error": error_code, "message": message},
+        )
+    except Exception as e:
+        logger.error("取消任务化强势筛选失败: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"取消筛选任务失败: {str(e)}"},
         )
 
 

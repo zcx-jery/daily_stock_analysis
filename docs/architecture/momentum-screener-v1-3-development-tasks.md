@@ -45,7 +45,7 @@
 
 1. `M0` 文档与字段冻结
 2. `M1` Tushare V1.3 数据适配
-3. `M2` V1.3 数据聚合与缓存
+3. `M2` V1.3 数据聚合、缓存与任务化执行基础
 4. `M3` 主线识别与主线评分
 5. `M4` 短线情绪总闸门
 6. `M5` 角色增强与官方 Top3 收口
@@ -175,6 +175,50 @@
 
 - 缓存命中后二次构建上下文明显变快。
 - V1.3 上下文可独立打印和调试。
+
+### 7.1 真实性优先任务化执行
+
+目标：
+
+- 把强势筛选从“同步请求直接等待最终结果”切到“创建任务 + 轮询进度 + 完成后回捞结果”。
+- 保留完整真值链路，不再为了 120 秒网关超时长期牺牲 V1.3 逐股增强真实性。
+
+主要文件：
+
+- `src/services/momentum_screening_run_service.py`
+- `src/repositories/momentum_screening_run_repo.py`
+- `api/v1/endpoints/stocks.py`
+- `api/v1/schemas/stocks.py`
+- `apps/dsa-web/src/pages/MomentumScreenerPage.tsx`
+
+后端任务：
+
+1. 新增 `screening run` 数据结构，至少包含 `run_id / status / truth_mode / current_stage_key / current_stage_label / progress_pct / heartbeat_at`。
+2. 新增创建、查询、列表、结果回捞、取消五类 endpoint。
+3. 定义阶段口径：`preparing / trade_snapshot / candidate_pool / sector_context / v13_context / scoring / secondary_decision / result_persist / completed / failed / cancelled`。
+4. 为每个阶段落盘可复用产物，至少保存 `trade_snapshot / candidate_pool / sector_context / v13_context / ranked_results`。
+5. 复用键必须包含筛选参数、`entry_baseline_version`、`market_scope_version`、`screening_cache_version` 和 `truth_mode`。
+6. 服务重启后应能恢复未完成任务，且不能误把已取消任务重新拉起。
+
+前端任务：
+
+1. “执行筛选”按钮改为创建 run，而不是阻塞等待同步结果。
+2. 页面新增任务进度区，展示阶段、百分比、最近刷新时间和缓存命中提示。
+3. 新增“最近任务”列表，支持重新进入页面后继续查看。
+4. 任务完成后自动加载最终结果；失败或取消时展示具体阶段原因。
+
+测试任务：
+
+1. 同参数、同版本、同 truth mode 下可正确复用已有 run 或最终结果。
+2. 任务运行中页面刷新不会丢失进度。
+3. 任务取消后不会在服务重启后被错误恢复。
+4. 阶段缓存命中时，重跑会跳过已完成阶段。
+
+验收：
+
+- 页面不再以 504 作为长耗时真值筛选的默认失败表现。
+- 用户能看见任务正在做什么、做到哪一层、是否已经复用缓存。
+- 同一交易日重复查询时，任务耗时明显下降。
 
 ## 8. M3：主线识别与主线评分
 

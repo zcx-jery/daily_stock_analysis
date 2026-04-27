@@ -124,9 +124,36 @@ class MomentumV13DataService:
         return {**cls._shared_cache_stats, "size": len(cls._shared_resource_cache)}
 
     def build_context(self, *, trade_date: str, ts_codes: List[str]) -> Dict[str, Any]:
-        """Build the V1.3 EOD context used by the production secondary decision."""
+        """Build the full V1.3 EOD context used by replay and secondary decision."""
+        return self._build_context(
+            trade_date=trade_date,
+            ts_codes=ts_codes,
+            context_variant="full",
+            include_chip_snapshots=True,
+            include_ths_members=True,
+        )
+
+    def build_screening_context(self, *, trade_date: str, ts_codes: List[str]) -> Dict[str, Any]:
+        """Build a lighter V1.3 context for synchronous screening requests."""
+        return self._build_context(
+            trade_date=trade_date,
+            ts_codes=ts_codes,
+            context_variant="screening_light",
+            include_chip_snapshots=False,
+            include_ths_members=False,
+        )
+
+    def _build_context(
+        self,
+        *,
+        trade_date: str,
+        ts_codes: List[str],
+        context_variant: str,
+        include_chip_snapshots: bool,
+        include_ths_members: bool,
+    ) -> Dict[str, Any]:
         normalized_codes = self._normalize_ts_codes(ts_codes)
-        context_key = self._cache_key("context", trade_date, ",".join(normalized_codes))
+        context_key = self._cache_key("context", context_variant, trade_date, ",".join(normalized_codes))
         cached = self._cache_get(context_key, self._resource_ttls["context"])
         if cached is not None:
             return cached
@@ -138,12 +165,36 @@ class MomentumV13DataService:
         dc_members = self._load_dc_members(trade_date, normalized_codes)
         stock_moneyflow_dc = self._load_stock_moneyflow_dc(trade_date, normalized_codes)
         stock_moneyflow_ths = self._load_stock_moneyflow_ths(trade_date, normalized_codes)
-        cyq_perf = self._load_cyq_perf(trade_date, normalized_codes)
-        cyq_chips = self._load_cyq_chips(trade_date, normalized_codes)
+        cyq_perf = (
+            self._load_cyq_perf(trade_date, normalized_codes)
+            if include_chip_snapshots
+            else self._payload(
+                source="tushare.cyq_perf",
+                trade_date=self._display_trade_date(trade_date),
+                rows=[],
+            )
+        )
+        cyq_chips = (
+            self._load_cyq_chips(trade_date, normalized_codes)
+            if include_chip_snapshots
+            else self._payload(
+                source="tushare.cyq_chips",
+                trade_date=self._display_trade_date(trade_date),
+                rows=[],
+            )
+        )
         kpl_list = self._load_kpl_list(trade_date)
         ths_hot = self._load_ths_hot(trade_date)
-        ths_members = self._load_ths_members(normalized_codes)
-        theme_name_map = self._load_ths_index_names(ths_members)
+        ths_members = (
+            self._load_ths_members(normalized_codes)
+            if include_ths_members
+            else self._payload(
+                source="tushare.ths_member",
+                trade_date=None,
+                rows=[],
+            )
+        )
+        theme_name_map = self._load_ths_index_names(ths_members) if include_ths_members else {}
 
         payloads = {
             "dc_concept": dc_concepts,
@@ -160,9 +211,16 @@ class MomentumV13DataService:
             "ths_hot": ths_hot,
         }
         source_status = self._build_source_status(payloads)
+        if not include_chip_snapshots:
+            source_status["cyq_perf"] = "skipped"
+            source_status["cyq_chips"] = "skipped"
+        if not include_ths_members:
+            source_status["ths_member"] = "skipped"
         ths_index_payload = theme_name_map.get("_payload") or {}
         if ths_index_payload:
             source_status["ths_index"] = str(ths_index_payload.get("status") or "unknown")
+        elif not include_ths_members:
+            source_status["ths_index"] = "skipped"
         hot_items = _safe_list(ths_hot.get("rows"))
         dc_theme_name_map = self._build_dc_theme_name_map(dc_concepts, dc_moneyflow)
         theme_strength = self._build_theme_strength_map(dc_concepts, dc_moneyflow)

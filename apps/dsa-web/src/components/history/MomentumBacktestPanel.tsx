@@ -18,6 +18,9 @@ import type {
   MomentumBacktestRegimeBreakdownItem,
   MomentumBacktestRunResponse,
   MomentumBacktestSummary,
+  MomentumBacktestV13DataStatus,
+  MomentumBacktestV13Diagnostics,
+  MomentumBacktestV13MainlineItem,
 } from '../../types/momentumBacktest';
 import { ApiErrorAlert, Badge, Card, Drawer, EmptyState } from '../common';
 
@@ -100,10 +103,54 @@ function signedPct(value?: number | null): string {
   return `${prefix}${value.toFixed(2)}%`;
 }
 
+function amount(value?: number | null): string {
+  if (value == null) return '--';
+  const abs = Math.abs(value);
+  const prefix = value > 0 ? '+' : value < 0 ? '-' : '';
+  if (abs >= 100_000_000) {
+    return `${prefix}${(abs / 100_000_000).toFixed(2)}亿`;
+  }
+  if (abs >= 10_000) {
+    return `${prefix}${(abs / 10_000).toFixed(1)}万`;
+  }
+  return `${prefix}${abs.toFixed(0)}`;
+}
+
 function formatDateTime(value?: string | null): string {
   if (!value) return '--';
   const normalized = value.replace('T', ' ');
   return normalized.length >= 16 ? normalized.slice(0, 16) : normalized;
+}
+
+function sentimentLabel(level?: string | null): string {
+  switch (level) {
+    case 'tradable':
+      return '可做';
+    case 'hot':
+      return '偏热';
+    case 'cold':
+      return '偏冷';
+    case 'weak':
+      return '偏弱';
+    case 'missing':
+      return '缺失';
+    default:
+      return level ?? '--';
+  }
+}
+
+function v13DataStatusBadge(status?: MomentumBacktestV13DataStatus | null) {
+  const value = status?.status ?? 'missing';
+  if (value === 'ok' && !status?.isDegraded) {
+    return <Badge variant="success">数据完整</Badge>;
+  }
+  if (value === 'partial' || value === 'degraded' || status?.isDegraded) {
+    return <Badge variant="warning">部分降级</Badge>;
+  }
+  if (value === 'failed' || value === 'missing') {
+    return <Badge variant="danger">数据缺失</Badge>;
+  }
+  return <Badge variant="default">{value}</Badge>;
 }
 
 function actionBadge(level?: string | null) {
@@ -492,6 +539,166 @@ function GateSnapshotGroupCard({ group }: { group: MomentumBacktestGateSnapshotG
         </div>
       ) : null}
     </div>
+  );
+}
+
+function V13TopMainlineCard({
+  item,
+  compact = false,
+}: {
+  item: MomentumBacktestV13MainlineItem;
+  compact?: boolean;
+}) {
+  return (
+    <div className="rounded-2xl border border-border/60 bg-card/60 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-sm font-medium text-foreground">{item.themeName ?? item.themeId ?? '未命名主线'}</div>
+          <div className="mt-1 text-xs text-muted-text">
+            主线分 {num(item.score)}{item.levelLabel ? ` · ${item.levelLabel}` : ''}
+          </div>
+        </div>
+        {item.level ? levelBadge(item.level) : <Badge variant="default">主线快照</Badge>}
+      </div>
+      {item.summary ? <p className="mt-3 text-sm leading-6 text-secondary-text">{item.summary}</p> : null}
+      <div className={`mt-4 grid gap-3 ${compact ? 'md:grid-cols-2' : 'md:grid-cols-3'}`}>
+        <DetailMetric label="候选股" value={item.candidateCount != null ? String(item.candidateCount) : '--'} />
+        <DetailMetric label="Top10 占位" value={item.top10Count != null ? String(item.top10Count) : '--'} />
+        <DetailMetric label="涨停数" value={item.limitUpCount != null ? String(item.limitUpCount) : '--'} />
+        {!compact ? <DetailMetric label="炸板数" value={item.brokenLimitCount != null ? String(item.brokenLimitCount) : '--'} /> : null}
+        {!compact ? <DetailMetric label="主力净额" value={amount(item.netAmount)} /> : null}
+        {!compact ? <DetailMetric label="板块涨跌" value={signedPct(item.pctChange)} /> : null}
+      </div>
+      {item.leaderStock || item.sourceThemeNames?.length ? (
+        <div className="mt-3 space-y-2 text-xs text-secondary-text">
+          {item.leaderStock ? <p>领涨股：{item.leaderStock}</p> : null}
+          {item.sourceThemeNames?.length ? <p>覆盖子题材：{item.sourceThemeNames.join('、')}</p> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function V13RunDiagnosticsSection({ diagnostics }: { diagnostics?: MomentumBacktestV13Diagnostics | null }) {
+  if (!diagnostics) {
+    return null;
+  }
+
+  return (
+    <Card padding="lg" className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <span className="label-uppercase">V1.3 Diagnostics</span>
+          <h3 className="mt-1 text-lg font-semibold text-foreground">主线与情绪诊断</h3>
+        </div>
+        {v13DataStatusBadge(diagnostics.v13DataStatus)}
+      </div>
+      {diagnostics.summary ? (
+        <div className="rounded-xl border border-info/20 bg-info/6 px-4 py-3 text-sm text-secondary-text">
+          {diagnostics.summary}
+        </div>
+      ) : null}
+      <div className="grid gap-3 md:grid-cols-4">
+        <DetailMetric label="主线雷达覆盖" value={`${diagnostics.radarAvailableDays ?? 0} / ${diagnostics.evaluatedTradeDates ?? 0}`} />
+        <DetailMetric label="覆盖率" value={pct(diagnostics.radarCoveragePct)} />
+        <DetailMetric label="Top 主线均分" value={num(diagnostics.avgTopMainlineScore)} />
+        <DetailMetric label="降级天数" value={String(diagnostics.degradedDays ?? 0)} />
+      </div>
+      <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+        <div className="space-y-4">
+          {diagnostics.topMainline ? <V13TopMainlineCard item={diagnostics.topMainline} /> : null}
+          {diagnostics.shortTermSentiment ? (
+            <div className="rounded-2xl border border-border/60 bg-card/60 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-medium text-foreground">短线情绪</div>
+                  <div className="mt-1 text-xs text-muted-text">
+                    {diagnostics.shortTermSentiment.levelLabel ?? sentimentLabel(diagnostics.shortTermSentiment.level)} ·
+                    {' '}分数 {num(diagnostics.shortTermSentiment.score)}
+                  </div>
+                </div>
+                <Badge variant="default">{diagnostics.shortTermSentiment.levelLabel ?? sentimentLabel(diagnostics.shortTermSentiment.level)}</Badge>
+              </div>
+              {diagnostics.shortTermSentiment.summary ? (
+                <p className="mt-3 text-sm leading-6 text-secondary-text">{diagnostics.shortTermSentiment.summary}</p>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-border/60 bg-card/60 p-4">
+            <div className="text-sm font-medium text-foreground">Top 主线分布</div>
+            <div className="mt-3 space-y-2">
+              {(diagnostics.topThemeBreakdown ?? []).length > 0 ? (
+                diagnostics.topThemeBreakdown?.map((item) => (
+                  <div key={item.theme} className="flex items-center justify-between rounded-xl border border-border/50 bg-background/40 px-3 py-2 text-sm">
+                    <span className="text-secondary-text">{item.theme}</span>
+                    <Badge variant="default">{item.days} 天</Badge>
+                  </div>
+                ))
+              ) : (
+                <div className="rounded-xl border border-border/60 border-dashed px-4 py-6 text-sm text-muted-text">
+                  当前没有可用的 Top 主线分布统计。
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="rounded-2xl border border-border/60 bg-card/60 p-4">
+            <div className="text-sm font-medium text-foreground">短线情绪分布</div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {Object.entries(diagnostics.sentimentBreakdown ?? {}).map(([key, count]) => (
+                <Badge key={key} variant="default">{sentimentLabel(key)}: {count}</Badge>
+              ))}
+              {Object.keys(diagnostics.sentimentBreakdown ?? {}).length === 0 ? (
+                <span className="text-sm text-muted-text">暂无短线情绪分布。</span>
+              ) : null}
+            </div>
+            <div className="mt-4 text-sm font-medium text-foreground">数据状态分布</div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {Object.entries(diagnostics.dataStatusBreakdown ?? {}).map(([key, count]) => (
+                <Badge key={key} variant="default">{key}: {count}</Badge>
+              ))}
+              {Object.keys(diagnostics.dataStatusBreakdown ?? {}).length === 0 ? (
+                <span className="text-sm text-muted-text">暂无数据状态分布。</span>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function V13DailyDiagnosticsSection({ diagnostics }: { diagnostics?: MomentumBacktestV13Diagnostics | null }) {
+  if (!diagnostics) {
+    return null;
+  }
+
+  return (
+    <Card padding="lg" className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <span className="label-uppercase">V1.3 Snapshot</span>
+          <h3 className="mt-1 text-lg font-semibold text-foreground">当日主线与情绪诊断</h3>
+        </div>
+        {v13DataStatusBadge(diagnostics.v13DataStatus)}
+      </div>
+      <div className="space-y-2">
+        {(diagnostics.summaryLines ?? []).map((line, index) => (
+          <p key={index} className="text-sm text-secondary-text">{line}</p>
+        ))}
+      </div>
+      <div className="grid gap-3 md:grid-cols-4">
+        <DetailMetric label="主线条数" value={String(diagnostics.mainlineCount ?? 0)} />
+        <DetailMetric label="Top 主线分" value={num(diagnostics.topMainline?.score)} />
+        <DetailMetric
+          label="短线情绪"
+          value={diagnostics.shortTermSentiment?.levelLabel ?? sentimentLabel(diagnostics.shortTermSentiment?.level)}
+        />
+        <DetailMetric label="数据状态" value={diagnostics.v13DataStatus?.status ?? '--'} />
+      </div>
+      {diagnostics.topMainline ? <V13TopMainlineCard item={diagnostics.topMainline} compact /> : null}
+    </Card>
   );
 }
 
@@ -1165,6 +1372,8 @@ export const MomentumBacktestPanel: React.FC = () => {
             </Card>
           </div>
 
+          <V13RunDiagnosticsSection diagnostics={summaryView.v13Diagnostics} />
+
           <Card padding="lg" className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
@@ -1486,6 +1695,8 @@ export const MomentumBacktestPanel: React.FC = () => {
                 <DetailMetric label="默认组合 T+2 最大回撤" value={pct(selectedDetail.diagnosis.decisionMetrics.avgT2MaxDrawdownPct)} />
               </div>
             </Card>
+
+            <V13DailyDiagnosticsSection diagnostics={selectedDetail.v13Diagnostics} />
 
             <Card padding="lg" className="space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-3">

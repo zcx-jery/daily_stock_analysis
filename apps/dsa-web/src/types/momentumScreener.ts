@@ -38,12 +38,71 @@ export interface MomentumScreenerResult {
 export interface MomentumScreenerResponse {
   profile: MomentumProfile;
   tradeDate: string;
+  truthMode?: 'full' | 'light';
   requestedTradeDate?: string | null;
   tradeDateNote?: string | null;
   entryBaselineVersion: string;
   marketScopeVersion: string;
   candidateCount: number;
   results: MomentumScreenerResult[];
+}
+
+export interface MomentumScreeningRunRequest extends MomentumScreenerRequest {
+  truthMode?: 'full' | 'light';
+  useSectorContext?: boolean;
+  maxScoredCandidates?: number | null;
+}
+
+export interface MomentumScreeningRunProgress {
+  progressPct: number;
+  processedItemCount: number;
+  totalItemCount: number;
+  cacheHits: Record<string, number>;
+  cacheMisses: Record<string, number>;
+}
+
+export interface MomentumScreeningRunResponse {
+  runId: string;
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  profile: MomentumProfile;
+  truthMode: 'full' | 'light';
+  engineVersion: string;
+  entryBaselineVersion: string;
+  marketScopeVersion: string;
+  screeningCacheVersion: string;
+  topN: number;
+  requestedTradeDate?: string | null;
+  tradeDate?: string | null;
+  resultAvailable: boolean;
+  requestParams: Record<string, unknown>;
+  currentStageKey?: string | null;
+  currentStageLabel?: string | null;
+  progress: MomentumScreeningRunProgress;
+  heartbeatAt?: string | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  cancelRequested: boolean;
+  errorMessage?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+}
+
+export interface MomentumScreeningRunCreateResponse {
+  createdNew: boolean;
+  message: string;
+  run: MomentumScreeningRunResponse;
+}
+
+export interface MomentumScreeningRunTaskSection {
+  total: number;
+  items: MomentumScreeningRunResponse[];
+}
+
+export interface MomentumScreeningRunListResponse {
+  currentRunning?: MomentumScreeningRunResponse | null;
+  queued: MomentumScreeningRunTaskSection;
+  history: MomentumScreeningRunTaskSection;
+  refreshedAt?: string | null;
 }
 
 export type MomentumActionLevel =
@@ -402,6 +461,13 @@ export interface MomentumSecondaryDecision {
 }
 
 export interface MomentumScreenerDecisionResponse {
+  screening: MomentumScreenerResponse;
+  decision: MomentumSecondaryDecision;
+}
+
+export interface MomentumScreeningRunResultResponse {
+  runId: string;
+  status: 'completed';
   screening: MomentumScreenerResponse;
   decision: MomentumSecondaryDecision;
 }

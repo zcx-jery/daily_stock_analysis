@@ -393,7 +393,7 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
             "电池",
         )
 
-    def test_standard_v13_profile_context_limits_expensive_enrichment_to_top30(self) -> None:
+    def test_standard_v13_profile_context_limits_expensive_enrichment_to_front12(self) -> None:
         service = self._build_service()
         for method_name in (
             "get_stock_limit_prices",
@@ -408,7 +408,7 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
         captured: dict[str, list[str]] = {}
 
         class _FakeV13Service:
-            def build_context(self, *, trade_date: str, ts_codes: list[str]) -> dict[str, object]:
+            def build_screening_context(self, *, trade_date: str, ts_codes: list[str]) -> dict[str, object]:
                 captured["ts_codes"] = list(ts_codes)
                 return {
                     "stock_theme_map": {},
@@ -443,9 +443,9 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
         )
 
         self.assertEqual(result, {})
-        self.assertEqual(len(captured["ts_codes"]), 30)
+        self.assertEqual(len(captured["ts_codes"]), 12)
         self.assertEqual(captured["ts_codes"][0], "600000.SH")
-        self.assertEqual(captured["ts_codes"][-1], "600029.SH")
+        self.assertEqual(captured["ts_codes"][-1], "600011.SH")
 
     def test_screen_prefers_current_trade_date_after_close_when_eod_snapshot_ready(self) -> None:
         fetcher = _FakeFetcher(current_time=datetime(2026, 4, 11, 15, 10, 0))

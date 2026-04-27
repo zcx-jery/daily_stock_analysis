@@ -19,6 +19,7 @@ from src.storage import DatabaseManager
 from src.config import get_config, Config
 from src.services.momentum_screener_service import MomentumScreenerService
 from src.services.momentum_backtest_service import MomentumBacktestService
+from src.services.momentum_screening_run_service import MomentumScreeningRunService
 from src.services.momentum_secondary_decision_service import MomentumSecondaryDecisionService
 from src.services.stock_service import StockService
 from src.services.system_config_service import SystemConfigService
@@ -126,6 +127,26 @@ def get_momentum_backtest_service(request: Request) -> MomentumBacktestService:
             decision_service=decision_service,
         )
         request.app.state.momentum_backtest_service = service
+    return service
+
+
+def get_momentum_screening_run_service(request: Request) -> MomentumScreeningRunService:
+    """Get app-lifecycle shared MomentumScreeningRunService instance."""
+    service = getattr(request.app.state, "momentum_screening_run_service", None)
+    if service is None:
+        screener_service = getattr(request.app.state, "momentum_screener_service", None)
+        if screener_service is None:
+            screener_service = MomentumScreenerService()
+            request.app.state.momentum_screener_service = screener_service
+        decision_service = MomentumSecondaryDecisionService(
+            screener_service=screener_service,
+            strategy_health_async=False,
+        )
+        service = MomentumScreeningRunService(
+            screener_service=screener_service,
+            decision_service=decision_service,
+        )
+        request.app.state.momentum_screening_run_service = service
     return service
 
 

@@ -20,7 +20,11 @@ sys.modules.setdefault("multipart", multipart_module)
 sys.modules.setdefault("multipart.multipart", multipart_submodule)
 
 from api.app import create_app
-from api.deps import get_momentum_backtest_service, get_momentum_secondary_decision_service
+from api.deps import (
+    get_momentum_backtest_service,
+    get_momentum_screening_run_service,
+    get_momentum_secondary_decision_service,
+)
 import src.auth as auth
 from src.services.momentum_screener_service import MomentumScreenerService
 from src.services.momentum_secondary_decision_service import MomentumSecondaryDecisionService
@@ -653,6 +657,139 @@ class _FakeMomentumBacktestService:
         }
 
 
+class _FakeMomentumScreeningRunService:
+    def __init__(self):
+        self.run = {
+            "run_id": "momentum_sr_test_001",
+            "status": "completed",
+            "profile": "standard",
+            "truth_mode": "full",
+            "engine_version": "v1_5_taskized",
+            "entry_baseline_version": "v1_4_3_0",
+            "market_scope_version": "v1_a_share_main_chinext_star",
+            "screening_cache_version": "v1_4_3_0",
+            "top_n": 30,
+            "requested_trade_date": "2026-04-10",
+            "trade_date": "2026-04-10",
+            "result_available": True,
+            "request_params": {
+                "top_n": 30,
+                "trade_date": "2026-04-10",
+                "profile": "standard",
+                "truth_mode": "full",
+            },
+            "current_stage_key": "completed",
+            "current_stage_label": "任务已完成",
+            "progress": {
+                "progress_pct": 100.0,
+                "processed_item_count": 2,
+                "total_item_count": 2,
+                "cache_hits": {"screening_result": 1},
+                "cache_misses": {},
+            },
+            "heartbeat_at": "2026-04-17T10:01:00",
+            "started_at": "2026-04-17T10:00:00",
+            "finished_at": "2026-04-17T10:01:00",
+            "cancel_requested": False,
+            "error_message": None,
+            "created_at": "2026-04-17T10:00:00",
+            "updated_at": "2026-04-17T10:01:00",
+        }
+        self.running_run = {
+            **self.run,
+            "run_id": "momentum_sr_running",
+            "status": "running",
+            "result_available": False,
+            "current_stage_key": "v13_context",
+            "current_stage_label": "加载 V1.3 真实题材画像",
+            "progress": {
+                "progress_pct": 68.0,
+                "processed_item_count": 12,
+                "total_item_count": 30,
+                "cache_hits": {"trade_snapshot": 1},
+                "cache_misses": {"screening_result": 1},
+            },
+            "finished_at": None,
+        }
+        self.queued_run = {
+            **self.run,
+            "run_id": "momentum_sr_queued",
+            "status": "queued",
+            "result_available": False,
+            "current_stage_key": "queued",
+            "current_stage_label": "等待后台调度",
+            "progress": {
+                "progress_pct": 0.0,
+                "processed_item_count": 0,
+                "total_item_count": 0,
+                "cache_hits": {},
+                "cache_misses": {},
+            },
+            "started_at": None,
+            "finished_at": None,
+        }
+
+    def create_run_async(self, **kwargs):
+        return {
+            "created_new": True,
+            "message": "已创建筛选任务，正在后台计算",
+            "run": {
+                **self.running_run,
+                "request_params": {
+                    "top_n": kwargs.get("top_n", 30),
+                    "trade_date": kwargs.get("trade_date"),
+                    "profile": kwargs.get("profile", "standard"),
+                    "truth_mode": kwargs.get("truth_mode", "full"),
+                },
+            },
+        }
+
+    def list_runs(self, limit=20, profile=None):
+        return {
+            "current_running": self.running_run,
+            "queued": {"total": 1, "items": [self.queued_run]},
+            "history": {"total": 1, "limit": limit, "items": [self.run]},
+            "refreshed_at": "2026-04-17T10:02:00",
+        }
+
+    def get_run(self, run_id):
+        if run_id == self.run["run_id"]:
+            return self.run
+        if run_id == self.running_run["run_id"]:
+            return self.running_run
+        if run_id == self.queued_run["run_id"]:
+            return self.queued_run
+        raise ValueError(f"Screening run not found: {run_id}")
+
+    def get_result(self, run_id):
+        if run_id != self.run["run_id"]:
+            raise ValueError("Screening run result is not ready yet" if run_id == self.running_run["run_id"] else f"Screening run not found: {run_id}")
+        return {
+            "run_id": self.run["run_id"],
+            "status": "completed",
+            "screening": _build_fake_screening_result(profile="standard", candidate_count=2),
+            "decision": _build_fake_decision(profile="standard", action_level="normal_go", checklist_mode="full"),
+        }
+
+    def cancel_run(self, run_id):
+        if run_id == self.running_run["run_id"]:
+            return {
+                **self.running_run,
+                "cancel_requested": True,
+                "current_stage_key": "cancel_requested",
+                "current_stage_label": "取消请求处理中",
+            }
+        if run_id == self.queued_run["run_id"]:
+            return {
+                **self.queued_run,
+                "status": "cancelled",
+                "current_stage_key": "cancelled",
+                "current_stage_label": "任务已取消",
+                "finished_at": "2026-04-17T10:03:00",
+            }
+        raise ValueError(f"Screening run not found: {run_id}")
+
+
 @pytest.fixture
 def client():
     app = create_app()
@@ -1039,6 +1176,87 @@ def test_momentum_screener_endpoint_supports_aggressive_profile(client):
     assert data["results"][0]["entry_range_low"] == 10.34
     assert data["results"][0]["entry_range_high"] == 10.66
     assert "buyability" in data["results"][0]["score_breakdown"]
+
+
+def test_create_momentum_screening_run_endpoint_returns_run_summary(client):
+    client.app.dependency_overrides[get_momentum_screening_run_service] = lambda: _FakeMomentumScreeningRunService()
+
+    response = client.post(
+        "/api/v1/stocks/screener/momentum/runs",
+        json={"profile": "standard", "trade_date": "2026-04-10", "truth_mode": "full"},
+    )
+
+    client.app.dependency_overrides.pop(get_momentum_screening_run_service, None)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["created_new"] is True
+    assert data["run"]["status"] == "running"
+    assert data["run"]["truth_mode"] == "full"
+    assert data["run"]["request_params"]["trade_date"] == "2026-04-10"
+
+
+def test_list_momentum_screening_runs_endpoint_returns_sections(client):
+    client.app.dependency_overrides[get_momentum_screening_run_service] = lambda: _FakeMomentumScreeningRunService()
+
+    response = client.get("/api/v1/stocks/screener/momentum/runs?limit=5")
+
+    client.app.dependency_overrides.pop(get_momentum_screening_run_service, None)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["current_running"]["run_id"] == "momentum_sr_running"
+    assert data["queued"]["total"] == 1
+    assert data["history"]["items"][0]["run_id"] == "momentum_sr_test_001"
+
+
+def test_get_momentum_screening_run_endpoint_returns_status(client):
+    client.app.dependency_overrides[get_momentum_screening_run_service] = lambda: _FakeMomentumScreeningRunService()
+
+    response = client.get("/api/v1/stocks/screener/momentum/runs/momentum_sr_running")
+
+    client.app.dependency_overrides.pop(get_momentum_screening_run_service, None)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "running"
+    assert data["progress"]["progress_pct"] == 68.0
+    assert data["current_stage_key"] == "v13_context"
+
+
+def test_get_momentum_screening_run_result_endpoint_returns_payload(client):
+    client.app.dependency_overrides[get_momentum_screening_run_service] = lambda: _FakeMomentumScreeningRunService()
+
+    response = client.get("/api/v1/stocks/screener/momentum/runs/momentum_sr_test_001/result")
+
+    client.app.dependency_overrides.pop(get_momentum_screening_run_service, None)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "completed"
+    assert data["screening"]["profile"] == "standard"
+    assert data["decision"]["action"]["level"] == "normal_go"
+
+
+def test_get_momentum_screening_run_result_endpoint_returns_409_while_running(client):
+    client.app.dependency_overrides[get_momentum_screening_run_service] = lambda: _FakeMomentumScreeningRunService()
+
+    response = client.get("/api/v1/stocks/screener/momentum/runs/momentum_sr_running/result")
+
+    client.app.dependency_overrides.pop(get_momentum_screening_run_service, None)
+    assert response.status_code == 409
+    data = response.json()
+    error_payload = data.get("detail", data)
+    assert error_payload["error"] == "conflict"
+
+
+def test_cancel_momentum_screening_run_endpoint_accepts_running_task(client):
+    client.app.dependency_overrides[get_momentum_screening_run_service] = lambda: _FakeMomentumScreeningRunService()
+
+    response = client.post("/api/v1/stocks/screener/momentum/runs/momentum_sr_running/cancel")
+
+    client.app.dependency_overrides.pop(get_momentum_screening_run_service, None)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["cancel_requested"] is True
+    assert data["current_stage_key"] == "cancel_requested"
+
 
 def test_momentum_screener_endpoint_runs_real_standard_service_flow(client):
     with patch("api.deps.MomentumScreenerService", _IntegrationMomentumScreenerService):

@@ -206,6 +206,47 @@ const summaryResponse = {
         standAsideRatePct: 0,
       },
     ],
+    v13Diagnostics: {
+      evaluatedTradeDates: 3,
+      radarAvailableDays: 2,
+      radarCoveragePct: 66.7,
+      avgTopMainlineScore: 81.4,
+      sentimentBreakdown: { tradable: 2, weak: 1 },
+      dataStatusBreakdown: { ok: 2, partial: 1 },
+      degradedDays: 1,
+      topThemeBreakdown: [
+        { theme: '锂电', days: 2 },
+        { theme: '机器人', days: 1 },
+      ],
+      summary: 'V1.3 主线雷达覆盖 2/3 个交易日，Top 主线均分 81.4，数据降级 1 天。',
+      topMainline: {
+        themeId: 'T001',
+        themeName: '锂电',
+        score: 82.5,
+        level: 'strong',
+        levelLabel: '主线强',
+        candidateCount: 5,
+        top10Count: 2,
+        limitUpCount: 3,
+        brokenLimitCount: 0,
+        leaderStock: '多氟多',
+        sourceThemeNames: ['电解液', '隔膜', '锂矿'],
+        netAmount: 10898035456,
+        pctChange: 5.2,
+        summary: '锂电聚集 5 只候选，Top10 有 2 只，主线强度为主线强。',
+      },
+      shortTermSentiment: {
+        level: 'tradable',
+        levelLabel: '可做',
+        score: 70.6,
+        summary: '短线情绪为可做，主要拖累来自炸板风险和昨日强势反馈。',
+      },
+      v13DataStatus: {
+        status: 'partial',
+        reason: '部分板块数据降级。',
+        isDegraded: true,
+      },
+    },
   },
 };
 
@@ -340,6 +381,53 @@ const detailResponse = {
     },
   ],
   outcomes: {},
+  v13Diagnostics: {
+    mainlineRadar: [
+      {
+        themeId: 'T001',
+        themeName: '锂电',
+        score: 82.5,
+        level: 'strong',
+        levelLabel: '主线强',
+        candidateCount: 5,
+        top10Count: 2,
+        limitUpCount: 3,
+        brokenLimitCount: 0,
+        leaderStock: '多氟多',
+        sourceThemeNames: ['电解液', '隔膜', '锂矿'],
+        summary: '锂电聚集 5 只候选，Top10 有 2 只，主线强度为主线强。',
+      },
+    ],
+    shortTermSentiment: {
+      level: 'tradable',
+      levelLabel: '可做',
+      score: 70.6,
+      summary: '短线情绪为可做，主要拖累来自炸板风险和昨日强势反馈。',
+    },
+    v13DataStatus: {
+      status: 'ok',
+      reason: '当日 V1.3 数据完整。',
+      isDegraded: false,
+    },
+    topMainline: {
+      themeId: 'T001',
+      themeName: '锂电',
+      score: 82.5,
+      level: 'strong',
+      levelLabel: '主线强',
+      candidateCount: 5,
+      top10Count: 2,
+      limitUpCount: 3,
+      leaderStock: '多氟多',
+      sourceThemeNames: ['电解液', '隔膜', '锂矿'],
+      summary: '锂电聚集 5 只候选，Top10 有 2 只，主线强度为主线强。',
+    },
+    mainlineCount: 1,
+    summaryLines: [
+      'Top 主线为 锂电，主线雷达分 82.5。',
+      '短线情绪为 可做，分数 70.6。',
+    ],
+  },
   diagnosis: {
     summaryLines: ['总闸门没有完全失效，但被市场情绪和买点清晰度同时压制。'],
     candidateMetrics: {
@@ -516,8 +604,6 @@ describe('MomentumBacktestPanel', () => {
       expect(mockCreateRun).toHaveBeenCalledWith({
         startTradeDate: '2026-04-08',
         endTradeDate: '2026-04-10',
-        profile: 'standard',
-        topN: 30,
       });
     });
 
@@ -534,6 +620,31 @@ describe('MomentumBacktestPanel', () => {
     expect(await screen.findByText('当日总闸门快照')).toBeInTheDocument();
     expect(screen.getByText('拖后腿：市场情绪')).toBeInTheDocument();
   }, 10000);
+
+  it('renders V1.3 diagnostics in summary and daily detail views', async () => {
+    render(<MomentumBacktestPanel />);
+
+    const completedRunCode = await screen.findByText('momentum_bt_test');
+    const completedRunRow = completedRunCode.closest('.rounded-xl');
+    expect(completedRunRow).not.toBeNull();
+
+    fireEvent.click(within(completedRunRow as HTMLElement).getAllByRole('button')[0]);
+
+    expect(await screen.findByText('主线与情绪诊断')).toBeInTheDocument();
+    expect(screen.getByText('V1.3 主线雷达覆盖 2/3 个交易日，Top 主线均分 81.4，数据降级 1 天。')).toBeInTheDocument();
+    expect(screen.getByText('覆盖子题材：电解液、隔膜、锂矿')).toBeInTheDocument();
+    expect(screen.getByText('短线情绪')).toBeInTheDocument();
+
+    const detailButton = screen
+      .getAllByRole('button')
+      .find((button) => button.textContent?.includes('查看') || button.textContent?.includes('鏌ョ湅'));
+    expect(detailButton).toBeDefined();
+    fireEvent.click(detailButton as HTMLElement);
+
+    expect(await screen.findByText('当日主线与情绪诊断')).toBeInTheDocument();
+    expect(screen.getByText('Top 主线为 锂电，主线雷达分 82.5。')).toBeInTheDocument();
+    expect(screen.getByText('短线情绪为 可做，分数 70.6。')).toBeInTheDocument();
+  });
 
   it('supports cancelling the running task and deleting a queued task', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);

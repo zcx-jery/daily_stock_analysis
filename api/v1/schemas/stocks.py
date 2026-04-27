@@ -174,6 +174,84 @@ class MomentumScreenerResponse(BaseModel):
     results: List[MomentumScreenerResult] = Field(default_factory=list, description="筛选结果")
 
 
+class MomentumScreeningRunCreateRequest(MomentumScreenerRequest):
+    """任务化强势筛选创建请求。"""
+
+    truth_mode: Literal["full", "light"] = Field(
+        "full",
+        description="真实性模式：full 走完整 V1.3 真数据链路，light 兼容轻量链路",
+    )
+    use_sector_context: bool = Field(True, description="是否加载板块/题材上下文")
+    max_scored_candidates: Optional[int] = Field(
+        None,
+        ge=1,
+        le=500,
+        description="限制进入正式评分的候选上限；为空表示使用系统默认策略",
+    )
+
+
+class MomentumScreeningRunProgress(BaseModel):
+    """任务化强势筛选进度信息。"""
+
+    progress_pct: float = Field(0.0, description="当前进度百分比")
+    processed_item_count: int = Field(0, description="当前阶段已处理数量")
+    total_item_count: int = Field(0, description="当前阶段总数量")
+    cache_hits: Dict[str, int] = Field(default_factory=dict, description="命中的阶段缓存统计")
+    cache_misses: Dict[str, int] = Field(default_factory=dict, description="未命中的阶段缓存统计")
+
+
+class MomentumScreeningRunResponse(BaseModel):
+    """任务化强势筛选运行态响应。"""
+
+    run_id: str = Field(..., description="筛选任务 ID")
+    status: Literal["queued", "running", "completed", "failed", "cancelled"] = Field(..., description="任务状态")
+    profile: Literal["standard", "aggressive"] = Field(..., description="评分画像")
+    truth_mode: Literal["full", "light"] = Field(..., description="真实性模式")
+    engine_version: str = Field(..., description="任务执行引擎版本")
+    entry_baseline_version: str = Field(..., description="候选池统一入口基线版本")
+    market_scope_version: str = Field(..., description="市场范围版本")
+    screening_cache_version: str = Field(..., description="筛选结果缓存版本")
+    top_n: int = Field(..., description="返回展示 TopN")
+    requested_trade_date: Optional[str] = Field(None, description="用户请求的交易日")
+    trade_date: Optional[str] = Field(None, description="实际用于筛选的交易日")
+    result_available: bool = Field(False, description="结果是否已可读取")
+    request_params: Dict[str, Any] = Field(default_factory=dict, description="任务原始请求参数")
+    current_stage_key: str = Field(..., description="当前阶段键")
+    current_stage_label: str = Field(..., description="当前阶段文案")
+    progress: MomentumScreeningRunProgress = Field(default_factory=MomentumScreeningRunProgress, description="任务进度")
+    heartbeat_at: Optional[str] = Field(None, description="最近一次心跳时间")
+    started_at: Optional[str] = Field(None, description="任务开始时间")
+    finished_at: Optional[str] = Field(None, description="任务结束时间")
+    cancel_requested: bool = Field(False, description="是否已收到取消请求")
+    error_message: Optional[str] = Field(None, description="失败或取消原因")
+    created_at: Optional[str] = Field(None, description="任务创建时间")
+    updated_at: Optional[str] = Field(None, description="任务更新时间")
+
+
+class MomentumScreeningRunCreateResponse(BaseModel):
+    """任务化强势筛选创建响应。"""
+
+    created_new: bool = Field(..., description="是否创建了新任务")
+    message: str = Field(..., description="创建或复用结果说明")
+    run: MomentumScreeningRunResponse = Field(..., description="任务摘要")
+
+
+class MomentumScreeningRunSectionResponse(BaseModel):
+    """任务列表中的分段结果。"""
+
+    total: int = Field(..., description="该分段任务总数")
+    items: List[MomentumScreeningRunResponse] = Field(default_factory=list, description="任务条目")
+
+
+class MomentumScreeningRunListResponse(BaseModel):
+    """任务化强势筛选列表响应。"""
+
+    current_running: Optional[MomentumScreeningRunResponse] = Field(None, description="当前正在执行的任务")
+    queued: MomentumScreeningRunSectionResponse = Field(..., description="排队中的任务")
+    history: MomentumScreeningRunSectionResponse = Field(..., description="历史任务")
+    refreshed_at: str = Field(..., description="列表刷新时间")
+
+
 class MomentumDecisionAction(BaseModel):
     """二次决策的今日出手级别。"""
 
@@ -542,6 +620,15 @@ class MomentumSecondaryDecisionResponse(BaseModel):
     """强势筛选 + 二次决策组合响应。"""
 
     screening: MomentumScreenerResponse = Field(..., description="原始筛选结果")
+    decision: MomentumSecondaryDecision = Field(..., description="二次决策结果")
+
+
+class MomentumScreeningRunResultResponse(BaseModel):
+    """任务化强势筛选结果响应。"""
+
+    run_id: str = Field(..., description="筛选任务 ID")
+    status: Literal["completed"] = Field(..., description="结果状态")
+    screening: MomentumScreenerResponse = Field(..., description="筛选结果")
     decision: MomentumSecondaryDecision = Field(..., description="二次决策结果")
 
 

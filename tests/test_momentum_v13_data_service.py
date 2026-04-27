@@ -256,6 +256,35 @@ class TestMomentumV13DataService(unittest.TestCase):
         self.assertEqual(fetcher.get_cyq_perf.call_count, 2)
         self.assertEqual(fetcher.get_cyq_chips.call_count, 2)
 
+    def test_build_screening_context_skips_chip_and_ths_member_queries(self) -> None:
+        fetcher = self._make_fetcher()
+        service = MomentumV13DataService(fetcher=fetcher)
+
+        context = service.build_screening_context(trade_date="2026/04/23", ts_codes=["600519.SH", "300750.SZ"])
+
+        self.assertFalse(context["is_degraded"])
+        self.assertEqual(context["source_status"]["cyq_perf"], "skipped")
+        self.assertEqual(context["source_status"]["cyq_chips"], "skipped")
+        self.assertEqual(context["source_status"]["ths_member"], "skipped")
+        self.assertEqual(context["source_status"]["ths_index"], "skipped")
+        self.assertEqual(context["chip_snapshots"], {})
+        self.assertEqual(len(context["stock_raw_theme_map"]["600519.SH"]), 0)
+        self.assertGreater(len(context["stock_dc_theme_map"]["300750.SZ"]), 0)
+
+        fetcher.get_stock_limit_prices.assert_called_once_with("2026/04/23")
+        fetcher.get_limit_list.assert_called_once_with("2026/04/23")
+        fetcher.get_ths_hot.assert_called_once_with("2026/04/23")
+        fetcher.get_dc_concepts.assert_called_once_with("2026/04/23")
+        fetcher.get_stock_moneyflow_dc.assert_called_once_with("2026/04/23")
+        fetcher.get_stock_moneyflow_ths.assert_called_once_with("2026/04/23")
+        self.assertEqual(fetcher.get_dc_moneyflow_themes.call_count, 2)
+        self.assertEqual(fetcher.get_dc_members.call_count, 2)
+        fetcher.get_kpl_list.assert_called_once_with("2026/04/23", tag="涨停")
+        fetcher.get_ths_members.assert_not_called()
+        fetcher.get_ths_index.assert_not_called()
+        fetcher.get_cyq_perf.assert_not_called()
+        fetcher.get_cyq_chips.assert_not_called()
+
     def test_build_context_uses_cache_for_repeated_request(self) -> None:
         fetcher = self._make_fetcher()
         service = MomentumV13DataService(fetcher=fetcher)

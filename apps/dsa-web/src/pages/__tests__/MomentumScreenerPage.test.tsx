@@ -3,11 +3,22 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import MomentumScreenerPage from '../MomentumScreenerPage';
 import { useMomentumScreenerAiStore } from '../../stores/momentumScreenerAiStore';
 import type {
+  MomentumScreeningRunCreateResponse,
+  MomentumScreeningRunResponse,
+  MomentumScreeningRunResultResponse,
   MomentumScreenerDecisionResponse,
   MomentumScreenerIntradayResponse,
   MomentumScreenerResponse,
   MomentumScreenerResult,
 } from '../../types/momentumScreener';
+
+const { mockCreateRun, mockListRuns, mockGetRun, mockGetRunResult, mockCancelRun } = vi.hoisted(() => ({
+  mockCreateRun: vi.fn(),
+  mockListRuns: vi.fn(),
+  mockGetRun: vi.fn(),
+  mockGetRunResult: vi.fn(),
+  mockCancelRun: vi.fn(),
+}));
 
 const { mockScreen } = vi.hoisted(() => ({
   mockScreen: vi.fn(),
@@ -32,6 +43,11 @@ const { mockLoadAiSession, mockStreamAiReview } = vi.hoisted(() => ({
 
 vi.mock('../../api/momentumScreener', () => ({
   momentumScreenerApi: {
+    createRun: mockCreateRun,
+    listRuns: mockListRuns,
+    getRun: mockGetRun,
+    getRunResult: mockGetRunResult,
+    cancelRun: mockCancelRun,
     screen: mockScreen,
     screenWithDecision: mockScreenWithDecision,
     fetchIntradaySignal: mockIntraday,
@@ -652,10 +668,93 @@ function buildIntradayResponse(screening: MomentumScreenerResponse): MomentumScr
   };
 }
 
+function buildScreeningRun(overrides: Partial<MomentumScreeningRunResponse> = {}): MomentumScreeningRunResponse {
+  return {
+    runId: 'screening-run-001',
+    status: 'completed',
+    profile: 'standard',
+    truthMode: 'full',
+    engineVersion: 'momentum_screening_run_v1',
+    entryBaselineVersion: 'v1_4_3_0',
+    marketScopeVersion: 'v1_a_share_main_chinext_star',
+    screeningCacheVersion: 'v1_4_3_0',
+    topN: 30,
+    requestedTradeDate: null,
+    tradeDate: '2026-04-10',
+    resultAvailable: true,
+    requestParams: {
+      profile: 'standard',
+      topN: 30,
+      truthMode: 'full',
+    },
+    currentStageKey: 'completed',
+    currentStageLabel: '结果落盘完成',
+    progress: {
+      progressPct: 100,
+      processedItemCount: 30,
+      totalItemCount: 30,
+      cacheHits: {},
+      cacheMisses: {},
+    },
+    heartbeatAt: '2026-04-10T15:01:00',
+    startedAt: '2026-04-10T15:00:00',
+    finishedAt: '2026-04-10T15:01:00',
+    cancelRequested: false,
+    errorMessage: null,
+    createdAt: '2026-04-10T15:00:00',
+    updatedAt: '2026-04-10T15:01:00',
+    ...overrides,
+  };
+}
+
+function buildRunCreateResponse(run: MomentumScreeningRunResponse): MomentumScreeningRunCreateResponse {
+  return {
+    createdNew: true,
+    message: run.status === 'completed' ? '真实性优先任务已完成。' : '真实性优先任务已创建，正在后台执行。',
+    run,
+  };
+}
+
+function buildRunListResponse(
+  overrides: {
+    currentRunning?: MomentumScreeningRunResponse | null;
+    queued?: MomentumScreeningRunResponse[];
+    history?: MomentumScreeningRunResponse[];
+  } = {},
+) {
+  const queued = overrides.queued ?? [];
+  const history = overrides.history ?? [];
+  return {
+    currentRunning: overrides.currentRunning ?? null,
+    queued: {
+      total: queued.length,
+      items: queued,
+    },
+    history: {
+      total: history.length,
+      items: history,
+    },
+    refreshedAt: '2026-04-10T15:02:00',
+  };
+}
+
+function buildRunResultResponse(screening: MomentumScreenerResponse): MomentumScreeningRunResultResponse {
+  const decisionResponse = buildDecisionResponse(screening);
+  return {
+    runId: 'screening-run-001',
+    status: 'completed',
+    screening,
+    decision: decisionResponse.decision,
+  };
+}
+
 async function clickRunButton() {
   fireEvent.click(screen.getByTestId('momentum-screener-run'));
   await waitFor(() => {
-    expect(mockScreenWithDecision).toHaveBeenCalled();
+    expect(mockCreateRun).toHaveBeenCalled();
+  });
+  await waitFor(() => {
+    expect(mockGetRunResult).toHaveBeenCalled();
   });
   await waitFor(() => {
     expect(mockScreen).toHaveBeenCalled();
@@ -709,6 +808,11 @@ describe('MomentumScreenerPage', () => {
       messages: [],
     });
     mockStreamAiReview.mockResolvedValue(createAiStreamResponse());
+    mockCreateRun.mockResolvedValue(buildRunCreateResponse(buildScreeningRun()));
+    mockListRuns.mockResolvedValue(buildRunListResponse());
+    mockGetRun.mockResolvedValue(buildScreeningRun());
+    mockGetRunResult.mockResolvedValue(buildRunResultResponse(standardResponse));
+    mockCancelRun.mockResolvedValue(buildScreeningRun({ status: 'cancelled', currentStageLabel: '任务已停止' }));
     mockScreenWithDecision.mockResolvedValue(buildDecisionResponse(standardResponse));
     mockScreen.mockResolvedValue(aggressiveResponse);
     mockIntraday.mockResolvedValue(buildIntradayResponse(standardResponse));
@@ -737,6 +841,7 @@ describe('MomentumScreenerPage', () => {
     expect(screen.getByText('最小成交额 2 亿')).toBeInTheDocument();
     expect(screen.getByText('最小换手率 2%')).toBeInTheDocument();
     expect(screen.getByText('市场范围：主板 + 创业板 + 科创板')).toBeInTheDocument();
+    expect(mockCreateRun).not.toHaveBeenCalled();
     expect(mockScreen).not.toHaveBeenCalled();
     expect(mockScreenWithDecision).not.toHaveBeenCalled();
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
@@ -767,6 +872,7 @@ describe('MomentumScreenerPage', () => {
 
     expect(screen.getByDisplayValue('2026-04-09')).toBeInTheDocument();
     expect(mockGetSystemConfig).not.toHaveBeenCalled();
+    expect(mockCreateRun).not.toHaveBeenCalled();
     expect(mockScreen).not.toHaveBeenCalled();
     expect(mockScreenWithDecision).not.toHaveBeenCalled();
   });
@@ -800,11 +906,151 @@ describe('MomentumScreenerPage', () => {
     fireEvent.click(screen.getByTestId('momentum-screener-restore'));
 
     await waitFor(() => {
-      expect(mockScreenWithDecision).toHaveBeenLastCalledWith({
+      expect(mockCreateRun).toHaveBeenLastCalledWith({
         profile: 'standard',
         topN: 30,
         tradeDate: undefined,
+        truthMode: 'full',
+        useSectorContext: true,
       });
+    });
+  });
+
+  it('resumes the current running screening task after reopening the page', async () => {
+    mockListRuns.mockResolvedValue(
+      buildRunListResponse({
+        currentRunning: buildScreeningRun({
+          status: 'running',
+          resultAvailable: false,
+          currentStageKey: 'scoring',
+          currentStageLabel: '执行评分排序',
+          progress: {
+            progressPct: 48,
+            processedItemCount: 12,
+            totalItemCount: 25,
+            cacheHits: { candidate_pool: 1 },
+            cacheMisses: {},
+          },
+        }),
+      }),
+    );
+
+    render(<MomentumScreenerPage />);
+
+    const panel = await screen.findByTestId('momentum-screening-run-panel');
+    expect(within(panel).getByText('运行中')).toBeInTheDocument();
+    expect(within(panel).getByText('执行评分排序')).toBeInTheDocument();
+    expect(within(panel).getByText(/已处理 12\/25，candidate_pool 命中 1/)).toBeInTheDocument();
+    expect(within(panel).getByTestId('momentum-screening-run-message')).toHaveTextContent(
+      '已恢复上次未完成的筛选任务，页面会继续跟踪进度。',
+    );
+    expect(mockCreateRun).not.toHaveBeenCalled();
+  });
+
+  it('shows recent run history and can load a completed task result', async () => {
+    const historyRun = buildScreeningRun({
+      runId: 'screening-run-history-1',
+      requestedTradeDate: '2026-04-09',
+      tradeDate: '2026-04-09',
+      updatedAt: '2026-04-09T15:20:00',
+    });
+    mockListRuns.mockResolvedValue(
+      buildRunListResponse({
+        history: [historyRun],
+      }),
+    );
+    mockGetRunResult.mockResolvedValue({
+      ...buildRunResultResponse(standardResponse),
+      runId: 'screening-run-history-1',
+      screening: { ...standardResponse, tradeDate: '2026-04-09' },
+    });
+
+    render(<MomentumScreenerPage />);
+
+    const panel = await screen.findByTestId('momentum-screening-run-history');
+    expect(within(panel).getByText('最近任务')).toBeInTheDocument();
+    expect(within(panel).getByText('交易日 2026-04-09')).toBeInTheDocument();
+
+    fireEvent.click(within(panel).getByRole('button', { name: '加载结果' }));
+
+    await waitFor(() => {
+      expect(mockGetRunResult).toHaveBeenCalledWith('screening-run-history-1');
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('momentum-screening-run-message')).toHaveTextContent('已加载历史筛选任务结果。');
+    });
+  });
+
+  it('renders the screening run status card for completed truth-first tasks', async () => {
+    render(<MomentumScreenerPage />);
+
+    await clickRunButton();
+
+    const panel = await screen.findByTestId('momentum-screening-run-panel');
+    expect(within(panel).getByText('真实性优先任务')).toBeInTheDocument();
+    expect(within(panel).getByText('已完成')).toBeInTheDocument();
+    expect(within(panel).getByText('Full Truth')).toBeInTheDocument();
+    expect(within(panel).getByText(/任务号 .*run-001/)).toBeInTheDocument();
+    expect(within(panel).getByText('结果落盘完成')).toBeInTheDocument();
+    expect(within(panel).getByText(/已处理 30\/30/)).toBeInTheDocument();
+    expect(within(panel).getByText('实际交易日 2026-04-10')).toBeInTheDocument();
+    expect(within(panel).getByTestId('momentum-screening-run-message')).toHaveTextContent(
+      '真实性优先任务已完成，结果已同步到下方视图。',
+    );
+  });
+
+  it('shows queued screening task progress and allows cancel', async () => {
+    mockCreateRun.mockResolvedValue(
+      buildRunCreateResponse(
+        buildScreeningRun({
+          status: 'queued',
+          resultAvailable: false,
+          currentStageKey: 'candidate_pool',
+          currentStageLabel: '候选池筛选中',
+          progress: {
+            progressPct: 12,
+            processedItemCount: 3,
+            totalItemCount: 25,
+            cacheHits: { candidate_pool: 1 },
+            cacheMisses: {},
+          },
+        }),
+      ),
+    );
+    mockCancelRun.mockResolvedValue(
+      buildScreeningRun({
+        status: 'cancelled',
+        resultAvailable: false,
+        currentStageKey: 'cancelled',
+        currentStageLabel: '任务已停止',
+        progress: {
+          progressPct: 12,
+          processedItemCount: 3,
+          totalItemCount: 25,
+          cacheHits: { candidate_pool: 1 },
+          cacheMisses: {},
+        },
+      }),
+    );
+
+    render(<MomentumScreenerPage />);
+
+    fireEvent.click(screen.getByTestId('momentum-screener-run'));
+
+    const panel = await screen.findByTestId('momentum-screening-run-panel');
+    expect(within(panel).getByText('排队中')).toBeInTheDocument();
+    expect(within(panel).getByText('候选池筛选中')).toBeInTheDocument();
+    expect(within(panel).getByText(/已处理 3\/25，candidate_pool 命中 1/)).toBeInTheDocument();
+    expect(within(panel).getByRole('button', { name: '取消任务' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('momentum-screening-run-cancel'));
+
+    await waitFor(() => {
+      expect(mockCancelRun).toHaveBeenCalledWith('screening-run-001');
+    });
+    await waitFor(() => {
+      expect(within(panel).getByText('已取消')).toBeInTheDocument();
+      expect(within(panel).getByTestId('momentum-screening-run-message')).toHaveTextContent('筛选任务已取消。');
     });
   });
 
@@ -1029,7 +1275,12 @@ describe('MomentumScreenerPage', () => {
     const warmingResponse = buildDecisionResponse(standardResponse);
     warmingResponse.decision.strategyHealth.dataSource = 'proxy';
     warmingResponse.decision.strategyHealth.isWarming = true;
-    mockScreenWithDecision.mockResolvedValue(warmingResponse);
+    mockGetRunResult.mockResolvedValue({
+      runId: 'screening-run-001',
+      status: 'completed',
+      screening: standardResponse,
+      decision: warmingResponse.decision,
+    });
 
     render(<MomentumScreenerPage />);
 
@@ -1066,7 +1317,6 @@ describe('MomentumScreenerPage', () => {
   });
 
   it('refreshes intraday signal only after manual action and renders do-not-chase guidance', async () => {
-    mockScreenWithDecision.mockResolvedValue(buildDecisionResponse(standardResponse));
     mockIntraday.mockResolvedValue(buildIntradayResponse(standardResponse));
 
     render(<MomentumScreenerPage />);

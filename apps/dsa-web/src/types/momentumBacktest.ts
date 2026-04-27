@@ -44,7 +44,7 @@ export interface MomentumBacktestSummary {
   layerDiagnostics: MomentumBacktestLayerDiagnostic[];
   gateModuleBreakdown: MomentumBacktestGateModuleBreakdownItem[];
   regimeBreakdown: MomentumBacktestRegimeBreakdownItem[];
-  v13Diagnostics?: Record<string, unknown>;
+  v13Diagnostics?: MomentumBacktestV13Diagnostics | null;
 }
 
 export interface MomentumBacktestBenchmarkItem {
@@ -122,6 +122,61 @@ export interface MomentumBacktestRegimeBreakdownItem {
   missedOpportunityRatePct?: number | null;
   allowedTradePrecisionPct?: number | null;
   standAsideRatePct?: number | null;
+}
+
+export interface MomentumBacktestV13ThemeBreakdownItem {
+  theme: string;
+  days: number;
+}
+
+export interface MomentumBacktestV13MainlineItem {
+  themeId?: string | null;
+  themeName?: string | null;
+  score?: number | null;
+  level?: string | null;
+  levelLabel?: string | null;
+  summary?: string | null;
+  sourceThemeNames?: string[];
+  candidateCount?: number | null;
+  top10Count?: number | null;
+  limitUpCount?: number | null;
+  brokenLimitCount?: number | null;
+  hotRank?: number | null;
+  boardRank?: number | null;
+  leaderStock?: string | null;
+  netAmount?: number | null;
+  pctChange?: number | null;
+}
+
+export interface MomentumBacktestV13ShortTermSentiment {
+  level?: string | null;
+  levelLabel?: string | null;
+  score?: number | null;
+  summary?: string | null;
+}
+
+export interface MomentumBacktestV13DataStatus {
+  status?: string | null;
+  reason?: string | null;
+  isDegraded?: boolean | null;
+}
+
+export interface MomentumBacktestV13Diagnostics {
+  evaluatedTradeDates?: number;
+  radarAvailableDays?: number;
+  radarCoveragePct?: number | null;
+  avgTopMainlineScore?: number | null;
+  sentimentBreakdown?: Record<string, number>;
+  dataStatusBreakdown?: Record<string, number>;
+  degradedDays?: number;
+  topThemeBreakdown?: MomentumBacktestV13ThemeBreakdownItem[];
+  summary?: string | null;
+  mainlineRadar?: MomentumBacktestV13MainlineItem[];
+  shortTermSentiment?: MomentumBacktestV13ShortTermSentiment | null;
+  v13DataStatus?: MomentumBacktestV13DataStatus | null;
+  topMainline?: MomentumBacktestV13MainlineItem | null;
+  mainlineCount?: number;
+  summaryLines?: string[];
 }
 
 export interface MomentumBacktestRunResponse {
@@ -312,7 +367,7 @@ export interface MomentumBacktestDailyDetailResponse {
   slotView: MomentumBacktestDecisionDetailItem[];
   outcomes: Record<string, MomentumBacktestOutcomeGroup>;
   diagnosis: MomentumBacktestDailyDiagnosis;
-  v13Diagnostics?: Record<string, unknown>;
+  v13Diagnostics?: MomentumBacktestV13Diagnostics | null;
 }
 
 export interface MomentumBacktestIssueListItem extends MomentumBacktestIssueItem {

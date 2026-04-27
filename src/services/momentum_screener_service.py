@@ -10,7 +10,7 @@ import hashlib
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import pandas as pd
 
@@ -27,7 +27,7 @@ MOMENTUM_ENTRY_BASELINE_VERSION = "v1_4_3_0"
 MOMENTUM_MARKET_SCOPE_VERSION = "v1_a_share_main_chinext_star"
 MOMENTUM_SCREENING_CACHE_VERSION = "v1_4_3_0_ranked_screening_v13_standard_v1"
 MOMENTUM_DEFAULT_TOP_N = 30
-MOMENTUM_V13_PROFILE_MAX_CANDIDATES = 30
+MOMENTUM_V13_PROFILE_MAX_CANDIDATES = 12
 MOMENTUM_DEFAULT_MIN_CHANGE_PCT = 4.0
 MOMENTUM_DEFAULT_MIN_AMOUNT = 2e8
 MOMENTUM_DEFAULT_MIN_TURNOVER = 2.0
@@ -38,6 +38,7 @@ MOMENTUM_MARKET_SEGMENT_LABELS = {
     "star": "科创板",
     "other": "其他",
 }
+MomentumScreeningProgressCallback = Callable[[Dict[str, Any]], None]
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -144,6 +145,44 @@ class MomentumScreenerService:
             ttl = cls._sector_cache_ttl_seconds
         cls._sector_cache_ttl_seconds = max(0, ttl)
 
+    @staticmethod
+    def _emit_progress(
+        progress_callback: Optional[MomentumScreeningProgressCallback],
+        *,
+        stage_key: str,
+        stage_label: str,
+        progress_pct: float,
+        processed_item_count: Optional[int] = None,
+        total_item_count: Optional[int] = None,
+        cache_hits: Optional[Dict[str, int]] = None,
+        cache_misses: Optional[Dict[str, int]] = None,
+        trade_date: Optional[str] = None,
+    ) -> None:
+        if not callable(progress_callback):
+            return
+        payload: Dict[str, Any] = {
+            "stage_key": stage_key,
+            "stage_label": stage_label,
+            "progress_pct": round(max(0.0, min(100.0, float(progress_pct))), 2),
+        }
+        if processed_item_count is not None:
+            payload["processed_item_count"] = max(0, int(processed_item_count))
+        if total_item_count is not None:
+            payload["total_item_count"] = max(0, int(total_item_count))
+        if isinstance(cache_hits, dict):
+            payload["cache_hits"] = {
+                str(key): max(0, int(value))
+                for key, value in cache_hits.items()
+            }
+        if isinstance(cache_misses, dict):
+            payload["cache_misses"] = {
+                str(key): max(0, int(value))
+                for key, value in cache_misses.items()
+            }
+        if trade_date:
+            payload["trade_date"] = str(trade_date)
+        progress_callback(payload)
+
     def screen(
         self,
         *,
@@ -155,11 +194,22 @@ class MomentumScreenerService:
         main_board_only: bool = False,
         trade_date: Optional[str] = None,
         profile: str = "standard",
+        truth_mode: str = "light",
         use_sector_context: bool = True,
         max_scored_candidates: Optional[int] = None,
+        progress_callback: Optional[MomentumScreeningProgressCallback] = None,
     ) -> Dict[str, Any]:
         if profile not in {"standard", "aggressive"}:
             raise ValueError("仅支持 profile=standard 或 profile=aggressive")
+        normalized_truth_mode = "full" if _safe_str(truth_mode).strip().lower() == "full" else "light"
+
+        self._emit_progress(
+            progress_callback,
+            stage_key="preparing",
+            stage_label="准备筛选任务",
+            progress_pct=3.0,
+            trade_date=trade_date,
+        )
 
         explicit_cached = self._load_cached_screening_for_explicit_trade_date(
             trade_date=trade_date,
@@ -170,14 +220,30 @@ class MomentumScreenerService:
             exclude_st=exclude_st,
             main_board_only=main_board_only,
             profile=profile,
+            truth_mode=normalized_truth_mode,
             use_sector_context=use_sector_context,
             max_scored_candidates=max_scored_candidates,
         )
         if explicit_cached is not None:
+            self._emit_progress(
+                progress_callback,
+                stage_key="completed",
+                stage_label="命中历史筛选缓存",
+                progress_pct=100.0,
+                trade_date=explicit_cached.get("trade_date"),
+                cache_hits={"screening_result": 1},
+            )
             return explicit_cached
 
         trade_date_resolution = self._resolve_trade_date_and_snapshot(trade_date)
         resolved_trade_date = trade_date_resolution["trade_date"]
+        self._emit_progress(
+            progress_callback,
+            stage_key="trade_snapshot",
+            stage_label="加载交易日快照",
+            progress_pct=12.0,
+            trade_date=resolved_trade_date,
+        )
         screening_cache_key: Optional[str] = None
         if self._is_past_trade_date(resolved_trade_date):
             screening_cache_key = self._build_screening_result_cache_key(
@@ -188,11 +254,20 @@ class MomentumScreenerService:
                 exclude_st=exclude_st,
                 main_board_only=main_board_only,
                 profile=profile,
+                truth_mode=normalized_truth_mode,
                 use_sector_context=use_sector_context,
                 max_scored_candidates=max_scored_candidates,
             )
             cached_screening = self._load_cached_screening_result(screening_cache_key)
             if cached_screening is not None:
+                self._emit_progress(
+                    progress_callback,
+                    stage_key="completed",
+                    stage_label="命中历史筛选缓存",
+                    progress_pct=100.0,
+                    trade_date=cached_screening.get("trade_date"),
+                    cache_hits={"screening_result": 1},
+                )
                 return self._build_screening_response_from_cached(
                     cached_screening,
                     top_n=top_n,
@@ -201,6 +276,13 @@ class MomentumScreenerService:
                 )
 
         snapshot = trade_date_resolution["snapshot"]
+        self._emit_progress(
+            progress_callback,
+            stage_key="candidate_pool",
+            stage_label="构建候选池",
+            progress_pct=22.0,
+            trade_date=resolved_trade_date,
+        )
         candidates = self._load_candidate_pool(
             trade_date=resolved_trade_date,
             snapshot=snapshot,
@@ -214,6 +296,7 @@ class MomentumScreenerService:
         if candidates.empty:
             return {
                 "profile": profile,
+                "truth_mode": normalized_truth_mode,
                 "trade_date": self._format_trade_date(resolved_trade_date),
                 "requested_trade_date": trade_date_resolution.get("requested_trade_date"),
                 "trade_date_note": trade_date_resolution.get("trade_date_note"),
@@ -231,6 +314,14 @@ class MomentumScreenerService:
 
         sector_context = {"mapping": {}, "sector_pct_map": {}}
         if use_sector_context:
+            self._emit_progress(
+                progress_callback,
+                stage_key="sector_context",
+                stage_label="加载题材与板块上下文",
+                progress_pct=34.0,
+                trade_date=resolved_trade_date,
+                total_item_count=len(scoring_candidates),
+            )
             try:
                 sector_context = self._load_sector_context(
                     trade_date=resolved_trade_date,
@@ -249,13 +340,28 @@ class MomentumScreenerService:
             )
 
         scoring_candidates = self._apply_sector_context(scoring_candidates, sector_context)
-        results = self._score_candidates(candidates=scoring_candidates, trade_date=resolved_trade_date, profile=profile)
+        self._emit_progress(
+            progress_callback,
+            stage_key="scoring",
+            stage_label="执行评分排序",
+            progress_pct=46.0,
+            trade_date=resolved_trade_date,
+            total_item_count=len(scoring_candidates),
+        )
+        results = self._score_candidates(
+            candidates=scoring_candidates,
+            trade_date=resolved_trade_date,
+            profile=profile,
+            truth_mode=normalized_truth_mode,
+            progress_callback=progress_callback,
+        )
         results = sorted(results, key=lambda item: item["rank_score"], reverse=True)
         for index, item in enumerate(results, start=1):
             item["rank"] = index
 
         cached_payload = {
             "profile": profile,
+            "truth_mode": normalized_truth_mode,
             "trade_date": self._format_trade_date(resolved_trade_date),
             "entry_baseline_version": MOMENTUM_ENTRY_BASELINE_VERSION,
             "market_scope_version": MOMENTUM_MARKET_SCOPE_VERSION,
@@ -266,8 +372,18 @@ class MomentumScreenerService:
         if screening_cache_key is not None:
             self._store_cached_screening_result(screening_cache_key, cached_payload)
 
+        self._emit_progress(
+            progress_callback,
+            stage_key="completed",
+            stage_label="筛选完成",
+            progress_pct=100.0,
+            trade_date=self._format_trade_date(resolved_trade_date),
+            processed_item_count=len(results),
+            total_item_count=len(scoring_candidates),
+        )
         return {
             "profile": profile,
+            "truth_mode": normalized_truth_mode,
             "trade_date": self._format_trade_date(resolved_trade_date),
             "requested_trade_date": trade_date_resolution.get("requested_trade_date"),
             "trade_date_note": trade_date_resolution.get("trade_date_note"),
@@ -809,12 +925,21 @@ class MomentumScreenerService:
             )
         )
 
-    def _score_candidates(self, *, candidates: pd.DataFrame, trade_date: str, profile: str) -> List[Dict[str, Any]]:
+    def _score_candidates(
+        self,
+        *,
+        candidates: pd.DataFrame,
+        trade_date: str,
+        profile: str,
+        truth_mode: str = "light",
+        progress_callback: Optional[MomentumScreeningProgressCallback] = None,
+    ) -> List[Dict[str, Any]]:
         amount_rank = candidates["amount"].rank(pct=True, method="average")
         main_inflow_rank = candidates["main_net_inflow"].fillna(0).rank(pct=True, method="average")
         cached_sector_entry = self._sector_context_cache.get(trade_date, {})
         sector_context = cached_sector_entry.get("payload", {}) if isinstance(cached_sector_entry, dict) else {}
         sector_stats = self._build_sector_stats(candidates, sector_context)
+        total_candidates = len(candidates)
 
         prepared_rows: List[tuple[pd.Series, Dict[str, Any]]] = []
         results: List[Dict[str, Any]] = []
@@ -842,13 +967,32 @@ class MomentumScreenerService:
                 results.append(self._score_aggressive(row, features))
             else:
                 results.append(self._score_standard(row, features))
+            self._emit_progress(
+                progress_callback,
+                stage_key="scoring",
+                stage_label="执行基础评分",
+                progress_pct=46.0 + min(18.0, ((len(prepared_rows) / max(1, total_candidates)) * 18.0)),
+                processed_item_count=len(prepared_rows),
+                total_item_count=total_candidates,
+                trade_date=trade_date,
+            )
 
         if not results:
             return results
 
+        self._emit_progress(
+            progress_callback,
+            stage_key="v13_context",
+            stage_label="加载 V1.3 真实题材画像",
+            progress_pct=66.0,
+            processed_item_count=len(prepared_rows),
+            total_item_count=total_candidates,
+            trade_date=trade_date,
+        )
         v13_profile_map = self._build_standard_v13_profile_map(
             trade_date=trade_date,
             provisional_results=results,
+            truth_mode=truth_mode,
         )
         if not v13_profile_map:
             return results
@@ -861,6 +1005,15 @@ class MomentumScreenerService:
                 enhanced_results.append(self._score_aggressive(row, enhanced_features))
             else:
                 enhanced_results.append(self._score_standard(row, enhanced_features))
+            self._emit_progress(
+                progress_callback,
+                stage_key="scoring",
+                stage_label="融合 V1.3 信号重排",
+                progress_pct=72.0 + min(22.0, ((len(enhanced_results) / max(1, len(prepared_rows))) * 22.0)),
+                processed_item_count=len(enhanced_results),
+                total_item_count=len(prepared_rows),
+                trade_date=trade_date,
+            )
 
         return enhanced_results
 
@@ -882,6 +1035,7 @@ class MomentumScreenerService:
         *,
         trade_date: str,
         provisional_results: List[Dict[str, Any]],
+        truth_mode: str = "light",
     ) -> Dict[str, Dict[str, Any]]:
         if not provisional_results:
             return {}
@@ -923,14 +1077,33 @@ class MomentumScreenerService:
         # 这样能保证官方 Top30 的主路径继续吸收 6000 积分增强，同时避免大候选池日
         # 因为逐股补全几百只尾部样本而把筛选请求拖到网关超时。
         v13_ranked_candidates = ranked_candidates[:MOMENTUM_V13_PROFILE_MAX_CANDIDATES]
+        normalized_truth_mode = "full" if _safe_str(truth_mode).strip().lower() == "full" else "light"
+        v13_ranked_candidates = (
+            ranked_candidates
+            if normalized_truth_mode == "full"
+            else v13_ranked_candidates
+        )
         if not v13_ranked_candidates:
             return {}
 
         try:
-            context = v13_service.build_context(
-                trade_date=trade_date,
-                ts_codes=[_safe_str(item.get("ts_code")) for item in v13_ranked_candidates],
-            )
+            ts_codes = [_safe_str(item.get("ts_code")) for item in v13_ranked_candidates]
+            build_screening_context = getattr(v13_service, "build_screening_context", None)
+            if normalized_truth_mode == "full":
+                context = v13_service.build_context(
+                    trade_date=trade_date,
+                    ts_codes=ts_codes,
+                )
+            elif callable(build_screening_context):
+                context = build_screening_context(
+                    trade_date=trade_date,
+                    ts_codes=ts_codes,
+                )
+            else:
+                context = v13_service.build_context(
+                    trade_date=trade_date,
+                    ts_codes=ts_codes,
+                )
             mainline_radar = v13_service.build_mainline_radar(
                 candidates=v13_ranked_candidates,
                 context=context,
@@ -1236,6 +1409,7 @@ class MomentumScreenerService:
         exclude_st: bool,
         main_board_only: bool,
         profile: str,
+        truth_mode: str,
         use_sector_context: bool,
         max_scored_candidates: Optional[int],
     ) -> Optional[Dict[str, Any]]:
@@ -1251,6 +1425,7 @@ class MomentumScreenerService:
             exclude_st=exclude_st,
             main_board_only=main_board_only,
             profile=profile,
+            truth_mode=truth_mode,
             use_sector_context=use_sector_context,
             max_scored_candidates=max_scored_candidates,
         )
@@ -1314,12 +1489,14 @@ class MomentumScreenerService:
         exclude_st: bool,
         main_board_only: bool,
         profile: str,
+        truth_mode: str,
         use_sector_context: bool,
         max_scored_candidates: Optional[int],
     ) -> str:
         normalized = {
             "trade_date": trade_date,
             "profile": profile,
+            "truth_mode": "full" if _safe_str(truth_mode).strip().lower() == "full" else "light",
             "min_change_pct": round(_safe_float(min_change_pct), 3),
             "min_amount": round(_safe_float(min_amount), 3),
             "min_turnover": round(_safe_float(min_turnover), 3),
@@ -1348,6 +1525,7 @@ class MomentumScreenerService:
         ]
         return {
             "profile": _safe_str(payload.get("profile"), "standard"),
+            "truth_mode": _safe_str(payload.get("truth_mode"), "light"),
             "trade_date": _safe_str(payload.get("trade_date")),
             "requested_trade_date": requested_trade_date,
             "trade_date_note": trade_date_note,

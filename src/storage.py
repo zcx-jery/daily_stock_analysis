@@ -433,6 +433,55 @@ class MomentumBacktestRun(Base):
     )
 
 
+class MomentumScreeningRun(Base):
+    """Taskized momentum screener run metadata and persisted result payloads."""
+
+    __tablename__ = 'momentum_screening_runs'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String(64), nullable=False, unique=True, index=True)
+    status = Column(String(16), nullable=False, default='queued', index=True)
+    profile = Column(String(16), nullable=False, default='standard', index=True)
+    truth_mode = Column(String(16), nullable=False, default='full', index=True)
+    engine_version = Column(String(32), nullable=False, default='v1_taskized')
+    entry_baseline_version = Column(String(32), nullable=False)
+    market_scope_version = Column(String(64), nullable=False)
+    screening_cache_version = Column(String(64), nullable=False)
+    top_n = Column(Integer, nullable=False, default=30)
+    requested_trade_date = Column(String(16), index=True)
+    trade_date = Column(Date, index=True)
+    min_change_pct = Column(Float, nullable=False, default=4.0)
+    min_amount = Column(Float, nullable=False, default=2e8)
+    min_turnover = Column(Float, nullable=False, default=2.0)
+    exclude_st = Column(Boolean, nullable=False, default=True)
+    main_board_only = Column(Boolean, nullable=False, default=False)
+    use_sector_context = Column(Boolean, nullable=False, default=True)
+    max_scored_candidates = Column(Integer)
+    request_fingerprint = Column(String(96), nullable=False, index=True)
+    request_params_json = Column(Text)
+    progress_pct = Column(Float, nullable=False, default=0.0)
+    processed_item_count = Column(Integer, nullable=False, default=0)
+    total_item_count = Column(Integer, nullable=False, default=0)
+    current_stage_key = Column(String(32))
+    current_stage_label = Column(String(80))
+    cache_hits_json = Column(Text)
+    cache_misses_json = Column(Text)
+    screening_payload_json = Column(Text)
+    decision_payload_json = Column(Text)
+    error_message = Column(Text)
+    heartbeat_at = Column(DateTime, index=True)
+    started_at = Column(DateTime, index=True)
+    finished_at = Column(DateTime, index=True)
+    cancel_requested = Column(Boolean, nullable=False, default=False, index=True)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
+
+    __table_args__ = (
+        Index('ix_momentum_screening_runs_profile_created', 'profile', 'created_at'),
+        Index('ix_momentum_screening_runs_fingerprint_created', 'request_fingerprint', 'created_at'),
+    )
+
+
 class MomentumBacktestDailySummary(Base):
     """Frozen day-level backtest decision summary."""
 

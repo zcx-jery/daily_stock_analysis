@@ -1,10 +1,10 @@
 ﻿import type React from 'react';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BarChart3, Flame, ListChecks, Radar, RefreshCw, ShieldAlert, Sparkles, Target, TrendingUp } from 'lucide-react';
 import { momentumScreenerApi } from '../api/momentumScreener';
 import { systemConfigApi } from '../api/systemConfig';
 import ScreenerAiDrawer from '../components/screener/ScreenerAiDrawer';
-import { getParsedApiError, type ParsedApiError } from '../api/error';
+import { createParsedApiError, getParsedApiError, type ParsedApiError } from '../api/error';
 import { ApiErrorAlert, Badge, Button, Card, Drawer, EmptyState, Input, Select } from '../components/common';
 import type {
   MomentumActionLevel,
@@ -17,6 +17,7 @@ import type {
   MomentumIntradaySignal,
   MomentumMainlineRadarItem,
   MomentumProfile,
+  MomentumScreeningRunResponse,
   MomentumSecondaryDecision,
   MomentumSnapshotAssist,
   MomentumScreenerRequest,
@@ -39,6 +40,7 @@ type SortKey = 'rank_score' | 'continuation_score' | 'extension_score' | 'risk_s
 
 const STORAGE_KEY = 'dsa.momentum-screener.page-state';
 const OFFICIAL_TOP_N = 30;
+const SCREENING_RUN_POLL_INTERVAL_MS = 1500;
 
 const SORT_OPTIONS = [
   { value: 'rank_score', label: '按排序分' },
@@ -341,6 +343,53 @@ function buildStrategyHealthProgressSummary(health: MomentumSecondaryDecision['s
   const lastTradeDate = progress.lastEvaluatedTradeDate ? `最近样本 ${progress.lastEvaluatedTradeDate}` : null;
 
   return [processed, samples, lastTradeDate].filter(Boolean).join('，') || null;
+}
+
+function screeningRunBadgeVariant(
+  status: MomentumScreeningRunResponse['status'],
+): 'success' | 'info' | 'warning' | 'danger' | 'default' {
+  if (status === 'completed') return 'success';
+  if (status === 'running') return 'info';
+  if (status === 'queued') return 'warning';
+  if (status === 'failed') return 'danger';
+  return 'default';
+}
+
+function screeningRunStatusLabel(status: MomentumScreeningRunResponse['status']): string {
+  if (status === 'completed') return '已完成';
+  if (status === 'running') return '运行中';
+  if (status === 'queued') return '排队中';
+  if (status === 'failed') return '失败';
+  return '已取消';
+}
+
+function buildScreeningRunProgressSummary(run: MomentumScreeningRunResponse): string | null {
+  const parts: string[] = [];
+  if (run.progress.totalItemCount > 0) {
+    parts.push(`已处理 ${run.progress.processedItemCount}/${run.progress.totalItemCount}`);
+  }
+  const cacheHitSummary = Object.entries(run.progress.cacheHits ?? {})
+    .filter(([, value]) => Number(value) > 0)
+    .map(([key, value]) => `${key} 命中 ${value}`)
+    .slice(0, 2);
+  if (cacheHitSummary.length > 0) {
+    parts.push(cacheHitSummary.join('，'));
+  }
+  if (run.tradeDate) {
+    parts.push(`交易日 ${run.tradeDate}`);
+  }
+  return parts.length > 0 ? parts.join('，') : null;
+}
+
+function formatRunTimestamp(value?: string | null): string | null {
+  if (!value) {
+    return null;
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+  return parsed.toLocaleString('zh-CN', { hour12: false });
 }
 
 function intradayConfidenceBadgeVariant(
@@ -1841,6 +1890,11 @@ const MomentumScreenerPage: React.FC = () => {
   const [decision, setDecision] = useState<MomentumSecondaryDecision | null>(null);
   const [intradaySignal, setIntradaySignal] = useState<MomentumIntradaySignal | null>(null);
   const [snapshotAssist, setSnapshotAssist] = useState<MomentumSnapshotAssist | null>(null);
+  const [screeningRun, setScreeningRun] = useState<MomentumScreeningRunResponse | null>(null);
+  const [screeningRunMessage, setScreeningRunMessage] = useState<string | null>(null);
+  const [screeningQueuedRuns, setScreeningQueuedRuns] = useState<MomentumScreeningRunResponse[]>([]);
+  const [screeningRunHistory, setScreeningRunHistory] = useState<MomentumScreeningRunResponse[]>([]);
+  const [screeningRunListLoading, setScreeningRunListLoading] = useState(false);
   const [lastSubmittedPayload, setLastSubmittedPayload] = useState<MomentumScreenerRequest | null>(null);
   const [selectedResult, setSelectedResult] = useState<SelectedResultState | null>(null);
   const [loading, setLoading] = useState(false);
@@ -1852,6 +1906,8 @@ const MomentumScreenerPage: React.FC = () => {
   const [intradayError, setIntradayError] = useState<ParsedApiError | null>(null);
   const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
   const openAiPanel = useMomentumScreenerAiStore((state) => state.openPanel);
+  const resolvedRunIdRef = useRef<string | null>(null);
+  const activeScreeningRunIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     document.title = '强势筛选 - DSA';
@@ -1861,11 +1917,52 @@ const MomentumScreenerPage: React.FC = () => {
     persistState(form, sortBy);
   }, [form, sortBy]);
 
+  useEffect(() => {
+    activeScreeningRunIdRef.current = screeningRun?.runId ?? null;
+  }, [screeningRun]);
+
   const openMomentumAiPanel = async (target: MomentumScreenerAiReviewTarget) => {
     await openAiPanel(target);
   };
 
-  const loadAggressiveSupplement = async (payload: MomentumScreenerRequest) => {
+  const buildPayloadFromRun = useCallback((run: MomentumScreeningRunResponse): MomentumScreenerRequest => ({
+    profile: run.profile,
+    topN: run.topN,
+    tradeDate: run.requestedTradeDate ?? undefined,
+  }), []);
+
+  const refreshScreeningRunList = useCallback(
+    async ({ resumeActive = false, silent = false }: { resumeActive?: boolean; silent?: boolean } = {}) => {
+      if (!silent) {
+        setScreeningRunListLoading(true);
+      }
+      try {
+        const data = await momentumScreenerApi.listRuns(6, 'standard');
+        setScreeningQueuedRuns(data.queued.items);
+        setScreeningRunHistory(data.history.items);
+
+        if (resumeActive && !activeScreeningRunIdRef.current && data.currentRunning) {
+          const payload = buildPayloadFromRun(data.currentRunning);
+          setLastSubmittedPayload(payload);
+          setScreeningRun(data.currentRunning);
+          setScreeningRunMessage('已恢复上次未完成的筛选任务，页面会继续跟踪进度。');
+          setLoading(true);
+        }
+      } catch {
+        if (!silent) {
+          setScreeningQueuedRuns([]);
+          setScreeningRunHistory([]);
+        }
+      } finally {
+        if (!silent) {
+          setScreeningRunListLoading(false);
+        }
+      }
+    },
+    [buildPayloadFromRun],
+  );
+
+  const loadAggressiveSupplement = useCallback(async (payload: MomentumScreenerRequest) => {
     setAggressiveLoading(true);
     setAggressiveError(null);
 
@@ -1878,11 +1975,66 @@ const MomentumScreenerPage: React.FC = () => {
     } finally {
       setAggressiveLoading(false);
     }
-  };
+  }, []);
+
+  const applyCompletedScreeningRun = useCallback(async (
+    run: MomentumScreeningRunResponse,
+    payload: MomentumScreenerRequest,
+  ) => {
+    const data = await momentumScreenerApi.getRunResult(run.runId);
+    resolvedRunIdRef.current = run.runId;
+    setScreeningRun(run);
+    setScreeningRunMessage(run.status === 'completed' ? '真实性优先任务已完成，结果已同步到下方视图。' : null);
+    setResponse(data.screening);
+    setDecision(data.decision);
+    setLastSubmittedPayload(payload);
+    setLoading(false);
+    void loadAggressiveSupplement(payload);
+    void refreshScreeningRunList({ silent: true });
+  }, [loadAggressiveSupplement, refreshScreeningRunList]);
+
+  const restoreScreeningRun = useCallback(async (
+    run: MomentumScreeningRunResponse,
+    options: { manual?: boolean } = {},
+  ) => {
+    const payload = buildPayloadFromRun(run);
+    setLastSubmittedPayload(payload);
+    setSelectedResult(null);
+    setError(null);
+    setIntradaySignal(null);
+    setSnapshotAssist(null);
+    setIntradayError(null);
+
+    if (run.status === 'completed' && run.resultAvailable) {
+      resolvedRunIdRef.current = run.runId;
+      await applyCompletedScreeningRun(run, payload);
+      if (options.manual) {
+        setScreeningRunMessage('已加载历史筛选任务结果。');
+      }
+      return;
+    }
+
+    resolvedRunIdRef.current = null;
+    setResponse(null);
+    setDecision(null);
+    setAggressiveResponse(null);
+    setScreeningRun(run);
+    setLoading(run.status === 'queued' || run.status === 'running');
+    setScreeningRunMessage(
+      run.status === 'running'
+        ? '已切换到进行中的筛选任务，页面会继续跟踪进度。'
+        : run.status === 'queued'
+          ? '已切换到排队中的筛选任务，等待前序任务完成后继续。'
+          : run.status === 'failed'
+            ? run.errorMessage ?? '该筛选任务执行失败。'
+            : '该筛选任务已取消。',
+    );
+  }, [applyCompletedScreeningRun, buildPayloadFromRun]);
 
   const runScreening = async (nextForm = form) => {
     setLoading(true);
     setError(null);
+    setResponse(null);
     setDecision(null);
     setIntradaySignal(null);
     setSnapshotAssist(null);
@@ -1890,24 +2042,147 @@ const MomentumScreenerPage: React.FC = () => {
     setSelectedResult(null);
     setAggressiveResponse(null);
     setAggressiveError(null);
+    setScreeningRun(null);
+    setScreeningRunMessage(null);
+    resolvedRunIdRef.current = null;
 
     const payload = buildScreeningPayload(nextForm);
     setLastSubmittedPayload(payload);
 
     try {
-      const data = await momentumScreenerApi.screenWithDecision(payload);
-      setResponse(data.screening);
-      setDecision(data.decision);
-      void loadAggressiveSupplement(payload);
+      const created = await momentumScreenerApi.createRun({
+        ...payload,
+        truthMode: 'full',
+        useSectorContext: true,
+      });
+      setScreeningRun(created.run);
+      setScreeningRunMessage(created.message);
+      void refreshScreeningRunList({ silent: true });
+      if (created.run.status === 'completed' && created.run.resultAvailable) {
+        resolvedRunIdRef.current = created.run.runId;
+        try {
+          await applyCompletedScreeningRun(created.run, payload);
+        } catch (err) {
+          resolvedRunIdRef.current = null;
+          throw err;
+        }
+      }
     } catch (err) {
+      setLoading(false);
       setError(getParsedApiError(err));
       setResponse(null);
       setDecision(null);
       setAggressiveResponse(null);
-    } finally {
-      setLoading(false);
+      setScreeningRun(null);
     }
   };
+
+  const handleCancelScreeningRun = async () => {
+    if (!screeningRun || (screeningRun.status !== 'queued' && screeningRun.status !== 'running')) {
+      return;
+    }
+
+    try {
+      const updated = await momentumScreenerApi.cancelRun(screeningRun.runId);
+      setScreeningRun(updated);
+      setScreeningRunMessage(
+        updated.status === 'cancelled' ? '筛选任务已取消。' : '筛选任务取消请求已提交，当前阶段结束后会自动停止。',
+      );
+      if (updated.status === 'cancelled') {
+        setLoading(false);
+      }
+      void refreshScreeningRunList({ silent: true });
+    } catch (err) {
+      setError(getParsedApiError(err));
+    }
+  };
+
+  useEffect(() => {
+    if (!screeningRun) {
+      return;
+    }
+
+    if (screeningRun.status === 'completed' && screeningRun.resultAvailable) {
+      if (resolvedRunIdRef.current === screeningRun.runId) {
+        return;
+      }
+
+      let cancelled = false;
+      const payload = lastSubmittedPayload;
+      if (!payload) {
+        return;
+      }
+      resolvedRunIdRef.current = screeningRun.runId;
+
+      void (async () => {
+        try {
+          await applyCompletedScreeningRun(screeningRun, payload);
+        } catch (err) {
+          if (cancelled) {
+            return;
+          }
+          resolvedRunIdRef.current = null;
+          setLoading(false);
+          setError(getParsedApiError(err));
+        }
+      })();
+
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    if (screeningRun.status === 'failed' || screeningRun.status === 'cancelled') {
+      setLoading(false);
+      setScreeningRunMessage(
+        screeningRun.status === 'cancelled'
+          ? '筛选任务已取消。'
+          : screeningRun.errorMessage ?? '筛选任务执行失败，请稍后重试。',
+      );
+      if (screeningRun.status === 'failed') {
+        setError(
+          createParsedApiError({
+            title: '筛选任务失败',
+            message: screeningRun.errorMessage ?? '筛选任务执行失败，请稍后重试。',
+            rawMessage: screeningRun.errorMessage ?? '筛选任务执行失败',
+            category: 'http_error',
+          }),
+        );
+      }
+      return;
+    }
+
+    if (screeningRun.status === 'completed') {
+      setLoading(false);
+      setScreeningRunMessage('筛选任务已完成，但结果尚未就绪，请稍后刷新任务状态。');
+      return;
+    }
+
+    if (screeningRun.status !== 'queued' && screeningRun.status !== 'running') {
+      return;
+    }
+
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      try {
+        const latest = await momentumScreenerApi.getRun(screeningRun.runId);
+        if (!cancelled) {
+          setScreeningRun(latest);
+        }
+      } catch (err) {
+        if (cancelled) {
+          return;
+        }
+        setLoading(false);
+        setError(getParsedApiError(err));
+      }
+    }, SCREENING_RUN_POLL_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [applyCompletedScreeningRun, lastSubmittedPayload, screeningRun]);
 
   const handleRefreshDecision = async () => {
     if (!lastSubmittedPayload || !decision) {
@@ -1985,6 +2260,10 @@ const MomentumScreenerPage: React.FC = () => {
       cancelled = true;
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    void refreshScreeningRunList({ resumeActive: true });
+  }, [refreshScreeningRunList]);
 
   const sortedResults = useMemo(
     () => (response ? sortResults(response.results, sortBy) : []),
@@ -2069,6 +2348,25 @@ const MomentumScreenerPage: React.FC = () => {
   const averageRankScore = sortedResults.length
     ? sortedResults.reduce((sum, item) => sum + item.rankScore, 0) / sortedResults.length
     : 0;
+  const screeningRunProgressSummary = useMemo(
+    () => (screeningRun ? buildScreeningRunProgressSummary(screeningRun) : null),
+    [screeningRun],
+  );
+  const screeningRunProgressPct = screeningRun?.progress.progressPct ?? 0;
+  const screeningRunCanCancel = screeningRun?.status === 'queued' || screeningRun?.status === 'running';
+  const screeningRunStageLabel =
+    screeningRun?.currentStageLabel ??
+    (screeningRun?.status === 'completed'
+      ? '结果落盘完成'
+      : screeningRun?.status === 'cancelled'
+        ? '任务已停止'
+        : screeningRun?.status === 'failed'
+          ? '任务执行失败'
+          : screeningRun?.cancelRequested
+            ? '取消请求处理中'
+            : '等待任务进入下一阶段');
+  const visibleRunHistory = screeningRunHistory.slice(0, 4);
+  const hasRunRecords = screeningQueuedRuns.length > 0 || visibleRunHistory.length > 0;
   const isBusy = loading || decisionRefreshing || intradayLoading;
 
   const buildAiTargetBase = (): Pick<
@@ -2197,7 +2495,6 @@ const MomentumScreenerPage: React.FC = () => {
   };
 
   const handleRestoreSystemDefaults = async () => {
-    setLoading(true);
     setError(null);
 
     try {
@@ -2209,8 +2506,6 @@ const MomentumScreenerPage: React.FC = () => {
       setCopyFeedback('已恢复系统默认参数');
     } catch (err) {
       setError(getParsedApiError(err));
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -2298,7 +2593,7 @@ const MomentumScreenerPage: React.FC = () => {
                 className="flex-1"
                 disabled={isBusy}
                 isLoading={loading}
-                loadingText="筛选中..."
+                loadingText="任务执行中..."
                 onClick={() => void runScreening()}
               >
                 执行筛选
@@ -2325,6 +2620,154 @@ const MomentumScreenerPage: React.FC = () => {
               >
                 重置
               </Button>
+            </div>
+            {screeningRun ? (
+              <div
+                data-testid="momentum-screening-run-panel"
+                className="rounded-2xl border border-cyan/20 bg-cyan/5 px-4 py-3"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="text-sm font-medium text-foreground">真实性优先任务</p>
+                      <Badge variant={screeningRunBadgeVariant(screeningRun.status)}>
+                        {screeningRunStatusLabel(screeningRun.status)}
+                      </Badge>
+                      <Badge variant="default">{screeningRun.truthMode === 'full' ? 'Full Truth' : 'Light'}</Badge>
+                    </div>
+                    <p className="mt-2 text-xs leading-6 text-secondary-text">{screeningRunStageLabel}</p>
+                  </div>
+                  {screeningRunCanCancel ? (
+                    <Button
+                      data-testid="momentum-screening-run-cancel"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => void handleCancelScreeningRun()}
+                    >
+                      取消任务
+                    </Button>
+                  ) : null}
+                </div>
+                <div className="mt-3 h-2 overflow-hidden rounded-full bg-hover/40">
+                  <div
+                    data-testid="momentum-screening-run-progress-bar"
+                    className="h-full rounded-full bg-cyan transition-all duration-300"
+                    style={{ width: `${Math.max(6, Math.min(100, screeningRunProgressPct || 0))}%` }}
+                  />
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2 text-xs text-secondary-text">
+                  <span>任务号 {screeningRun.runId.slice(-8)}</span>
+                  {screeningRun.requestedTradeDate ? <span>请求日期 {screeningRun.requestedTradeDate}</span> : null}
+                  {screeningRun.tradeDate ? <span>实际交易日 {screeningRun.tradeDate}</span> : null}
+                </div>
+                {screeningRunProgressSummary ? (
+                  <p className="mt-2 text-xs leading-6 text-secondary-text">{screeningRunProgressSummary}</p>
+                ) : null}
+                {screeningRunMessage ? (
+                  <p
+                    data-testid="momentum-screening-run-message"
+                    className="mt-2 text-xs leading-6 text-secondary-text"
+                  >
+                    {screeningRunMessage}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+            <div
+              data-testid="momentum-screening-run-history"
+              className="rounded-2xl border border-border/50 bg-hover/10 px-4 py-3"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-sm font-medium text-foreground">最近任务</p>
+                  <p className="mt-1 text-xs leading-6 text-secondary-text">
+                    页面重开后也能继续跟踪正在运行的筛选任务，并快速加载最近一次结果。
+                  </p>
+                </div>
+                <Button
+                  data-testid="momentum-screening-run-history-refresh"
+                  variant="ghost"
+                  size="sm"
+                  disabled={screeningRunListLoading}
+                  onClick={() => void refreshScreeningRunList()}
+                >
+                  <RefreshCw className="h-4 w-4" />
+                  刷新
+                </Button>
+              </div>
+              {!hasRunRecords ? (
+                <p className="mt-3 text-xs leading-6 text-secondary-text">
+                  暂无可恢复的筛选任务记录，执行一次真实性优先任务后会显示在这里。
+                </p>
+              ) : (
+                <div className="mt-3 space-y-3">
+                  {screeningQueuedRuns.map((run) => (
+                    <div
+                      key={run.runId}
+                      className="rounded-2xl border border-border/50 bg-card/40 px-3 py-3"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge variant={screeningRunBadgeVariant(run.status)}>
+                            {screeningRunStatusLabel(run.status)}
+                          </Badge>
+                          <span className="text-xs text-secondary-text">{run.currentStageLabel ?? '等待调度'}</span>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => void restoreScreeningRun(run, { manual: true })}
+                        >
+                          继续跟踪
+                        </Button>
+                      </div>
+                      <p className="mt-2 text-xs leading-6 text-secondary-text">
+                        {run.requestedTradeDate ? `请求日期 ${run.requestedTradeDate}` : '请求日期 latest'} ·
+                        {' '}任务号 {run.runId.slice(-8)}
+                      </p>
+                      {buildScreeningRunProgressSummary(run) ? (
+                        <p className="mt-1 text-xs leading-6 text-secondary-text">
+                          {buildScreeningRunProgressSummary(run)}
+                        </p>
+                      ) : null}
+                    </div>
+                  ))}
+                  {visibleRunHistory.map((run) => (
+                    <div
+                      key={run.runId}
+                      className="rounded-2xl border border-border/50 bg-card/40 px-3 py-3"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge variant={screeningRunBadgeVariant(run.status)}>
+                            {screeningRunStatusLabel(run.status)}
+                          </Badge>
+                          {run.tradeDate ? <span className="text-xs text-secondary-text">交易日 {run.tradeDate}</span> : null}
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled={!run.resultAvailable && run.status !== 'failed' && run.status !== 'cancelled'}
+                          onClick={() => void restoreScreeningRun(run, { manual: true })}
+                        >
+                          {run.status === 'completed' ? '加载结果' : run.status === 'failed' ? '查看失败' : '查看状态'}
+                        </Button>
+                      </div>
+                      <p className="mt-2 text-xs leading-6 text-secondary-text">
+                        {run.requestedTradeDate ? `请求日期 ${run.requestedTradeDate}` : '请求日期 latest'} ·
+                        {' '}更新时间 {formatRunTimestamp(run.updatedAt) ?? '--'}
+                      </p>
+                      {run.errorMessage ? (
+                        <p className="mt-1 text-xs leading-6 text-secondary-text">{run.errorMessage}</p>
+                      ) : buildScreeningRunProgressSummary(run) ? (
+                        <p className="mt-1 text-xs leading-6 text-secondary-text">
+                          {buildScreeningRunProgressSummary(run)}
+                        </p>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </Card>

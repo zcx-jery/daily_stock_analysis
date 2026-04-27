@@ -108,6 +108,50 @@ flowchart TD
 - `Aggressive` 仍是进攻补充观察层，不参与官方 Top3 最终收口。
 - 主线增强基于完整排序集，不受页面展示数量变化影响。
 
+### 4.1 强势筛选任务化执行总览
+
+当强势筛选正式启用 V1.3 真值链路后，同步 HTTP 请求不再承担“等待完整真值结果并直接返回”的职责，而是调整为：
+
+1. `POST` 请求创建或复用一条 `screening run`
+2. 后台按阶段串行执行筛选
+3. 前端轮询 run 状态与进度
+4. run 完成后再加载最终结果
+
+推荐新增独立的运行时服务与仓储，而不是继续把长耗时真值筛选塞回同步 `MomentumScreenerService.screen()`：
+
+- `src/services/momentum_screening_run_service.py`
+- `src/repositories/momentum_screening_run_repo.py`
+
+其职责边界为：
+
+- `MomentumScreenerService` 继续负责“单次筛选怎么计算”
+- `MomentumScreeningRunService` 负责“任务怎么创建、复用、排队、续跑、取消、汇报进度”
+
+### 4.2 run 阶段与进度口径
+
+建议 run 至少拆成以下阶段：
+
+| 阶段 key | 含义 | 是否产出可复用缓存 |
+| --- | --- | --- |
+| `preparing` | 参数归一、版本冻结、run 复用检查 | 否 |
+| `trade_snapshot` | 交易日解析与快照加载 | 是 |
+| `candidate_pool` | 候选池计算 | 是 |
+| `sector_context` | 板块映射、行业上下文、旧缓存命中统计 | 是 |
+| `v13_context` | V1.3 资源拉取、主线增强上下文构建 | 是 |
+| `scoring` | Standard / Aggressive 排序 | 是 |
+| `secondary_decision` | 二次决策与补充解释 | 是 |
+| `result_persist` | 最终结果落盘与缓存固化 | 是 |
+| `completed / failed / cancelled` | 终态 | 最终结果或错误 |
+
+每个阶段都应刷新：
+
+- `current_stage_key`
+- `current_stage_label`
+- `progress_pct`
+- `heartbeat_at`
+- `processed_item_count / total_item_count`（如适用）
+- `cache_hits` / `cache_misses` 摘要
+
 ## 5. 数据层设计
 
 ### 5.1 新增数据适配能力
@@ -264,6 +308,29 @@ V1.3 数据应分资源缓存，避免一次缺失拖垮全部能力。
 | 聚合上下文 | `momentum:v13:context:{trade_date}:{hash(ts_codes)}` | 依赖上游资源版本 |
 
 第一版优先使用现有磁盘 / 内存缓存能力；如后续切 Redis，应保持 key 语义不变。
+
+除了资源级缓存，还应增加阶段产物缓存，避免任务失败、取消或服务重启后整条真值链路从头重算：
+
+| 阶段产物 | 建议 key | 说明 |
+| --- | --- | --- |
+| 交易日快照 | `momentum:screening:trade_snapshot:{trade_date}:{entry_baseline_version}:{market_scope_version}` | 复用现有快照缓存语义 |
+| 候选池 | `momentum:screening:candidate_pool:{hash(params+versions)}` | 同参数任务可直接跳过候选池计算 |
+| 板块上下文 | `momentum:screening:sector_context:{trade_date}:{hash(ts_codes)}` | 避免重复构建行业和板块映射 |
+| V1.3 上下文 | `momentum:screening:v13_context:{trade_date}:{truth_mode}:{hash(ts_codes)}` | 真值模式与轻量模式必须分开缓存 |
+| 排序结果 | `momentum:screening:ranked_results:{hash(params+versions+truth_mode)}` | 完全同参时可直接复用最终排序 |
+| 二次决策结果 | `momentum:screening:decision:{hash(ranked_results_version+gate_version)}` | 避免最终展示层重复重算 |
+
+最终复用键必须包含：
+
+- `trade_date`
+- `profile`
+- `min_change_pct / min_amount / min_turnover`
+- `exclude_st / main_board_only / use_sector_context`
+- `entry_baseline_version`
+- `market_scope_version`
+- `screening_cache_version`
+- `truth_mode`
+- 必要时追加 `max_scored_candidates`
 
 ### 5.5 降级策略
 
@@ -487,11 +554,16 @@ V1.3 仍从完整排序集收口，不从页面当前 TopN 截断结果收口。
 
 ### 7.1 Endpoint 策略
 
-第一版不新增独立入口，复用现有 endpoint：
+真实性优先模式下，强势筛选应新增独立 run 入口；同步 endpoint 只保留兼容或缓存命中快速返回能力。
 
 | Endpoint | V1.3 改造 |
 | --- | --- |
-| `POST /api/v1/stocks/screener/momentum` | 返回候选池时可附带 `entry_baseline_version / market_scope_version` |
+| `POST /api/v1/stocks/screener/momentum` | 兼容旧调用；仅在显式要求同步模式或命中完整缓存时直接返回结果，不再承担 full-truth 长耗时执行 |
+| `POST /api/v1/stocks/screener/momentum/runs` | 创建或复用一条 `screening run`，立即返回 `run_id / status / current_stage_key` |
+| `GET /api/v1/stocks/screener/momentum/runs` | 返回最近任务列表，支持页面重新进入后继续回捞 |
+| `GET /api/v1/stocks/screener/momentum/runs/{run_id}` | 返回任务状态、阶段、进度、heartbeat、缓存命中摘要 |
+| `GET /api/v1/stocks/screener/momentum/runs/{run_id}/result` | 任务完成后返回最终筛选结果与二次决策结果 |
+| `POST /api/v1/stocks/screener/momentum/runs/{run_id}/cancel` | 请求取消长任务 |
 | `POST /api/v1/stocks/screener/momentum/secondary-decision` | 返回 V1.3 主线增强字段 |
 | `POST /api/v1/stocks/screener/momentum/intraday-signal` | 返回 `snapshot_assist`，并明确低置信度 |
 | `POST /api/v1/stocks/screener/momentum/backtest` | 创建回测时默认走 Standard 官方链路，并冻结 V1.3 增强数据 |
@@ -557,6 +629,36 @@ v13_data_status: dict = {}
 
 ```python
 snapshot_assist: Optional[MomentumSnapshotAssist] = None
+```
+
+任务化筛选建议新增：
+
+```python
+class MomentumScreeningRunProgress(BaseModel):
+    progress_pct: float = 0.0
+    processed_item_count: int = 0
+    total_item_count: int = 0
+    cache_hits: dict[str, int] = {}
+    cache_misses: dict[str, int] = {}
+
+class MomentumScreeningRun(BaseModel):
+    run_id: str
+    status: str
+    truth_mode: str = "full"
+    current_stage_key: Optional[str] = None
+    current_stage_label: Optional[str] = None
+    created_new: Optional[bool] = None
+    reused_from_run_id: Optional[str] = None
+    result_available: bool = False
+    progress: MomentumScreeningRunProgress
+    heartbeat_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+
+class MomentumScreeningRunCreateResponse(BaseModel):
+    created_new: bool
+    message: str
+    run: MomentumScreeningRun
 ```
 
 ### 7.3 兼容性
@@ -659,6 +761,14 @@ apps/dsa-web/src/components/screener/
 -> Aggressive 折叠补充层
 ```
 
+任务化筛选上线后，强势筛选页还应新增：
+
+- 当前任务进度条
+- 当前阶段文案与最近刷新时间
+- 最近任务列表
+- 缓存复用提示（例如“候选池已复用 / V1.3 context 已复用”）
+- 失败 / 取消 / 降级状态提示
+
 ### 9.2 回测页面
 
 在 `apps/dsa-web/src/components/history/MomentumBacktestPanel.tsx` 中新增：
@@ -720,6 +830,9 @@ AI 输出优先解释：
 | --- | --- |
 | 收盘后二次决策首次计算 | 尽量控制在 `30-60` 秒内，允许后台补齐 |
 | 缓存命中后二次决策 | `5` 秒内返回 |
+| 强势筛选 full-truth 创建任务 | `3` 秒内返回 `run_id` 与初始阶段 |
+| 强势筛选 full-truth 进度刷新 | `5` 秒内至少刷新一次 heartbeat 或阶段文案 |
+| 强势筛选 full-truth 完整耗时 | 不强绑 HTTP 网关超时，以进度可见、阶段可恢复、结果可复用为第一目标 |
 | 盘中快照辅助 | `3-10` 秒内返回 |
 | 60 交易日回测 | 后台串行执行，页面可刷新进度 |
 
@@ -727,6 +840,7 @@ AI 输出优先解释：
 
 - 单个增强接口失败不能导致强势筛选主链路失败。
 - 所有增强字段必须可降级。
+- 强势筛选 run 在服务重启后必须能识别“继续执行 / 已取消 / 已完成可复用”的真实状态，不能把长任务静默打回初始态。
 - 回测任务继续保持串行模式，避免并发任务压垮 Tushare 配额。
 - 长任务必须持续更新阶段和进度，页面刷新能看到任务仍在运行。
 - 缓存 key 必须包含 `trade_date`、资源名和必要参数，避免跨日期污染。
