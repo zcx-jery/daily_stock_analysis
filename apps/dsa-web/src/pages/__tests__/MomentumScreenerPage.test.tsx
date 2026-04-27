@@ -939,12 +939,48 @@ describe('MomentumScreenerPage', () => {
 
     const panel = await screen.findByTestId('momentum-screening-run-panel');
     expect(within(panel).getByText('运行中')).toBeInTheDocument();
-    expect(within(panel).getByText('执行评分排序')).toBeInTheDocument();
+    expect(within(panel).getAllByText('执行评分排序').length).toBeGreaterThan(0);
     expect(within(panel).getByText(/已处理 12\/25，candidate_pool 命中 1/)).toBeInTheDocument();
+    expect(within(panel).getByTestId('momentum-screening-run-heartbeat')).not.toHaveTextContent('--');
+    expect(within(panel).getByTestId('momentum-screening-run-duration')).not.toHaveTextContent('--');
+    expect(within(panel).getByTestId('momentum-screening-run-stage-hint')).toHaveTextContent(
+      '候选池和题材画像已经齐了，后台正在执行正式评分、排序和结果收口。',
+    );
     expect(within(panel).getByTestId('momentum-screening-run-message')).toHaveTextContent(
       '已恢复上次未完成的筛选任务，页面会继续跟踪进度。',
     );
     expect(mockCreateRun).not.toHaveBeenCalled();
+  });
+
+  it('explains why full-truth candidate collection can stay at full processed count before finishing', async () => {
+    mockListRuns.mockResolvedValue(
+      buildRunListResponse({
+        currentRunning: buildScreeningRun({
+          status: 'running',
+          resultAvailable: false,
+          tradeDate: '2026-04-27',
+          currentStageKey: 'candidate_pool',
+          currentStageLabel: '加载 V1.3 真实题材画像',
+          progress: {
+            progressPct: 66,
+            processedItemCount: 385,
+            totalItemCount: 385,
+            cacheHits: {},
+            cacheMisses: {},
+          },
+        }),
+      }),
+    );
+
+    render(<MomentumScreenerPage />);
+
+    const panel = await screen.findByTestId('momentum-screening-run-panel');
+    expect(within(panel).getAllByText('加载 V1.3 真实题材画像').length).toBeGreaterThan(0);
+    expect(within(panel).getByText('66.0%')).toBeInTheDocument();
+    expect(within(panel).getByText(/已处理 385\/385/)).toBeInTheDocument();
+    expect(within(panel).getByTestId('momentum-screening-run-stage-hint')).toHaveTextContent(
+      '会出现“385/385 但还没结束”的状态',
+    );
   });
 
   it('shows recent run history and can load a completed task result', async () => {
@@ -991,7 +1027,7 @@ describe('MomentumScreenerPage', () => {
     expect(within(panel).getByText('已完成')).toBeInTheDocument();
     expect(within(panel).getByText('Full Truth')).toBeInTheDocument();
     expect(within(panel).getByText(/任务号 .*run-001/)).toBeInTheDocument();
-    expect(within(panel).getByText('结果落盘完成')).toBeInTheDocument();
+    expect(within(panel).getAllByText('结果落盘完成').length).toBeGreaterThan(0);
     expect(within(panel).getByText(/已处理 30\/30/)).toBeInTheDocument();
     expect(within(panel).getByText('实际交易日 2026-04-10')).toBeInTheDocument();
     expect(within(panel).getByTestId('momentum-screening-run-message')).toHaveTextContent(
@@ -1039,7 +1075,7 @@ describe('MomentumScreenerPage', () => {
 
     const panel = await screen.findByTestId('momentum-screening-run-panel');
     expect(within(panel).getByText('排队中')).toBeInTheDocument();
-    expect(within(panel).getByText('候选池筛选中')).toBeInTheDocument();
+    expect(within(panel).getAllByText('候选池筛选中').length).toBeGreaterThan(0);
     expect(within(panel).getByText(/已处理 3\/25，candidate_pool 命中 1/)).toBeInTheDocument();
     expect(within(panel).getByRole('button', { name: '取消任务' })).toBeInTheDocument();
 

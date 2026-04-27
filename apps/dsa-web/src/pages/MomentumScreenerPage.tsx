@@ -381,6 +381,91 @@ function buildScreeningRunProgressSummary(run: MomentumScreeningRunResponse): st
   return parts.length > 0 ? parts.join('，') : null;
 }
 
+function formatDurationLabel(startedAt?: string | null, finishedAt?: string | null): string | null {
+  if (!startedAt) {
+    return null;
+  }
+  const started = new Date(startedAt);
+  if (Number.isNaN(started.getTime())) {
+    return null;
+  }
+  const finished = finishedAt ? new Date(finishedAt) : new Date();
+  if (Number.isNaN(finished.getTime())) {
+    return null;
+  }
+  const totalSeconds = Math.max(0, Math.floor((finished.getTime() - started.getTime()) / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}小时${minutes}分钟`;
+  }
+  if (minutes > 0) {
+    return `${minutes}分钟${seconds}秒`;
+  }
+  return `${seconds}秒`;
+}
+
+function buildScreeningRunStageHint(run: MomentumScreeningRunResponse): string | null {
+  const stageKey = run.currentStageKey ?? '';
+  const stageLabel = run.currentStageLabel ?? '';
+  const isFullTruth = run.truthMode === 'full';
+  const processedCount = run.progress.processedItemCount ?? 0;
+  const totalCount = run.progress.totalItemCount ?? 0;
+
+  if (run.status === 'queued') {
+    return '前面还有真实性优先任务在执行，当前任务会在工作线程空出来后自动接管。';
+  }
+  if (run.status === 'cancelled') {
+    return '任务已停止，当前页面保留了最后一次已知进度，方便你判断停在了哪里。';
+  }
+  if (run.status === 'failed') {
+    return run.errorMessage ?? '任务执行失败，当前页面保留了失败前最后一次心跳与阶段信息。';
+  }
+  if (run.status === 'completed') {
+    return run.resultAvailable
+      ? '真实性优先任务已经全部完成，筛选结果和二次决策已落到下方视图。'
+      : '任务已结束，但结果文件还没准备好，刷新任务状态后会自动继续加载。';
+  }
+  if (stageKey === 'preparing') {
+    return '正在校验交易日、统一参数，并准备官方候选池入口。';
+  }
+  if (stageKey === 'trade_snapshot') {
+    return '正在加载当日行情、涨停和成交快照，为候选池与题材判断准备底稿。';
+  }
+  if (stageKey === 'sector_context') {
+    return '正在整理板块、题材与资金映射，这一步会决定“资金主攻题材”的解释底稿。';
+  }
+  if (stageKey === 'scoring') {
+    return '候选池和题材画像已经齐了，后台正在执行正式评分、排序和结果收口。';
+  }
+  if (stageKey === 'secondary_decision') {
+    return '排序已经完成，当前在生成主线、默认组合、买点与风险解释。';
+  }
+  if (stageKey === 'result_persist') {
+    return '结果已经算完，正在把筛选结果、诊断和二次决策写回任务记录。';
+  }
+  if (stageKey === 'cancel_requested') {
+    return '取消请求已经提交；当前子步骤收尾后，任务会自动进入已取消状态。';
+  }
+  if (stageKey === 'candidate_pool') {
+    if (isFullTruth && stageLabel.includes('V1.3')) {
+      if (totalCount > 0 && processedCount >= totalCount && run.progress.progressPct < 100) {
+        return '候选样本数量已经收齐，但后台还在把 V1.3 题材成分、资金快照和正式评分合并进结果，所以会出现“385/385 但还没结束”的状态。';
+      }
+      return '正在构建候选池，并补齐 Full Truth 所需的 V1.3 真实题材画像、资金快照和成分映射。';
+    }
+    return '正在按官方统一入口构建候选池，并补齐当日基础快照。';
+  }
+  if (stageKey === 'v13_context' || stageLabel.includes('V1.3')) {
+    return isFullTruth
+      ? '正在汇总 V1.3 真实题材画像；这一步会继续拉取真实成分、资金与主线映射。'
+      : '正在补齐轻量 V1.3 上下文，用于给候选池和排序提供题材解释。';
+  }
+  return null;
+}
+
 function formatRunTimestamp(value?: string | null): string | null {
   if (!value) {
     return null;
@@ -2352,6 +2437,10 @@ const MomentumScreenerPage: React.FC = () => {
     () => (screeningRun ? buildScreeningRunProgressSummary(screeningRun) : null),
     [screeningRun],
   );
+  const screeningRunStageHint = useMemo(
+    () => (screeningRun ? buildScreeningRunStageHint(screeningRun) : null),
+    [screeningRun],
+  );
   const screeningRunProgressPct = screeningRun?.progress.progressPct ?? 0;
   const screeningRunCanCancel = screeningRun?.status === 'queued' || screeningRun?.status === 'running';
   const screeningRunStageLabel =
@@ -2365,6 +2454,10 @@ const MomentumScreenerPage: React.FC = () => {
           : screeningRun?.cancelRequested
             ? '取消请求处理中'
             : '等待任务进入下一阶段');
+  const screeningRunHeartbeatLabel = screeningRun ? formatRunTimestamp(screeningRun.heartbeatAt) : null;
+  const screeningRunDurationLabel = screeningRun
+    ? formatDurationLabel(screeningRun.startedAt, screeningRun.finishedAt)
+    : null;
   const visibleRunHistory = screeningRunHistory.slice(0, 4);
   const hasRunRecords = screeningQueuedRuns.length > 0 || visibleRunHistory.length > 0;
   const isBusy = loading || decisionRefreshing || intradayLoading;
@@ -2655,6 +2748,34 @@ const MomentumScreenerPage: React.FC = () => {
                     style={{ width: `${Math.max(6, Math.min(100, screeningRunProgressPct || 0))}%` }}
                   />
                 </div>
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  <div className="rounded-2xl border border-border/40 bg-card/35 px-3 py-2">
+                    <p className="text-[11px] uppercase tracking-wide text-tertiary-text">当前阶段</p>
+                    <p className="mt-1 text-sm text-foreground">{screeningRunStageLabel}</p>
+                  </div>
+                  <div className="rounded-2xl border border-border/40 bg-card/35 px-3 py-2">
+                    <p className="text-[11px] uppercase tracking-wide text-tertiary-text">完成度</p>
+                    <p className="mt-1 text-sm text-foreground">{screeningRunProgressPct.toFixed(1)}%</p>
+                  </div>
+                  <div className="rounded-2xl border border-border/40 bg-card/35 px-3 py-2">
+                    <p className="text-[11px] uppercase tracking-wide text-tertiary-text">最近心跳</p>
+                    <p
+                      data-testid="momentum-screening-run-heartbeat"
+                      className="mt-1 text-sm text-foreground"
+                    >
+                      {screeningRunHeartbeatLabel ?? '--'}
+                    </p>
+                  </div>
+                  <div className="rounded-2xl border border-border/40 bg-card/35 px-3 py-2">
+                    <p className="text-[11px] uppercase tracking-wide text-tertiary-text">已运行</p>
+                    <p
+                      data-testid="momentum-screening-run-duration"
+                      className="mt-1 text-sm text-foreground"
+                    >
+                      {screeningRunDurationLabel ?? '--'}
+                    </p>
+                  </div>
+                </div>
                 <div className="mt-3 flex flex-wrap gap-2 text-xs text-secondary-text">
                   <span>任务号 {screeningRun.runId.slice(-8)}</span>
                   {screeningRun.requestedTradeDate ? <span>请求日期 {screeningRun.requestedTradeDate}</span> : null}
@@ -2662,6 +2783,14 @@ const MomentumScreenerPage: React.FC = () => {
                 </div>
                 {screeningRunProgressSummary ? (
                   <p className="mt-2 text-xs leading-6 text-secondary-text">{screeningRunProgressSummary}</p>
+                ) : null}
+                {screeningRunStageHint ? (
+                  <p
+                    data-testid="momentum-screening-run-stage-hint"
+                    className="mt-2 text-xs leading-6 text-secondary-text"
+                  >
+                    {screeningRunStageHint}
+                  </p>
                 ) : null}
                 {screeningRunMessage ? (
                   <p

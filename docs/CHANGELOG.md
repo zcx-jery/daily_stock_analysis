@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [改进] 强势筛选任务状态卡补充当前阶段说明、最近心跳、已运行时长和 Full Truth 阶段提示，减少“看起来卡住了”的误判。
 - [修复] V1 强势筛选回测创建时不再复用已取消或失败的同参数 run，避免长任务取消后无法重新发起同区间官方回测。
 - [修复] 测试服手动部署 workflow 为 SSH 执行补充 `command_timeout: 30m`，避免远端 Docker 重建较慢时被 10 分钟默认超时提前中断。
 - [改进] V1.3 数据聚合服务开始按日/全表快照化拉取 `dc_member`、`ths_member`、`ths_index` 和 `cyq_perf`，优先复用 Tushare 的批量分页能力，仅保留 `cyq_chips` 逐股真查，以在不牺牲真实性和多维度性的前提下缩短 full truth 任务耗时。
