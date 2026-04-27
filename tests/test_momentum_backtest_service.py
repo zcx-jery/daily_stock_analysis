@@ -729,6 +729,39 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
         self.assertLess(latest["processed_trade_dates"], latest["total_trade_dates"])
         self.assertIsNotNone(latest["summary"])
 
+    def test_async_create_does_not_reuse_cancelled_run(self) -> None:
+        self._slow_down_freeze(delay_seconds=0.08)
+
+        created = self.service.create_run_async(
+            start_trade_date="2026-04-08",
+            end_trade_date="2026-04-10",
+            profile="standard",
+            top_n=20,
+        )
+        run_id = created["run"]["run_id"]
+
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            latest = self.service.get_run(run_id)
+            if latest["processed_trade_dates"] >= 1:
+                break
+            time.sleep(0.05)
+
+        self.service.cancel_run(run_id)
+        cancelled = self._wait_for_terminal_status(run_id)
+        self.assertEqual(cancelled["status"], "cancelled")
+
+        restarted = self.service.create_run_async(
+            start_trade_date="2026-04-08",
+            end_trade_date="2026-04-10",
+            profile="standard",
+            top_n=20,
+        )
+
+        self.assertTrue(restarted["created_new"])
+        self.assertNotEqual(restarted["run"]["run_id"], run_id)
+        self.assertIn(restarted["run"]["status"], {"running", "queued"})
+
     def test_async_run_resyncs_total_trade_dates_with_execution_calendar(self) -> None:
         planned_dates = [
             pd.Timestamp("2026-04-08").date(),

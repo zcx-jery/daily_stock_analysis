@@ -105,6 +105,7 @@ class MomentumBacktestRepository:
         engine_version: Optional[str] = None,
         entry_baseline_version: Optional[str] = None,
         market_scope_version: Optional[str] = None,
+        statuses: Optional[Sequence[str]] = None,
     ) -> Optional[MomentumBacktestRun]:
         with self.db.get_session() as session:
             filters = [
@@ -121,6 +122,8 @@ class MomentumBacktestRepository:
                 filters.append(MomentumBacktestRun.entry_baseline_version == entry_baseline_version)
             if market_scope_version:
                 filters.append(MomentumBacktestRun.market_scope_version == market_scope_version)
+            if statuses:
+                filters.append(MomentumBacktestRun.status.in_(list(statuses)))
             return session.execute(
                 select(MomentumBacktestRun)
                 .where(and_(*filters))
