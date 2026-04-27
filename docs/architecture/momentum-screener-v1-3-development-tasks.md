@@ -220,6 +220,45 @@
 - 用户能看见任务正在做什么、做到哪一层、是否已经复用缓存。
 - 同一交易日重复查询时，任务耗时明显下降。
 
+### 7.2 无损快照拉取改造
+
+目标：
+
+- 在不牺牲题材、资金、筹码多维度真实性的前提下，优先把支持批量或分页快照的 Tushare 接口改成快照式抓取。
+- 仅把 `cyq_chips` 保留为逐股真查，并围绕其建立更强的缓存与断点续跑能力。
+
+主要文件：
+
+- `data_provider/tushare_fetcher.py`
+- `src/services/momentum_v13_data_service.py`
+- `src/services/momentum_screener_service.py`
+- `tests/test_tushare_fetcher_v13.py`
+- `tests/test_momentum_v13_data_service.py`
+- `tests/test_momentum_screener_service.py`
+
+后端任务：
+
+1. 将 `moneyflow_ths / moneyflow_dc` 固化为按交易日分页快照抓取，再按 `ts_code` 本地过滤。
+2. 将 `cyq_perf` 从逐股查询改成按交易日分页快照抓取，并保留单股 fallback。
+3. 将 `dc_member` 从逐股 `con_code` 查询改成按交易日分页快照，再本地构建股票到板块映射。
+4. 将 `ths_member` 改成全表分页快照，再本地构建股票到同花顺概念映射。
+5. 将 `ths_index` 改成全表一次拉全，构建 `.TI -> 中文题材名` 字典，不再逐题材循环查询。
+6. 保留 `cyq_chips` 逐股真查，但新增更稳定的 `(trade_date, ts_code)` 持久缓存与断点续跑复用。
+7. 为分页快照统一实现 `limit / offset` 循环，禁止依赖“当前行数刚好没超上限”的偶然状态。
+
+测试任务：
+
+1. `moneyflow_ths / moneyflow_dc` 在单日全量、翻页和按股票过滤三种场景下结果一致。
+2. `cyq_perf` 在按日快照和单股 fallback 两条路径下，对同一股票输出一致。
+3. `dc_member / ths_member / ths_index` 的快照路径能恢复当前题材归因结果，不因抓取方式变化丢失主线映射。
+4. `cyq_chips` 缓存命中后，重复任务不会再次对同一 `(trade_date, ts_code)` 发起外部查询。
+
+验收：
+
+- full truth 模式下的提速主要来自快照化和缓存命中，而不是减少维度。
+- 主线、题材、个股承接和筹码解释口径与改造前保持一致或更完整。
+- 当某个批量能力实测失效时，系统能明确 fallback，而不是静默返回空结果。
+
 ## 8. M3：主线识别与主线评分
 
 优先级：`P0`

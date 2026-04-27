@@ -85,6 +85,8 @@ class MomentumV13DataService:
 
     _shared_resource_cache: Dict[str, Dict[str, Any]] = {}
     _shared_cache_stats: Dict[str, int] = {"hit": 0, "miss": 0, "expired": 0}
+    _SNAPSHOT_PAGE_SIZE = 5000
+    _MAX_SNAPSHOT_PAGES = 20
 
     _DEFAULT_RESOURCE_TTLS = {
         "dc_concept": 30 * 60,
@@ -524,36 +526,25 @@ class MomentumV13DataService:
         return result
 
     def _load_dc_members(self, trade_date: str, ts_codes: List[str]) -> Dict[str, Any]:
-        rows: List[Dict[str, Any]] = []
-        source_status: Dict[str, str] = {}
-        degraded_reasons: List[str] = []
-        for ts_code in ts_codes:
-            key = self._cache_key("dc_member", trade_date, ts_code)
-            cached = self._cache_get(key, self._resource_ttls["dc_member"])
-            if cached is None:
-                cached = self._safe_fetch(
-                    "dc_member",
-                    lambda code=ts_code: self.fetcher.get_dc_members(trade_date, con_code=code),
-                )
-                self._cache_set(key, cached)
-            source_status[ts_code] = str(cached.get("status") or "unknown")
-            rows.extend(_safe_list(cached.get("rows")))
-            if cached.get("is_degraded"):
-                degraded_reasons.extend(
-                    f"{ts_code}:{reason}" for reason in _safe_list(cached.get("degraded_reasons"))
-                )
-
-        status = "ok"
-        if degraded_reasons:
-            status = "partial" if rows else "unavailable"
-        return self._payload(
-            source="tushare.dc_member",
-            trade_date=self._display_trade_date(trade_date),
-            rows=rows,
-            status=status,
-            degraded_reasons=degraded_reasons,
-            extra={"source_status": source_status},
+        fetch_method = self._resolve_fetcher_method("get_dc_members")
+        if fetch_method is None:
+            return self._payload(
+                source="tushare.dc_member",
+                trade_date=self._display_trade_date(trade_date),
+                rows=[],
+                status="unavailable",
+                degraded_reasons=["method_not_supported"],
+            )
+        snapshot = self._load_paginated_resource(
+            resource="dc_member",
+            trade_date=trade_date,
+            cache_parts=[trade_date, "snapshot"],
+            ttl_seconds=self._resource_ttls["dc_member"],
+            fetch_page_fn=lambda limit, offset: fetch_method(trade_date, limit=limit, offset=offset),
         )
+        filtered = self._filter_rows_by_codes(snapshot, ts_codes, field_names=("con_code",))
+        filtered["source_status"] = {ts_code: str(snapshot.get("status") or "unknown") for ts_code in ts_codes}
+        return filtered
 
     def _load_stock_moneyflow_dc(self, trade_date: str, ts_codes: List[str]) -> Dict[str, Any]:
         key = self._cache_key("stock_moneyflow_dc", trade_date)
@@ -592,9 +583,6 @@ class MomentumV13DataService:
         return self._filter_rows_by_ts_codes(cached, ts_codes)
 
     def _load_cyq_perf(self, trade_date: str, ts_codes: List[str]) -> Dict[str, Any]:
-        rows: List[Dict[str, Any]] = []
-        source_status: Dict[str, str] = {}
-        degraded_reasons: List[str] = []
         fetch_method = self._resolve_fetcher_method("get_cyq_perf")
         if fetch_method is None:
             return self._payload(
@@ -604,7 +592,22 @@ class MomentumV13DataService:
                 status="unavailable",
                 degraded_reasons=["method_not_supported"],
             )
+        snapshot = self._load_paginated_resource(
+            resource="cyq_perf",
+            trade_date=trade_date,
+            cache_parts=[trade_date, "snapshot"],
+            ttl_seconds=self._resource_ttls["cyq_perf"],
+            fetch_page_fn=lambda limit, offset: fetch_method(trade_date, limit=limit, offset=offset),
+        )
+        filtered_snapshot = self._filter_rows_by_codes(snapshot, ts_codes, field_names=("ts_code",))
+        grouped_snapshot = self._group_rows_by_fields(filtered_snapshot, ("ts_code",))
+        rows: List[Dict[str, Any]] = list(_safe_list(filtered_snapshot.get("rows")))
+        source_status: Dict[str, str] = {}
+        degraded_reasons: List[str] = []
         for ts_code in ts_codes:
+            if grouped_snapshot.get(ts_code):
+                source_status[ts_code] = "ok"
+                continue
             key = self._cache_key("cyq_perf", trade_date, ts_code)
             cached = self._cache_get(key, self._resource_ttls["cyq_perf"])
             if cached is None:
@@ -614,7 +617,6 @@ class MomentumV13DataService:
             rows.extend(_safe_list(cached.get("rows")))
             if cached.get("is_degraded"):
                 degraded_reasons.extend(f"{ts_code}:{reason}" for reason in _safe_list(cached.get("degraded_reasons")))
-
         status = "ok"
         if degraded_reasons:
             status = "partial" if rows else "unavailable"
@@ -682,32 +684,25 @@ class MomentumV13DataService:
         return payload
 
     def _load_ths_members(self, ts_codes: List[str]) -> Dict[str, Any]:
-        rows: List[Dict[str, Any]] = []
-        source_status: Dict[str, str] = {}
-        degraded_reasons: List[str] = []
-        for ts_code in ts_codes:
-            key = self._cache_key("ths_member", ts_code)
-            cached = self._cache_get(key, self._resource_ttls["ths_member"])
-            if cached is None:
-                cached = self._safe_fetch("ths_member", lambda code=ts_code: self.fetcher.get_ths_members(con_code=code))
-                self._cache_set(key, cached)
-            source_status[ts_code] = str(cached.get("status") or "unknown")
-            rows.extend(_safe_list(cached.get("rows")))
-            if cached.get("is_degraded"):
-                degraded_reasons.extend(
-                    f"{ts_code}:{reason}" for reason in _safe_list(cached.get("degraded_reasons"))
-                )
-        status = "ok"
-        if degraded_reasons:
-            status = "partial" if rows else "unavailable"
-        return self._payload(
-            source="tushare.ths_member",
+        fetch_method = self._resolve_fetcher_method("get_ths_members")
+        if fetch_method is None:
+            return self._payload(
+                source="tushare.ths_member",
+                trade_date=None,
+                rows=[],
+                status="unavailable",
+                degraded_reasons=["method_not_supported"],
+            )
+        snapshot = self._load_paginated_resource(
+            resource="ths_member",
             trade_date=None,
-            rows=rows,
-            status=status,
-            degraded_reasons=degraded_reasons,
-            extra={"source_status": source_status},
+            cache_parts=["snapshot"],
+            ttl_seconds=self._resource_ttls["ths_member"],
+            fetch_page_fn=lambda limit, offset: fetch_method(limit=limit, offset=offset),
         )
+        filtered = self._filter_rows_by_codes(snapshot, ts_codes, field_names=("con_code",))
+        filtered["source_status"] = {ts_code: str(snapshot.get("status") or "unknown") for ts_code in ts_codes}
+        return filtered
 
     def _load_ths_index_names(self, ths_members: Dict[str, Any]) -> Dict[str, Any]:
         theme_codes = sorted(
@@ -718,39 +713,48 @@ class MomentumV13DataService:
             }
         )
         result: Dict[str, Any] = {}
-        rows: List[Dict[str, Any]] = []
-        source_status: Dict[str, str] = {}
-        degraded_reasons: List[str] = []
-
-        for theme_code in theme_codes:
-            key = self._cache_key("ths_index", theme_code)
-            cached = self._cache_get(key, self._resource_ttls["ths_index"])
-            if cached is None:
-                cached = self._safe_fetch("ths_index", lambda code=theme_code: self.fetcher.get_ths_index(ts_code=code))
-                self._cache_set(key, cached)
-            source_status[theme_code] = str(cached.get("status") or "unknown")
-            payload_rows = _safe_list(cached.get("rows"))
-            rows.extend(payload_rows)
-            for row in payload_rows:
-                code = str(row.get("theme_code") or "").strip().upper()
-                name = str(row.get("theme_name") or "").strip()
-                if code and name:
-                    result[code] = name
-            if cached.get("is_degraded"):
-                degraded_reasons.extend(
-                    f"{theme_code}:{reason}" for reason in _safe_list(cached.get("degraded_reasons"))
-                )
-
-        status = "ok"
-        if degraded_reasons:
-            status = "partial" if rows else "unavailable"
+        if not theme_codes:
+            result["_payload"] = self._payload(
+                source="tushare.ths_index",
+                trade_date=None,
+                rows=[],
+                status="ok",
+                degraded_reasons=[],
+                extra={"source_status": {}},
+            )
+            return result
+        fetch_method = self._resolve_fetcher_method("get_ths_index")
+        if fetch_method is None:
+            result["_payload"] = self._payload(
+                source="tushare.ths_index",
+                trade_date=None,
+                rows=[],
+                status="unavailable",
+                degraded_reasons=["method_not_supported"],
+                extra={"source_status": {theme_code: "unavailable" for theme_code in theme_codes}},
+            )
+            return result
+        snapshot = self._load_paginated_resource(
+            resource="ths_index",
+            trade_date=None,
+            cache_parts=["snapshot"],
+            ttl_seconds=self._resource_ttls["ths_index"],
+            fetch_page_fn=lambda limit, offset: fetch_method(limit=limit, offset=offset),
+        )
+        filtered_snapshot = self._filter_rows_by_codes(snapshot, theme_codes, field_names=("theme_code",))
+        rows = _safe_list(filtered_snapshot.get("rows"))
+        for row in rows:
+            code = str(row.get("theme_code") or "").strip().upper()
+            name = str(row.get("theme_name") or "").strip()
+            if code and name:
+                result[code] = name
         result["_payload"] = self._payload(
             source="tushare.ths_index",
             trade_date=None,
             rows=rows,
-            status=status,
-            degraded_reasons=degraded_reasons,
-            extra={"source_status": source_status},
+            status=str(snapshot.get("status") or "unknown"),
+            degraded_reasons=list(_safe_list(snapshot.get("degraded_reasons"))),
+            extra={"source_status": {theme_code: str(snapshot.get("status") or "unknown") for theme_code in theme_codes}},
         )
         return result
 
@@ -858,6 +862,77 @@ class MomentumV13DataService:
         normalized_parts = [str(part or "").replace("/", "-") for part in parts]
         return ":".join(["momentum", "v13", resource, *normalized_parts])
 
+    def _load_paginated_resource(
+        self,
+        *,
+        resource: str,
+        trade_date: Optional[str],
+        cache_parts: List[str],
+        ttl_seconds: int,
+        fetch_page_fn,
+    ) -> Dict[str, Any]:
+        rows: List[Dict[str, Any]] = []
+        source_status: Dict[str, str] = {}
+        degraded_reasons: List[str] = []
+        status = "ok"
+        page_count = 0
+
+        for page_index in range(self._MAX_SNAPSHOT_PAGES):
+            offset = page_index * self._SNAPSHOT_PAGE_SIZE
+            page_key = self._cache_key(resource, *cache_parts, f"offset-{offset}")
+            cached = self._cache_get(page_key, ttl_seconds)
+            if cached is None:
+                cached = self._safe_fetch(
+                    resource,
+                    lambda current_offset=offset: fetch_page_fn(limit=self._SNAPSHOT_PAGE_SIZE, offset=current_offset),
+                )
+                self._cache_set(page_key, cached)
+            source_status[f"page_{page_index}"] = str(cached.get("status") or "unknown")
+            payload_rows = _safe_list(cached.get("rows"))
+            if not payload_rows:
+                if page_index > 0 and self._is_pagination_terminator(cached):
+                    break
+                if cached.get("is_degraded"):
+                    status = "partial" if rows else str(cached.get("status") or "partial")
+                    degraded_reasons.extend(
+                        f"page_{page_index}:{reason}" for reason in _safe_list(cached.get("degraded_reasons"))
+                    )
+                elif not rows:
+                    status = str(cached.get("status") or "partial")
+                break
+
+            rows.extend(payload_rows)
+            page_count = page_index + 1
+            if cached.get("is_degraded"):
+                degraded_reasons.extend(
+                    f"page_{page_index}:{reason}" for reason in _safe_list(cached.get("degraded_reasons"))
+                )
+            if len(payload_rows) < self._SNAPSHOT_PAGE_SIZE:
+                break
+        else:
+            degraded_reasons.append("pagination_limit_reached")
+            status = "partial" if rows else "unavailable"
+
+        if degraded_reasons and status == "ok":
+            status = "partial" if rows else "unavailable"
+        return self._payload(
+            source=f"tushare.{resource}",
+            trade_date=self._display_trade_date(trade_date) if trade_date else None,
+            rows=rows,
+            status=status,
+            degraded_reasons=degraded_reasons,
+            extra={"source_status": source_status, "page_count": page_count},
+        )
+
+    @staticmethod
+    def _is_pagination_terminator(payload: Dict[str, Any]) -> bool:
+        if _safe_list(payload.get("rows")):
+            return False
+        if str(payload.get("status") or "").strip().lower() != "partial":
+            return False
+        reasons = [str(reason).strip() for reason in _safe_list(payload.get("degraded_reasons")) if str(reason).strip()]
+        return reasons == ["empty_result"]
+
     def _safe_fetch(self, source: str, fetch_fn) -> Dict[str, Any]:
         try:
             payload = fetch_fn()
@@ -922,21 +997,43 @@ class MomentumV13DataService:
 
     @staticmethod
     def _index_rows_by_ts_code(payload: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
+        return MomentumV13DataService._group_rows_by_fields(payload, ("ts_code",))
+
+    @staticmethod
+    def _group_rows_by_fields(
+        payload: Dict[str, Any],
+        field_names: Iterable[str],
+    ) -> Dict[str, List[Dict[str, Any]]]:
         grouped: Dict[str, List[Dict[str, Any]]] = {}
         for row in _safe_list(payload.get("rows")):
-            ts_code = row.get("ts_code") or row.get("con_code")
-            if not ts_code:
-                continue
-            grouped.setdefault(str(ts_code), []).append(row)
+            for field_name in field_names:
+                code = str(row.get(field_name) or "").strip().upper()
+                if not code:
+                    continue
+                grouped.setdefault(code, []).append(row)
+                break
         return grouped
 
     def _filter_rows_by_ts_codes(self, payload: Dict[str, Any], ts_codes: List[str]) -> Dict[str, Any]:
-        normalized_codes = {str(ts_code).strip().upper() for ts_code in ts_codes if str(ts_code).strip()}
-        rows = [
-            row
-            for row in _safe_list(payload.get("rows"))
-            if str(row.get("ts_code") or row.get("con_code") or "").strip().upper() in normalized_codes
-        ]
+        return self._filter_rows_by_codes(payload, ts_codes, field_names=("ts_code", "con_code"))
+
+    def _filter_rows_by_codes(
+        self,
+        payload: Dict[str, Any],
+        codes: List[str],
+        *,
+        field_names: Iterable[str],
+    ) -> Dict[str, Any]:
+        normalized_codes = {str(code).strip().upper() for code in codes if str(code).strip()}
+        rows = []
+        for row in _safe_list(payload.get("rows")):
+            for field_name in field_names:
+                value = str(row.get(field_name) or "").strip().upper()
+                if not value:
+                    continue
+                if value in normalized_codes:
+                    rows.append(row)
+                    break
         filtered = dict(payload)
         filtered["rows"] = rows
         return filtered

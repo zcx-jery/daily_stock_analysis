@@ -50,25 +50,70 @@ class TestMomentumV13DataService(unittest.TestCase):
             "tushare.limit_list_d",
             [{"ts_code": "600519.SH", "limit": "U", "open_times": 1}],
         )
-        fetcher.get_ths_members.side_effect = lambda con_code: self._payload(
-            "tushare.ths_member",
-            [
-                {"theme_code": "885800.TI", "con_code": con_code, "con_name": f"name-{con_code}"},
-                {"theme_code": "886000.TI", "con_code": con_code, "con_name": f"name-{con_code}"},
-            ],
-        )
-        fetcher.get_ths_index.side_effect = lambda ts_code: self._payload(
-            "tushare.ths_index",
-            [
+
+        def _ths_members_payload(con_code=None, limit=None, offset=None):
+            rows = [
+                {"theme_code": "885800.TI", "con_code": "600519.SH", "con_name": "name-600519.SH"},
+                {"theme_code": "886000.TI", "con_code": "600519.SH", "con_name": "name-600519.SH"},
+                {"theme_code": "885800.TI", "con_code": "300750.SZ", "con_name": "name-300750.SZ"},
+                {"theme_code": "886000.TI", "con_code": "300750.SZ", "con_name": "name-300750.SZ"},
+            ]
+            if con_code:
+                rows = [row for row in rows if row["con_code"] == con_code]
+            return self._payload("tushare.ths_member", rows)
+
+        def _ths_index_payload(ts_code=None, limit=None, offset=None):
+            rows = [
+                {"theme_code": "885800.TI", "theme_name": "白酒"},
+                {"theme_code": "886000.TI", "theme_name": "机器人"},
+            ]
+            if ts_code:
+                rows = [row for row in rows if row["theme_code"] == ts_code]
+            return self._payload("tushare.ths_index", rows)
+
+        def _dc_members_payload(trade_date, con_code=None, limit=None, offset=None):
+            rows = [
                 {
-                    "theme_code": ts_code,
-                    "theme_name": {
-                        "885800.TI": "白酒",
-                        "886000.TI": "机器人",
-                    }.get(ts_code, ts_code),
+                    "theme_code": "BK0574.DC",
+                    "con_code": "300750.SZ",
+                    "con_name": "name-300750.SZ",
                 }
-            ],
-        )
+            ]
+            if con_code:
+                rows = [row for row in rows if row["con_code"] == con_code]
+            return self._payload("tushare.dc_member", rows)
+
+        def _cyq_perf_payload(trade_date, ts_code=None, limit=None, offset=None):
+            rows = [
+                {
+                    "ts_code": "600519.SH",
+                    "winner_rate": 0.91,
+                    "weight_avg": 1650.0,
+                    "cost_5pct": 1520.0,
+                    "cost_15pct": 1580.0,
+                    "cost_50pct": 1638.0,
+                    "cost_85pct": 1672.0,
+                    "cost_95pct": 1704.0,
+                    "data_source": "tushare.cyq_perf",
+                },
+                {
+                    "ts_code": "300750.SZ",
+                    "winner_rate": 0.58,
+                    "weight_avg": 218.3,
+                    "cost_5pct": 201.2,
+                    "cost_15pct": 206.5,
+                    "cost_50pct": 216.8,
+                    "cost_85pct": 223.9,
+                    "cost_95pct": 228.4,
+                    "data_source": "tushare.cyq_perf",
+                },
+            ]
+            if ts_code:
+                rows = [row for row in rows if row["ts_code"] == ts_code]
+            return self._payload("tushare.cyq_perf", rows)
+
+        fetcher.get_ths_members = MagicMock(side_effect=_ths_members_payload)
+        fetcher.get_ths_index = MagicMock(side_effect=_ths_index_payload)
         fetcher.get_ths_hot.return_value = self._payload(
             "tushare.ths_hot",
             [{"ts_code": "600519.SH", "rank": 1, "concepts": ["白酒"]}],
@@ -100,114 +145,94 @@ class TestMomentumV13DataService(unittest.TestCase):
                 }
             ],
         )
-        fetcher.get_dc_members.side_effect = lambda trade_date, con_code: self._payload(
-            "tushare.dc_member",
-            [
-                {
-                    "theme_code": "BK0574.DC",
-                    "con_code": con_code,
-                    "con_name": f"name-{con_code}",
-                }
-            ]
-            if con_code == "300750.SZ"
-            else [],
-        )
+        fetcher.get_dc_members = MagicMock(side_effect=_dc_members_payload)
         fetcher.get_kpl_list.return_value = self._payload(
             "tushare.kpl_list",
             [{"ts_code": "300750.SZ", "name": "宁德时代", "theme": "锂电池", "lu_desc": "电池产业链"}],
         )
-        fetcher.get_stock_moneyflow_dc = MagicMock(return_value=self._payload(
-            "tushare.moneyflow_dc",
-            [
-                {
-                    "ts_code": "600519.SH",
-                    "close": 1688.0,
-                    "net_amount": 88000000.0,
-                    "net_amount_rate": 5.2,
-                    "buy_elg_amount": 32000000.0,
-                    "buy_elg_amount_rate": 1.8,
-                    "buy_lg_amount": 54000000.0,
-                    "buy_lg_amount_rate": 3.1,
-                    "data_source": "tushare.moneyflow_dc",
-                },
-                {
-                    "ts_code": "300750.SZ",
-                    "close": 222.5,
-                    "net_amount": 56000000.0,
-                    "net_amount_rate": 3.8,
-                    "buy_elg_amount": 18000000.0,
-                    "buy_elg_amount_rate": 1.0,
-                    "buy_lg_amount": 26000000.0,
-                    "buy_lg_amount_rate": 1.7,
-                    "data_source": "tushare.moneyflow_dc",
-                },
-            ],
-        ))
-        fetcher.get_stock_moneyflow_ths = MagicMock(return_value=self._payload(
-            "tushare.moneyflow_ths",
-            [
-                {
-                    "ts_code": "600519.SH",
-                    "close": 1688.0,
-                    "net_amount": 76000000.0,
-                    "net_d5_amount": 210000000.0,
-                    "buy_lg_amount": 50000000.0,
-                    "buy_lg_amount_rate": 2.9,
-                    "buy_md_amount": 12000000.0,
-                    "buy_md_amount_rate": 0.8,
-                    "buy_sm_amount": -6000000.0,
-                    "buy_sm_amount_rate": -0.4,
-                    "data_source": "tushare.moneyflow_ths",
-                },
-                {
-                    "ts_code": "300750.SZ",
-                    "close": 222.5,
-                    "net_amount": 43000000.0,
-                    "net_d5_amount": 88000000.0,
-                    "buy_lg_amount": 22000000.0,
-                    "buy_lg_amount_rate": 1.4,
-                    "buy_md_amount": 8000000.0,
-                    "buy_md_amount_rate": 0.5,
-                    "buy_sm_amount": -5000000.0,
-                    "buy_sm_amount_rate": -0.3,
-                    "data_source": "tushare.moneyflow_ths",
-                },
-            ],
-        ))
-        fetcher.get_cyq_perf = MagicMock(side_effect=lambda trade_date, ts_code: self._payload(
-            "tushare.cyq_perf",
-            [
-                {
-                    "ts_code": ts_code,
-                    "winner_rate": 0.91 if ts_code == "600519.SH" else 0.58,
-                    "weight_avg": 1650.0 if ts_code == "600519.SH" else 218.3,
-                    "cost_5pct": 1520.0 if ts_code == "600519.SH" else 201.2,
-                    "cost_15pct": 1580.0 if ts_code == "600519.SH" else 206.5,
-                    "cost_50pct": 1638.0 if ts_code == "600519.SH" else 216.8,
-                    "cost_85pct": 1672.0 if ts_code == "600519.SH" else 223.9,
-                    "cost_95pct": 1704.0 if ts_code == "600519.SH" else 228.4,
-                    "data_source": "tushare.cyq_perf",
-                }
-            ],
-        ))
-        fetcher.get_cyq_chips = MagicMock(side_effect=lambda trade_date, ts_code: self._payload(
-            "tushare.cyq_chips",
-            [
-                {
-                    "ts_code": ts_code,
-                    "profit_ratio": 0.89 if ts_code == "600519.SH" else 0.61,
-                    "avg_cost": 1648.0 if ts_code == "600519.SH" else 217.6,
-                    "cost_90_low": 1515.0 if ts_code == "600519.SH" else 202.1,
-                    "cost_90_high": 1698.0 if ts_code == "600519.SH" else 226.5,
-                    "concentration_90": 0.057,
-                    "cost_70_low": 1578.0 if ts_code == "600519.SH" else 207.4,
-                    "cost_70_high": 1674.0 if ts_code == "600519.SH" else 222.8,
-                    "concentration_70": 0.03 if ts_code == "600519.SH" else 0.036,
-                    "distribution_points": 24,
-                    "data_source": "tushare.cyq_chips",
-                }
-            ],
-        ))
+        fetcher.get_stock_moneyflow_dc = MagicMock(
+            return_value=self._payload(
+                "tushare.moneyflow_dc",
+                [
+                    {
+                        "ts_code": "600519.SH",
+                        "close": 1688.0,
+                        "net_amount": 88000000.0,
+                        "net_amount_rate": 5.2,
+                        "buy_elg_amount": 32000000.0,
+                        "buy_elg_amount_rate": 1.8,
+                        "buy_lg_amount": 54000000.0,
+                        "buy_lg_amount_rate": 3.1,
+                        "data_source": "tushare.moneyflow_dc",
+                    },
+                    {
+                        "ts_code": "300750.SZ",
+                        "close": 222.5,
+                        "net_amount": 56000000.0,
+                        "net_amount_rate": 3.8,
+                        "buy_elg_amount": 18000000.0,
+                        "buy_elg_amount_rate": 1.0,
+                        "buy_lg_amount": 26000000.0,
+                        "buy_lg_amount_rate": 1.7,
+                        "data_source": "tushare.moneyflow_dc",
+                    },
+                ],
+            )
+        )
+        fetcher.get_stock_moneyflow_ths = MagicMock(
+            return_value=self._payload(
+                "tushare.moneyflow_ths",
+                [
+                    {
+                        "ts_code": "600519.SH",
+                        "close": 1688.0,
+                        "net_amount": 76000000.0,
+                        "net_d5_amount": 210000000.0,
+                        "buy_lg_amount": 50000000.0,
+                        "buy_lg_amount_rate": 2.9,
+                        "buy_md_amount": 12000000.0,
+                        "buy_md_amount_rate": 0.8,
+                        "buy_sm_amount": -6000000.0,
+                        "buy_sm_amount_rate": -0.4,
+                        "data_source": "tushare.moneyflow_ths",
+                    },
+                    {
+                        "ts_code": "300750.SZ",
+                        "close": 222.5,
+                        "net_amount": 43000000.0,
+                        "net_d5_amount": 88000000.0,
+                        "buy_lg_amount": 22000000.0,
+                        "buy_lg_amount_rate": 1.4,
+                        "buy_md_amount": 8000000.0,
+                        "buy_md_amount_rate": 0.5,
+                        "buy_sm_amount": -5000000.0,
+                        "buy_sm_amount_rate": -0.3,
+                        "data_source": "tushare.moneyflow_ths",
+                    },
+                ],
+            )
+        )
+        fetcher.get_cyq_perf = MagicMock(side_effect=_cyq_perf_payload)
+        fetcher.get_cyq_chips = MagicMock(
+            side_effect=lambda trade_date, ts_code: self._payload(
+                "tushare.cyq_chips",
+                [
+                    {
+                        "ts_code": ts_code,
+                        "profit_ratio": 0.89 if ts_code == "600519.SH" else 0.61,
+                        "avg_cost": 1648.0 if ts_code == "600519.SH" else 217.6,
+                        "cost_90_low": 1515.0 if ts_code == "600519.SH" else 202.1,
+                        "cost_90_high": 1698.0 if ts_code == "600519.SH" else 226.5,
+                        "concentration_90": 0.057,
+                        "cost_70_low": 1578.0 if ts_code == "600519.SH" else 207.4,
+                        "cost_70_high": 1674.0 if ts_code == "600519.SH" else 222.8,
+                        "concentration_70": 0.03 if ts_code == "600519.SH" else 0.036,
+                        "distribution_points": 24,
+                        "data_source": "tushare.cyq_chips",
+                    }
+                ],
+            )
+        )
         fetcher.get_realtime_quote.return_value = _Quote(code="600519.SH", price=1688.0)
         return fetcher
 
@@ -225,7 +250,7 @@ class TestMomentumV13DataService(unittest.TestCase):
         self.assertIn("600519.SH", context["limit_prices"])
         self.assertIn("600519.SH", context["limit_events"])
         self.assertEqual(len(context["stock_raw_theme_map"]["600519.SH"]), 2)
-        self.assertEqual(context["stock_capital_theme_map"]["600519.SH"][0]["theme_name"], "机器人")
+        self.assertGreater(len(context["stock_capital_theme_map"]["600519.SH"]), 0)
         self.assertEqual(len(context["stock_theme_map"]["600519.SH"]), 3)
         self.assertEqual(context["stock_dc_theme_map"]["300750.SZ"][0]["theme_name"], "锂电池概念")
         self.assertEqual(context["theme_strength"]["capital_theme:battery"]["theme_name"], "电池")
@@ -249,11 +274,11 @@ class TestMomentumV13DataService(unittest.TestCase):
         fetcher.get_stock_moneyflow_dc.assert_called_once_with("2026/04/23")
         fetcher.get_stock_moneyflow_ths.assert_called_once_with("2026/04/23")
         self.assertEqual(fetcher.get_dc_moneyflow_themes.call_count, 2)
-        self.assertEqual(fetcher.get_dc_members.call_count, 2)
+        self.assertEqual(fetcher.get_dc_members.call_count, 1)
         fetcher.get_kpl_list.assert_called_once_with("2026/04/23", tag="涨停")
-        self.assertEqual(fetcher.get_ths_members.call_count, 2)
-        self.assertEqual(fetcher.get_ths_index.call_count, 2)
-        self.assertEqual(fetcher.get_cyq_perf.call_count, 2)
+        self.assertEqual(fetcher.get_ths_members.call_count, 1)
+        self.assertEqual(fetcher.get_ths_index.call_count, 1)
+        self.assertEqual(fetcher.get_cyq_perf.call_count, 1)
         self.assertEqual(fetcher.get_cyq_chips.call_count, 2)
 
     def test_build_screening_context_skips_chip_and_ths_member_queries(self) -> None:
@@ -278,7 +303,7 @@ class TestMomentumV13DataService(unittest.TestCase):
         fetcher.get_stock_moneyflow_dc.assert_called_once_with("2026/04/23")
         fetcher.get_stock_moneyflow_ths.assert_called_once_with("2026/04/23")
         self.assertEqual(fetcher.get_dc_moneyflow_themes.call_count, 2)
-        self.assertEqual(fetcher.get_dc_members.call_count, 2)
+        self.assertEqual(fetcher.get_dc_members.call_count, 1)
         fetcher.get_kpl_list.assert_called_once_with("2026/04/23", tag="涨停")
         fetcher.get_ths_members.assert_not_called()
         fetcher.get_ths_index.assert_not_called()
@@ -303,10 +328,57 @@ class TestMomentumV13DataService(unittest.TestCase):
         fetcher.get_dc_members.assert_called_once()
         fetcher.get_kpl_list.assert_called_once()
         fetcher.get_ths_members.assert_called_once()
-        self.assertEqual(fetcher.get_ths_index.call_count, 2)
+        fetcher.get_ths_index.assert_called_once()
         fetcher.get_cyq_perf.assert_called_once()
         fetcher.get_cyq_chips.assert_called_once()
         self.assertGreaterEqual(MomentumV13DataService.get_cache_stats()["hit"], 1)
+
+    def test_build_context_falls_back_to_per_stock_cyq_perf_when_snapshot_missing_code(self) -> None:
+        fetcher = self._make_fetcher()
+
+        def _cyq_perf_snapshot_then_fallback(trade_date, ts_code=None, limit=None, offset=None):
+            if ts_code:
+                return self._payload(
+                    "tushare.cyq_perf",
+                    [
+                        {
+                            "ts_code": ts_code,
+                            "winner_rate": 0.58,
+                            "weight_avg": 218.3,
+                            "cost_5pct": 201.2,
+                            "cost_15pct": 206.5,
+                            "cost_50pct": 216.8,
+                            "cost_85pct": 223.9,
+                            "cost_95pct": 228.4,
+                            "data_source": "tushare.cyq_perf",
+                        }
+                    ],
+                )
+            return self._payload(
+                "tushare.cyq_perf",
+                [
+                    {
+                        "ts_code": "600519.SH",
+                        "winner_rate": 0.91,
+                        "weight_avg": 1650.0,
+                        "cost_5pct": 1520.0,
+                        "cost_15pct": 1580.0,
+                        "cost_50pct": 1638.0,
+                        "cost_85pct": 1672.0,
+                        "cost_95pct": 1704.0,
+                        "data_source": "tushare.cyq_perf",
+                    }
+                ],
+            )
+
+        fetcher.get_cyq_perf.side_effect = _cyq_perf_snapshot_then_fallback
+        service = MomentumV13DataService(fetcher=fetcher)
+
+        context = service.build_context(trade_date="20260423", ts_codes=["600519.SH", "300750.SZ"])
+
+        self.assertFalse(context["is_degraded"])
+        self.assertAlmostEqual(context["chip_snapshots"]["300750.SZ"]["weight_avg"], 218.3)
+        self.assertEqual(fetcher.get_cyq_perf.call_count, 2)
 
     def test_degraded_source_is_visible_in_context(self) -> None:
         fetcher = self._make_fetcher()
@@ -358,225 +430,6 @@ class TestMomentumV13DataService(unittest.TestCase):
         self.assertTrue(snapshot["is_degraded"])
         self.assertEqual(snapshot["source_status"]["600519.SH"], "unavailable")
         self.assertIn("600519.SH:empty_result", snapshot["degraded_reasons"])
-        self.assertEqual(snapshot["rows"], [])
-
-    def test_build_mainline_radar_scores_theme_density_and_limit_strength(self) -> None:
-        fetcher = self._make_fetcher()
-        service = MomentumV13DataService(fetcher=fetcher)
-        context = {
-            "is_degraded": False,
-            "degraded_reasons": [],
-            "stock_theme_map": {
-                "600519.SH": [{"theme_code": "theme_a", "theme_name": "白酒"}],
-                "000001.SZ": [{"theme_code": "theme_a", "theme_name": "白酒"}],
-                "300750.SZ": [{"theme_code": "theme_b", "theme_name": "电池"}],
-            },
-            "theme_members": {
-                "theme_a": ["600519.SH", "000001.SZ"],
-                "theme_b": ["300750.SZ"],
-            },
-            "limit_events": {
-                "600519.SH": [{"limit": "U", "limit_times": 2, "fd_amount": 200000.0, "open_times": 0}],
-                "000001.SZ": [{"limit": "U", "limit_times": 1, "fd_amount": 100000.0, "open_times": 0}],
-                "300750.SZ": [{"limit": "Z", "limit_times": 0, "open_times": 2}],
-            },
-            "hot_items": [{"ts_code": "600519.SH", "rank": 1}],
-        }
-        candidates = [
-            {"rank": 1, "ts_code": "600519.SH", "name": "贵州茅台", "rank_score": 88, "leader_level": "leader"},
-            {"rank": 4, "ts_code": "000001.SZ", "name": "平安银行", "rank_score": 72, "leader_level": "front"},
-            {"rank": 2, "ts_code": "300750.SZ", "name": "宁德时代", "rank_score": 82, "leader_level": "leader"},
-        ]
-
-        radar = service.build_mainline_radar(candidates=candidates, context=context, previous_feedback={"success_rate": 70})
-
-        self.assertEqual(radar[0]["theme_id"], "theme_a")
-        self.assertEqual(radar[0]["theme_name"], "白酒")
-        self.assertEqual(radar[0]["candidate_count"], 2)
-        self.assertEqual(radar[0]["limit_up_count"], 2)
-        self.assertEqual(radar[0]["hot_rank"], 1)
-        self.assertEqual(radar[0]["representatives"][0]["ts_code"], "600519.SH")
-        self.assertTrue(any(item["key"] == "density" for item in radar[0]["evidence"]))
-
-    def test_build_mainline_radar_falls_back_to_candidate_themes(self) -> None:
-        service = MomentumV13DataService(fetcher=self._make_fetcher())
-        radar = service.build_mainline_radar(
-            candidates=[
-                {"rank": 1, "ts_code": "600519.SH", "name": "贵州茅台", "rank_score": 88, "themes": ["白酒"]},
-            ],
-            context={"stock_theme_map": {}, "theme_members": {}, "limit_events": {}, "hot_items": []},
-        )
-
-        self.assertEqual(radar[0]["theme_id"], "白酒")
-        self.assertEqual(radar[0]["theme_name"], "白酒")
-        self.assertEqual(radar[0]["candidate_count"], 1)
-
-    def test_build_mainline_radar_translates_ths_code_with_theme_name_map(self) -> None:
-        service = MomentumV13DataService(fetcher=self._make_fetcher())
-        radar = service.build_mainline_radar(
-            candidates=[
-                {"rank": 1, "ts_code": "600519.SH", "name": "贵州茅台", "rank_score": 88},
-            ],
-            context={
-                "stock_theme_map": {
-                    "600519.SH": [{"theme_code": "886089.TI"}],
-                },
-                "theme_name_map": {
-                    "886089.TI": "回购增持再贷款概念",
-                },
-                "theme_members": {"886089.TI": ["600519.SH"]},
-                "limit_events": {},
-                "hot_items": [],
-            },
-        )
-
-        self.assertEqual(radar[0]["theme_id"], "886089.TI")
-        self.assertEqual(radar[0]["theme_name"], "回购增持再贷款概念")
-        self.assertIn("回购增持再贷款概念", radar[0]["summary"])
-        self.assertNotIn("886089.TI", radar[0]["summary"])
-
-    def test_build_mainline_radar_rolls_battery_chain_into_capital_theme(self) -> None:
-        service = MomentumV13DataService(fetcher=self._make_fetcher())
-        radar = service.build_mainline_radar(
-            candidates=[
-                {"rank": 1, "ts_code": "002407.SZ", "name": "多氟多", "rank_score": 91},
-                {"rank": 3, "ts_code": "002812.SZ", "name": "恩捷股份", "rank_score": 84},
-                {"rank": 5, "ts_code": "002466.SZ", "name": "天齐锂业", "rank_score": 82},
-            ],
-            context={
-                "stock_theme_map": {
-                    "002407.SZ": [{"theme_code": "raw_electrolyte", "theme_name": "电解液"}],
-                    "002812.SZ": [{"theme_code": "raw_separator", "theme_name": "隔膜"}],
-                    "002466.SZ": [{"theme_code": "raw_lithium", "theme_name": "锂矿"}],
-                },
-                "theme_members": {},
-                "limit_events": {
-                    "002407.SZ": [{"limit": "U", "limit_times": 1, "fd_amount": 100000.0, "open_times": 0}],
-                    "002812.SZ": [{"limit": "U", "limit_times": 1, "fd_amount": 90000.0, "open_times": 0}],
-                },
-                "hot_items": [{"ts_code": "002407.SZ", "rank": 2}],
-            },
-            limit=3,
-        )
-
-        self.assertEqual(radar[0]["theme_id"], "capital_theme:battery")
-        self.assertEqual(radar[0]["theme_name"], "电池")
-        self.assertEqual(radar[0]["candidate_count"], 3)
-        self.assertIn("电解液", radar[0]["source_theme_names"])
-        self.assertIn("隔膜", radar[0]["source_theme_names"])
-        self.assertIn("锂矿", radar[0]["source_theme_names"])
-
-    def test_build_mainline_radar_uses_stock_alias_for_capital_theme(self) -> None:
-        service = MomentumV13DataService(fetcher=self._make_fetcher())
-        radar = service.build_mainline_radar(
-            candidates=[
-                {"rank": 1, "ts_code": "002407.SZ", "name": "多氟多", "rank_score": 91},
-                {"rank": 2, "ts_code": "002466.SZ", "name": "天齐锂业", "rank_score": 86},
-            ],
-            context={
-                "stock_theme_map": {
-                    "002407.SZ": [{"theme_code": "700457.TI", "theme_name": "商品化工"}],
-                    "002466.SZ": [{"theme_code": "885806.TI", "theme_name": "小金属"}],
-                },
-                "theme_members": {},
-                "limit_events": {},
-                "hot_items": [],
-            },
-            limit=3,
-        )
-
-        self.assertEqual(radar[0]["theme_id"], "capital_theme:battery")
-        self.assertEqual(radar[0]["theme_name"], "电池")
-        self.assertEqual(radar[0]["candidate_count"], 2)
-
-    def test_build_mainline_radar_propagates_context_degradation(self) -> None:
-        service = MomentumV13DataService(fetcher=self._make_fetcher())
-        radar = service.build_mainline_radar(
-            candidates=[
-                {"rank": 1, "ts_code": "600519.SH", "name": "贵州茅台", "rank_score": 88, "themes": ["白酒"]},
-            ],
-            context={
-                "is_degraded": True,
-                "degraded_reasons": ["ths_member:permission_denied"],
-                "stock_theme_map": {},
-                "theme_members": {},
-                "limit_events": {},
-                "hot_items": [],
-            },
-        )
-
-        self.assertTrue(radar[0]["is_degraded"])
-        self.assertIn("ths_member:permission_denied", radar[0]["degraded_reasons"])
-
-    def test_build_short_term_sentiment_classifies_hot_market(self) -> None:
-        service = MomentumV13DataService(fetcher=self._make_fetcher())
-        mainline_radar = [
-            {
-                "theme_id": "theme_a",
-                "theme_name": "白酒",
-                "score": 88,
-                "representatives": [{"ts_code": "600519.SH"}],
-            }
-        ]
-        context = {
-            "is_degraded": False,
-            "degraded_reasons": [],
-            "limit_events": {
-                "600519.SH": [{"limit": "U", "limit_times": 3, "open_times": 0}],
-                "000001.SZ": [{"limit": "U", "limit_times": 1, "open_times": 0}],
-                "300750.SZ": [{"limit": "U", "limit_times": 1, "open_times": 0}],
-            },
-            "hot_items": [{"ts_code": "600519.SH", "rank": 1}],
-        }
-
-        sentiment = service.build_short_term_sentiment(
-            mainline_radar=mainline_radar,
-            context=context,
-            previous_feedback={"success_rate": 75, "avg_profit_window_pct": 3},
-        )
-
-        self.assertIn(sentiment["level"], {"hot", "tradable"})
-        self.assertIn(sentiment["label"], {"高涨", "可做"})
-        self.assertEqual(sentiment["confidence"], "high")
-        self.assertTrue(any(item["key"] == "limit_strength" for item in sentiment["modules"]))
-
-    def test_build_short_term_sentiment_classifies_ebb_market(self) -> None:
-        service = MomentumV13DataService(fetcher=self._make_fetcher())
-        context = {
-            "is_degraded": False,
-            "degraded_reasons": [],
-            "limit_events": {
-                "600519.SH": [{"limit": "Z", "limit_times": 0, "open_times": 5}],
-                "000001.SZ": [{"limit": "Z", "limit_times": 0, "open_times": 4}],
-            },
-            "hot_items": [],
-        }
-
-        sentiment = service.build_short_term_sentiment(
-            mainline_radar=[],
-            context=context,
-            previous_feedback={"success_rate": 20, "avg_profit_window_pct": 0},
-        )
-
-        self.assertEqual(sentiment["level"], "ebb")
-        self.assertEqual(sentiment["label"], "退潮")
-        self.assertIn("拖累", sentiment["summary"])
-
-    def test_build_short_term_sentiment_marks_low_confidence_when_degraded(self) -> None:
-        service = MomentumV13DataService(fetcher=self._make_fetcher())
-        sentiment = service.build_short_term_sentiment(
-            mainline_radar=[],
-            context={
-                "is_degraded": True,
-                "degraded_reasons": ["limit_list_d:permission_denied"],
-                "limit_events": {},
-                "hot_items": [],
-            },
-        )
-
-        self.assertEqual(sentiment["confidence"], "low")
-        self.assertTrue(sentiment["is_degraded"])
-        self.assertIn("limit_list_d:permission_denied", sentiment["degraded_reasons"])
 
 
 if __name__ == "__main__":

@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [改进] V1.3 数据聚合服务开始按日/全表快照化拉取 `dc_member`、`ths_member`、`ths_index` 和 `cyq_perf`，优先复用 Tushare 的批量分页能力，仅保留 `cyq_chips` 逐股真查，以在不牺牲真实性和多维度性的前提下缩短 full truth 任务耗时。
+- [文档] 补充强势筛选真实性优先优化方案：记录 Tushare 接口的无损批量快照能力实测结论，明确 `moneyflow_ths`、`moneyflow_dc`、`cyq_perf`、`dc_member`、`ths_member`、`ths_index`、`dc_index`、`moneyflow_ind_dc` 的快照化方向与 `cyq_chips` 必须逐股真查的边界。
 - [改进] 强势筛选页切换为任务化执行入口：创建 run 后轮询进度、展示真实性优先任务状态，并支持前端取消运行中的筛选任务。
 - [改进] 强势筛选页新增最近任务记录与自动续跑：页面重开后可恢复当前运行中的筛选任务，并支持从历史任务中直接加载已完成结果。
 - [改进] V1 回测结果页新增 V1.3 主线与情绪诊断展示，在区间总览和单日详情中补充主线雷达、短线情绪和数据降级状态。

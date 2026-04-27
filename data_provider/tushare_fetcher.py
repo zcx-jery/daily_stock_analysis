@@ -573,6 +573,8 @@ class TushareFetcher(BaseFetcher):
         ts_code: Optional[str] = None,
         theme_code: Optional[str] = None,
         con_code: Optional[str] = None,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         获取同花顺概念板块成分，供 V1.3 股票到题材映射使用。
@@ -592,6 +594,10 @@ class TushareFetcher(BaseFetcher):
             params["ts_code"] = str(board_code).strip().upper()
         if con_code:
             params["con_code"] = self._convert_stock_code(con_code)
+        if limit is not None:
+            params["limit"] = int(limit)
+        if offset is not None:
+            params["offset"] = int(offset)
 
         try:
             df = self._call_api_with_rate_limit("ths_member", **params)
@@ -628,7 +634,13 @@ class TushareFetcher(BaseFetcher):
 
         return self._v13_payload(source=source, trade_date=None, rows=rows, data_as_of=data_as_of)
 
-    def get_ths_index(self, *, ts_code: Optional[str] = None) -> Dict[str, Any]:
+    def get_ths_index(
+        self,
+        *,
+        ts_code: Optional[str] = None,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """
         获取同花顺概念 / 行业指数基础信息，用于把 .TI 代码翻译成人可读名称。
 
@@ -643,6 +655,10 @@ class TushareFetcher(BaseFetcher):
         }
         if ts_code:
             params["ts_code"] = str(ts_code).strip().upper()
+        if limit is not None:
+            params["limit"] = int(limit)
+        if offset is not None:
+            params["offset"] = int(offset)
 
         try:
             df = self._call_api_with_rate_limit("ths_index", **params)
@@ -836,6 +852,8 @@ class TushareFetcher(BaseFetcher):
         *,
         ts_code: Optional[str] = None,
         con_code: Optional[str] = None,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         获取东方财富板块成分，供股票到真实强板块映射使用。
@@ -856,6 +874,10 @@ class TushareFetcher(BaseFetcher):
             params["ts_code"] = str(ts_code).strip().upper()
         if con_code:
             params["con_code"] = self._convert_stock_code(con_code)
+        if limit is not None:
+            params["limit"] = int(limit)
+        if offset is not None:
+            params["offset"] = int(offset)
 
         try:
             df = self._call_api_with_rate_limit("dc_member", **params)
@@ -1111,7 +1133,9 @@ class TushareFetcher(BaseFetcher):
         self,
         trade_date: str,
         *,
-        ts_code: str,
+        ts_code: Optional[str] = None,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Get 指定交易日筹码成本快照，统一成 V1.3 可回放口径。"""
         source = "tushare.cyq_perf"
@@ -1122,12 +1146,17 @@ class TushareFetcher(BaseFetcher):
 
         params: Dict[str, Any] = {
             "trade_date": ts_trade_date,
-            "ts_code": self._convert_stock_code(ts_code),
             "fields": (
                 "ts_code,trade_date,his_low,his_high,cost_5pct,cost_15pct,cost_50pct,"
                 "cost_85pct,cost_95pct,weight_avg,winner_rate"
             ),
         }
+        if ts_code:
+            params["ts_code"] = self._convert_stock_code(ts_code)
+        if limit is not None:
+            params["limit"] = int(limit)
+        if offset is not None:
+            params["offset"] = int(offset)
 
         try:
             df = self._call_api_with_rate_limit("cyq_perf", **params)

@@ -180,6 +180,29 @@ flowchart TD
 - 所有外部接口返回必须带 `data_source`、`data_as_of`、`is_degraded`。
 - 数值字段统一转为 `float | None`，避免 `NaN / inf` 进入 API。
 
+### 5.1.1 Tushare 批量能力实测结论（2026-04-27）
+
+基于 Tushare 官方文档与测试服实测，当前真值链路不应默认把所有外部接口都当成“只能逐股串行查询”。应按下表区分：
+
+| 接口 | 文档 / 实测结论 | 推荐抓取方式 | 备注 |
+| --- | --- | --- | --- |
+| `moneyflow_ths` | 支持按交易日全量；实测支持逗号分隔多股 `ts_code`；支持 `limit / offset` | 默认按交易日分页快照，再按 `ts_code` 过滤 | 单日行数已接近 6000，必须预留分页 |
+| `moneyflow_dc` | 支持按交易日全量；实测支持逗号分隔多股 `ts_code`；支持 `limit / offset` | 默认按交易日分页快照，再按 `ts_code` 过滤 | 同上 |
+| `cyq_perf` | 文档写 `ts_code` 必填，但实测支持 `trade_date + limit / offset` 全市场分页 | 默认按交易日分页快照，再按 `ts_code` 过滤 | 需保留启动 smoke-check 与单股 fallback |
+| `cyq_chips` | 文档和实测均要求 `ts_code`，不支持按日全量 | 保留逐股真查 | 是完整真值链路里的主要重接口 |
+| `dc_member` | 文档支持按 `trade_date`、`ts_code`、`con_code` 查询；实测支持按日全量分页；多 `con_code` 无效 | 默认按交易日分页快照，再本地反查股票所属板块 | 不再逐股循环 `con_code=单股` |
+| `ths_member` | 文档支持 `ts_code` / `con_code`；实测支持全表分页；多 `ts_code` / 多 `con_code` 无效 | 默认按全表分页快照，再本地反查 | 适合做题材成分总表 |
+| `ths_index` | 文档明确“一次可提取全部数据，请勿循环提取”；实测 `ths_index()` 可返回全表 | 默认全表一次拉全 | 不再逐题材循环查中文名 |
+| `dc_index` | 文档明确支持多 `ts_code`；实测支持按交易日全量 | 默认按交易日全量快照 | 可做板块行情 / 宽度 / 领涨股底座 |
+| `moneyflow_ind_dc` | 文档支持按日期或代码；实测按交易日全量稳定，多 `ts_code` 不稳定 | 默认按交易日全量快照 | 不建议依赖多 code 行为 |
+
+实现原则：
+
+1. **优先快照，不优先串行**：凡是能按日或按全表快照的接口，统一先拉快照再本地过滤。
+2. **保留真值，不偷降级**：`cyq_chips` 这类必须逐股真查的接口，不因耗时长而永久裁剪。
+3. **分页优先于赌上限**：即便当前单日全量仍未触顶，也按 `limit / offset` 实现，避免股票数量增长后再次打满上限。
+4. **文档未明说但实测可用的能力必须带 fallback**：如 `cyq_perf` 的按日分页快照，需保留 smoke-check 和单股回退。
+
 ### 5.2 ThemeStrengthProvider 标准输出
 
 建议新增 Provider 层，先把不同数据源归一成统一结构，再交给二次决策服务计算主线。
@@ -297,14 +320,19 @@ V1.3 数据应分资源缓存，避免一次缺失拖垮全部能力。
 | --- | --- | --- |
 | 东财题材强度 | `momentum:v13:dc_concept:{trade_date}` | 盘中 30-60 分钟，收盘后交易日级复用 |
 | 东财板块资金流 | `momentum:v13:moneyflow_ind_dc:{trade_date}:{content_type}` | 交易日级，收盘后长期复用 |
-| 东财板块成分 | `momentum:v13:dc_member:{trade_date}:{code}` | 成分变化较慢，建议 7 天或按交易日缓存 |
+| 东财板块成分快照 | `momentum:v13:dc_member_snapshot:{trade_date}:{page}` | 按交易日分页缓存；优先复用快照，再本地按 `con_code` 或 `ts_code` 过滤 |
 | 东财板块行情 | `momentum:v13:dc_index:{trade_date}` / `momentum:v13:dc_daily:{trade_date}` | 交易日级 |
 | 开盘啦题材 | `momentum:v13:kpl_list:{trade_date}` | 交易日级，注意次日更新时间 |
 | 涨跌停价 | `momentum:v13:stk_limit:{trade_date}` | 交易日级，收盘后可长期复用 |
 | 涨停炸板 | `momentum:v13:limit_list:{trade_date}` | 交易日级，收盘后可长期复用 |
-| 题材成分 | `momentum:v13:ths_member:{version}` | 成分变化较慢，建议 7 天或手动刷新 |
+| 同花顺成分快照 | `momentum:v13:ths_member_snapshot:{page}` | 全表分页缓存，建议 7 天或手动刷新 |
+| 同花顺指数字典 | `momentum:v13:ths_index_snapshot:{version}` | 全表一次拉全，建议 7 天或手动刷新 |
 | 热榜 | `momentum:v13:ths_hot:{trade_date}` | 交易日级，盘中可短 TTL |
 | 实时快照 | `momentum:v13:quote:{trade_date}:{ts_code}` | 盘中 30-60 秒，收盘后不作为正式回测输入 |
+| 个股资金流（THS） | `momentum:v13:moneyflow_ths:{trade_date}:{page}` | 按交易日分页缓存，再本地按 `ts_code` 过滤 |
+| 个股资金流（DC） | `momentum:v13:moneyflow_dc:{trade_date}:{page}` | 按交易日分页缓存，再本地按 `ts_code` 过滤 |
+| 筹码胜率快照 | `momentum:v13:cyq_perf:{trade_date}:{page}` | 按交易日分页缓存；若快照模式失效，单股 fallback |
+| 筹码分布 | `momentum:v13:cyq_chips:{trade_date}:{ts_code}` | 逐股缓存，避免重复真查 |
 | 聚合上下文 | `momentum:v13:context:{trade_date}:{hash(ts_codes)}` | 依赖上游资源版本 |
 
 第一版优先使用现有磁盘 / 内存缓存能力；如后续切 Redis，应保持 key 语义不变。
@@ -319,6 +347,15 @@ V1.3 数据应分资源缓存，避免一次缺失拖垮全部能力。
 | V1.3 上下文 | `momentum:screening:v13_context:{trade_date}:{truth_mode}:{hash(ts_codes)}` | 真值模式与轻量模式必须分开缓存 |
 | 排序结果 | `momentum:screening:ranked_results:{hash(params+versions+truth_mode)}` | 完全同参时可直接复用最终排序 |
 | 二次决策结果 | `momentum:screening:decision:{hash(ranked_results_version+gate_version)}` | 避免最终展示层重复重算 |
+
+任务化执行中的推荐顺序：
+
+1. 先加载交易日级快照：`dc_concept / moneyflow_ind_dc / dc_index / moneyflow_ths / moneyflow_dc / cyq_perf`
+2. 再加载全表快照：`ths_member / ths_index`
+3. 再加载按交易日分页成分：`dc_member`
+4. 最后补逐股真查：`cyq_chips`
+
+这样可以把“单次任务中的外部请求总数”压到主要由分页快照和少量逐股真查组成，而不是对每只候选重复打完整题材链路。
 
 最终复用键必须包含：
 
