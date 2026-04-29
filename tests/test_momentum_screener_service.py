@@ -21,6 +21,7 @@ sys.modules.setdefault(
 
 from src.config import Config
 from src.services.momentum_screener_service import MomentumScreenerService
+from src.services.momentum_v13_data_service import MomentumV13DataService
 
 
 class _FakeFetcher:
@@ -281,17 +282,52 @@ class _FakeFetcher:
         self.history_calls[normalized] = self.history_calls.get(normalized, 0) + 1
         return self.history.get(stock_code, self.history.get(normalized, pd.DataFrame()))
 
+    def get_stock_limit_prices(self, trade_date: str):
+        trade_snapshot = self.trade_snapshots.get(str(trade_date), {})
+        return trade_snapshot.get("stk_limit", pd.DataFrame()).copy()
+
+    def get_limit_list(self, trade_date: str):
+        trade_snapshot = self.trade_snapshots.get(str(trade_date), {})
+        top_list = trade_snapshot.get("top_list", pd.DataFrame()).copy()
+        if top_list.empty:
+            return pd.DataFrame(columns=["ts_code", "trade_date", "limit"])
+        result = top_list.copy()
+        if "limit" not in result.columns:
+            result["limit"] = "U"
+        return result
+
+    def get_dc_concepts(self, trade_date: str):
+        return pd.DataFrame(columns=["ts_code", "name"])
+
+    def get_dc_members(self, trade_date: str, limit: int | None = None, offset: int | None = None):
+        return pd.DataFrame(columns=["con_code", "concept_code", "concept_name"])
+
+    def get_dc_moneyflow_themes(
+        self,
+        trade_date: str,
+        *,
+        content_type: str = "概念",
+        limit: int | None = None,
+        offset: int | None = None,
+    ):
+        return pd.DataFrame(columns=["ts_code", "name", "net_amount", "rank"])
+
+    def get_kpl_list(self, trade_date: str):
+        return pd.DataFrame(columns=["code", "name"])
+
 
 class MomentumScreenerServiceTestCase(unittest.TestCase):
     def setUp(self) -> None:
         Config.reset_instance()
         os.environ.pop("MOMENTUM_SECTOR_CACHE_TTL_SECONDS", None)
         MomentumScreenerService.reset_sector_cache()
+        MomentumV13DataService.reset_cache()
         self.cache_root_dir = tempfile.TemporaryDirectory()
 
     def tearDown(self) -> None:
         os.environ.pop("MOMENTUM_SECTOR_CACHE_TTL_SECONDS", None)
         self.cache_root_dir.cleanup()
+        MomentumV13DataService.reset_cache()
         Config.reset_instance()
 
     def _build_service(self, fetcher: _FakeFetcher | None = None) -> MomentumScreenerService:
@@ -350,9 +386,31 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
 
         output = "\n".join(captured.output)
         self.assertIn("event=prepare_candidate_scoring_rows", output)
+        self.assertIn("event=prepare_candidate_scoring_rows_progress", output)
         self.assertIn("event=provisional_candidate_scoring", output)
+        self.assertIn("event=provisional_candidate_scoring_progress", output)
         self.assertIn("event=build_standard_v13_profile_map", output)
         self.assertIn("event=official_candidate_scoring", output)
+        self.assertIn("event=official_candidate_scoring_progress", output)
+
+    def test_full_truth_progress_callback_includes_v13_resource_substeps(self) -> None:
+        service = self._build_service()
+        progress_events: list[dict[str, object]] = []
+
+        service.screen(
+            top_n=2,
+            profile="standard",
+            truth_mode="full",
+            progress_callback=lambda payload: progress_events.append(dict(payload)),
+        )
+
+        stage_keys = {str(item.get("stage_key")) for item in progress_events}
+        self.assertIn("prepare_candidate_scoring_rows", stage_keys)
+        self.assertIn("provisional_candidate_scoring", stage_keys)
+        self.assertIn("dc_members", stage_keys)
+        self.assertIn("cyq_perf", stage_keys)
+        self.assertIn("cyq_chips", stage_keys)
+        self.assertIn("official_candidate_scoring", stage_keys)
 
     def test_cached_screening_response_backfills_official_score_and_rank(self) -> None:
         service = self._build_service()
@@ -578,7 +636,7 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
 
         result = service._build_standard_v13_profile_map(
             trade_date="2026-04-10",
-            provisional_results=provisional_results,
+            ranked_candidates=provisional_results,
         )
 
         self.assertEqual(result, {})
@@ -633,7 +691,7 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
 
         result = service._build_standard_v13_profile_map(
             trade_date="2026-04-10",
-            provisional_results=provisional_results,
+            ranked_candidates=provisional_results,
             truth_mode="full",
         )
 
@@ -641,6 +699,55 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
         self.assertEqual(len(captured["ts_codes"]), 18)
         self.assertEqual(captured["ts_codes"][0], "600000.SH")
         self.assertEqual(captured["ts_codes"][-1], "600017.SH")
+
+    def test_build_v13_profile_seed_candidates_projects_lightweight_ranked_inputs(self) -> None:
+        service = self._build_service()
+
+        def _fake_score_candidate_batch(**kwargs: object) -> list[dict[str, object]]:
+            return [
+                {
+                    "ts_code": "600001.SH",
+                    "name": "测试一号",
+                    "rank_score": 71.2,
+                    "final_score": 65.0,
+                    "official_score": 95.0,
+                    "themes": ["电力设备"],
+                    "leader_level": "front",
+                    "top_reasons": ["legacy"],
+                },
+                {
+                    "ts_code": "600002.SH",
+                    "name": "测试二号",
+                    "rank_score": 79.8,
+                    "final_score": 63.0,
+                    "official_score": 40.0,
+                    "themes": ["电力设备"],
+                    "leader_level": "leader",
+                    "risk_tags": ["legacy"],
+                },
+            ]
+
+        service._score_candidate_batch = _fake_score_candidate_batch  # type: ignore[method-assign]
+
+        ranked_candidates = service._build_v13_profile_seed_candidates(
+            prepared_rows=[],
+            profile="standard",
+            progress_callback=None,
+            trade_date="20260410",
+            stage_key="provisional_candidate_scoring",
+            stage_label="seed",
+            progress_base=58.0,
+            progress_span=8.0,
+        )
+
+        self.assertEqual([item["ts_code"] for item in ranked_candidates], ["600002.SH", "600001.SH"])
+        self.assertEqual([item["rank"] for item in ranked_candidates], [1, 2])
+        self.assertNotIn("official_score", ranked_candidates[0])
+        self.assertNotIn("top_reasons", ranked_candidates[0])
+        self.assertEqual(
+            set(ranked_candidates[0].keys()),
+            {"ts_code", "name", "rank_score", "final_score", "themes", "leader_level", "rank"},
+        )
 
     def test_screen_prefers_current_trade_date_after_close_when_eod_snapshot_ready(self) -> None:
         fetcher = _FakeFetcher(current_time=datetime(2026, 4, 11, 15, 10, 0))

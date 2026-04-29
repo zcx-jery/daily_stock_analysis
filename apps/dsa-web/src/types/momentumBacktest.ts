@@ -161,6 +161,28 @@ export interface MomentumBacktestV13DataStatus {
   isDegraded?: boolean | null;
 }
 
+export interface MomentumBacktestV13StructuredDiagnostic {
+  key?: string | null;
+  label?: string | null;
+  level?: string | null;
+  levelLabel?: string | null;
+  score?: number | null;
+  avgScore?: number | null;
+  summary?: string | null;
+  metrics?: Record<string, unknown> | null;
+  sampleDays?: number;
+  strongDays?: number;
+  generalDays?: number;
+  weakDays?: number;
+}
+
+export interface MomentumBacktestV13FailureAttributionItem {
+  key?: string | null;
+  label?: string | null;
+  summary?: string | null;
+  days?: number;
+}
+
 export interface MomentumBacktestV13Diagnostics {
   evaluatedTradeDates?: number;
   radarAvailableDays?: number;
@@ -177,6 +199,14 @@ export interface MomentumBacktestV13Diagnostics {
   topMainline?: MomentumBacktestV13MainlineItem | null;
   mainlineCount?: number;
   summaryLines?: string[];
+  mainlineQuality?: MomentumBacktestV13StructuredDiagnostic | null;
+  themeConcentration?: MomentumBacktestV13StructuredDiagnostic | null;
+  sentimentAlignment?: MomentumBacktestV13StructuredDiagnostic | null;
+  roleFit?: MomentumBacktestV13StructuredDiagnostic | null;
+  pricePosition?: MomentumBacktestV13StructuredDiagnostic | null;
+  candidatePoolBias?: MomentumBacktestV13StructuredDiagnostic | null;
+  failureAttribution?: MomentumBacktestV13FailureAttributionItem[];
+  failureAttributionBreakdown?: MomentumBacktestV13FailureAttributionItem[];
 }
 
 export interface MomentumBacktestRunResponse {
@@ -313,7 +343,6 @@ export interface MomentumBacktestCandidateDetailItem {
   role?: string | null;
   marketSegment?: string | null;
   officialScore?: number | null;
-  rankScore?: number | null;
   finalScore?: number | null;
   continuationScore?: number | null;
   extensionScore?: number | null;
@@ -330,9 +359,7 @@ export interface MomentumBacktestDecisionDetailItem {
   name: string;
   theme?: string | null;
   role?: string | null;
-  decisionScore?: number | null;
   officialScore?: number | null;
-  rankScore?: number | null;
   riskScore?: number | null;
   buyPointStatus?: string | null;
   suggestedAction?: string | null;

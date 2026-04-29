@@ -378,6 +378,10 @@
 
 ## 7.3 M2.7：全候选主排序引擎第一阶段实施方案
 
+实施进度（2026-04-29）：
+
+- 后端已将 V1.3 `profile map` 的正式输入收口为全候选 `baseline seed candidates`，`official_score` 重评分不再直接消费 provisional 结果载荷。
+
 优先级：`P0`
 
 目标：
@@ -678,6 +682,11 @@
 - 页面只输出辅助观察，不输出正式买入指令。
 
 ## 14. M9：回测诊断升级
+
+进展更新（2026-04-29）：
+
+- 已在回测 `summary` / `daily detail` 的 `v13_diagnostics` 中补齐 `mainline_quality`、`theme_concentration`、`sentiment_alignment`、`role_fit`、`price_position`、`candidate_pool_bias` 六个结构化诊断键。
+- 已新增区间级 `failure_attribution_breakdown` 与单日 `failure_attribution`，前端回测面板同步展示结构化诊断和主要拖累归因。
 
 优先级：`P1`
 

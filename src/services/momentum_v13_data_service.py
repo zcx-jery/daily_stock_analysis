@@ -6,12 +6,30 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import logging
 import time
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from data_provider.base import normalize_stock_code
 from data_provider.tushare_fetcher import TushareFetcher
 
 logger = logging.getLogger(__name__)
+
+ContextProgressCallback = Callable[[Dict[str, Any]], None]
+
+CONTEXT_PROGRESS_STAGE_LABELS = {
+    "limit_prices": "加载涨停价快照",
+    "limit_events": "加载涨停事件快照",
+    "dc_concepts": "加载东财题材快照",
+    "dc_moneyflow": "加载板块资金快照",
+    "dc_members": "加载东财题材成分",
+    "stock_moneyflow_dc": "加载东财个股资金",
+    "stock_moneyflow_ths": "加载同花顺个股资金",
+    "cyq_perf": "加载获利盘分布快照",
+    "cyq_chips": "加载筹码明细快照",
+    "kpl_list": "加载开盘啦题材映射",
+    "ths_hot": "加载同花顺热度快照",
+    "ths_members": "加载同花顺题材成分",
+    "ths_index_names": "加载同花顺题材名称",
+}
 
 
 def _safe_list(value: Any) -> List[Any]:
@@ -125,7 +143,39 @@ class MomentumV13DataService:
     def get_cache_stats(cls) -> Dict[str, int]:
         return {**cls._shared_cache_stats, "size": len(cls._shared_resource_cache)}
 
-    def build_context(self, *, trade_date: str, ts_codes: List[str]) -> Dict[str, Any]:
+    @staticmethod
+    def _emit_progress(
+        progress_callback: Optional[ContextProgressCallback],
+        *,
+        stage_key: str,
+        stage_label: str,
+        progress_pct: float,
+        trade_date: Optional[str] = None,
+        processed_item_count: Optional[int] = None,
+        total_item_count: Optional[int] = None,
+    ) -> None:
+        if not callable(progress_callback):
+            return
+        payload: Dict[str, Any] = {
+            "stage_key": stage_key,
+            "stage_label": stage_label,
+            "progress_pct": round(max(0.0, min(100.0, float(progress_pct))), 2),
+        }
+        if trade_date:
+            payload["trade_date"] = str(trade_date)
+        if processed_item_count is not None:
+            payload["processed_item_count"] = max(0, int(processed_item_count))
+        if total_item_count is not None:
+            payload["total_item_count"] = max(0, int(total_item_count))
+        progress_callback(payload)
+
+    def build_context(
+        self,
+        *,
+        trade_date: str,
+        ts_codes: List[str],
+        progress_callback: Optional[ContextProgressCallback] = None,
+    ) -> Dict[str, Any]:
         """Build the full V1.3 EOD context used by replay and secondary decision."""
         return self._build_context(
             trade_date=trade_date,
@@ -133,9 +183,16 @@ class MomentumV13DataService:
             context_variant="full",
             include_chip_snapshots=True,
             include_ths_members=True,
+            progress_callback=progress_callback,
         )
 
-    def build_screening_context(self, *, trade_date: str, ts_codes: List[str]) -> Dict[str, Any]:
+    def build_screening_context(
+        self,
+        *,
+        trade_date: str,
+        ts_codes: List[str],
+        progress_callback: Optional[ContextProgressCallback] = None,
+    ) -> Dict[str, Any]:
         """Build a lighter V1.3 context for synchronous screening requests."""
         return self._build_context(
             trade_date=trade_date,
@@ -143,6 +200,7 @@ class MomentumV13DataService:
             context_variant="screening_light",
             include_chip_snapshots=False,
             include_ths_members=False,
+            progress_callback=progress_callback,
         )
 
     def _build_context(
@@ -153,6 +211,7 @@ class MomentumV13DataService:
         context_variant: str,
         include_chip_snapshots: bool,
         include_ths_members: bool,
+        progress_callback: Optional[ContextProgressCallback],
     ) -> Dict[str, Any]:
         normalized_codes = self._normalize_ts_codes(ts_codes)
         context_key = self._cache_key("context", context_variant, trade_date, ",".join(normalized_codes))
@@ -173,28 +232,68 @@ class MomentumV13DataService:
                 str(payload.get("status") or "unknown"),
             )
 
+        active_steps = [
+            "limit_prices",
+            "limit_events",
+            "dc_concepts",
+            "dc_moneyflow",
+            "dc_members",
+            "stock_moneyflow_dc",
+            "stock_moneyflow_ths",
+        ]
+        if include_chip_snapshots:
+            active_steps.extend(["cyq_perf", "cyq_chips"])
+        active_steps.extend(["kpl_list", "ths_hot"])
+        if include_ths_members:
+            active_steps.extend(["ths_members", "ths_index_names"])
+
+        def _emit_context_step(step: str) -> None:
+            if not active_steps:
+                progress_pct = 70.0
+            else:
+                index = active_steps.index(step)
+                progress_pct = 66.5 + (index / max(len(active_steps), 1)) * 5.0
+            self._emit_progress(
+                progress_callback,
+                stage_key=step,
+                stage_label=CONTEXT_PROGRESS_STAGE_LABELS.get(step, step),
+                progress_pct=progress_pct,
+                trade_date=self._display_trade_date(trade_date),
+                processed_item_count=len(normalized_codes),
+                total_item_count=len(normalized_codes),
+            )
+
         started_at = time.perf_counter()
+        _emit_context_step("limit_prices")
         limit_prices = self._load_limit_prices(trade_date)
         _log_context_step("limit_prices", started_at, limit_prices)
         started_at = time.perf_counter()
+        _emit_context_step("limit_events")
         limit_events = self._load_limit_events(trade_date)
         _log_context_step("limit_events", started_at, limit_events)
         started_at = time.perf_counter()
+        _emit_context_step("dc_concepts")
         dc_concepts = self._load_dc_concepts(trade_date)
         _log_context_step("dc_concepts", started_at, dc_concepts)
         started_at = time.perf_counter()
+        _emit_context_step("dc_moneyflow")
         dc_moneyflow = self._load_dc_moneyflow(trade_date)
         _log_context_step("dc_moneyflow", started_at, dc_moneyflow)
         started_at = time.perf_counter()
+        _emit_context_step("dc_members")
         dc_members = self._load_dc_members(trade_date, normalized_codes)
         _log_context_step("dc_members", started_at, dc_members)
         started_at = time.perf_counter()
+        _emit_context_step("stock_moneyflow_dc")
         stock_moneyflow_dc = self._load_stock_moneyflow_dc(trade_date, normalized_codes)
         _log_context_step("stock_moneyflow_dc", started_at, stock_moneyflow_dc)
         started_at = time.perf_counter()
+        _emit_context_step("stock_moneyflow_ths")
         stock_moneyflow_ths = self._load_stock_moneyflow_ths(trade_date, normalized_codes)
         _log_context_step("stock_moneyflow_ths", started_at, stock_moneyflow_ths)
         started_at = time.perf_counter()
+        if include_chip_snapshots:
+            _emit_context_step("cyq_perf")
         cyq_perf = (
             self._load_cyq_perf(trade_date, normalized_codes)
             if include_chip_snapshots
@@ -207,6 +306,8 @@ class MomentumV13DataService:
         if include_chip_snapshots:
             _log_context_step("cyq_perf", started_at, cyq_perf)
         started_at = time.perf_counter()
+        if include_chip_snapshots:
+            _emit_context_step("cyq_chips")
         cyq_chips = (
             self._load_cyq_chips(trade_date, normalized_codes)
             if include_chip_snapshots
@@ -219,12 +320,16 @@ class MomentumV13DataService:
         if include_chip_snapshots:
             _log_context_step("cyq_chips", started_at, cyq_chips)
         started_at = time.perf_counter()
+        _emit_context_step("kpl_list")
         kpl_list = self._load_kpl_list(trade_date)
         _log_context_step("kpl_list", started_at, kpl_list)
         started_at = time.perf_counter()
+        _emit_context_step("ths_hot")
         ths_hot = self._load_ths_hot(trade_date)
         _log_context_step("ths_hot", started_at, ths_hot)
         started_at = time.perf_counter()
+        if include_ths_members:
+            _emit_context_step("ths_members")
         ths_members = (
             self._load_ths_members(normalized_codes)
             if include_ths_members
@@ -237,6 +342,8 @@ class MomentumV13DataService:
         if include_ths_members:
             _log_context_step("ths_members", started_at, ths_members)
         started_at = time.perf_counter()
+        if include_ths_members:
+            _emit_context_step("ths_index_names")
         theme_name_map = self._load_ths_index_names(ths_members) if include_ths_members else {}
         if include_ths_members:
             _log_context_step("ths_index_names", started_at, theme_name_map.get("_payload") or {})
@@ -330,9 +437,19 @@ class MomentumV13DataService:
         self._cache_set(context_key, context)
         return context
 
-    def build_replay_context(self, *, trade_date: str, ts_codes: List[str]) -> Dict[str, Any]:
+    def build_replay_context(
+        self,
+        *,
+        trade_date: str,
+        ts_codes: List[str],
+        progress_callback: Optional[ContextProgressCallback] = None,
+    ) -> Dict[str, Any]:
         """Build a replay-safe V1.3 context without using realtime quote data."""
-        context = self.build_context(trade_date=trade_date, ts_codes=ts_codes)
+        context = self.build_context(
+            trade_date=trade_date,
+            ts_codes=ts_codes,
+            progress_callback=progress_callback,
+        )
         replay_context = dict(context)
         replay_context["is_replay_context"] = True
         replay_context["replay_notes"] = [

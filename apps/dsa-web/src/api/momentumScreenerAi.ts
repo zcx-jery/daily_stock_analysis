@@ -66,7 +66,6 @@ function buildRequest(payload: MomentumScreenerAiReviewRequest) {
         entry_range_high: item.entryRangeHigh ?? undefined,
         final_score: item.finalScore,
         official_score: item.officialScore,
-        rank_score: item.rankScore,
         themes: item.themes,
         leader_level: item.leaderLevel,
         top_reasons: item.topReasons,
@@ -122,7 +121,6 @@ function buildRequest(payload: MomentumScreenerAiReviewRequest) {
             score: item.score,
             official_score: item.officialScore,
             base_rank_score: item.baseRankScore,
-            rank_score: item.rankScore,
             risk_score: item.riskScore,
             decision_adjustment: item.decisionAdjustment ?? undefined,
             decision_adjustment_reason: item.decisionAdjustmentReason ?? undefined,
@@ -162,7 +160,6 @@ function buildRequest(payload: MomentumScreenerAiReviewRequest) {
             base_rank_score: item.baseRankScore,
             reason: item.reason,
             reason_detail: item.reasonDetail ?? undefined,
-            rank_score: item.rankScore,
             decision_adjustment: item.decisionAdjustment ?? undefined,
             decision_adjustment_reason: item.decisionAdjustmentReason ?? undefined,
             hard_blockers: item.hardBlockers.map((reason) => ({

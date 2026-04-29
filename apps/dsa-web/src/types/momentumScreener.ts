@@ -27,7 +27,6 @@ export interface MomentumScreenerResult {
   entryRangeLow?: number | null;
   entryRangeHigh?: number | null;
   finalScore: number;
-  rankScore: number;
   officialScore: number;
   themes: string[];
   leaderLevel: string;
@@ -133,7 +132,6 @@ export interface MomentumDecisionThemeRepresentative {
   role: string;
   buyPointLabel: string;
   officialScore?: number | null;
-  rankScore: number;
   v13MainlineScore?: number | null;
 }
 
@@ -182,10 +180,8 @@ export interface MomentumDecisionPortfolioSlot {
   score: number;
   officialScore: number;
   baseRankScore: number;
-  rankScore: number;
   riskScore: number;
   ruleBaseScore?: number | null;
-  decisionScore?: number | null;
   decisionAdjustment?: number | null;
   decisionAdjustmentReason?: string | null;
   hardBlockers: MomentumDecisionReasonItem[];
@@ -218,7 +214,6 @@ export interface MomentumDecisionExcludedCandidate {
   reasonDetail?: string | null;
   officialScore: number;
   baseRankScore: number;
-  rankScore: number;
   decisionAdjustment?: number | null;
   decisionAdjustmentReason?: string | null;
   hardBlockers: MomentumDecisionReasonItem[];
@@ -249,7 +244,6 @@ export interface MomentumDecisionCandidateDiagnostic {
   buyPointLabel: string;
   officialScore: number;
   baseRankScore: number;
-  rankScore: number;
   continuationScore: number;
   extensionScore: number;
   extensionSignalScore: number;
@@ -262,7 +256,6 @@ export interface MomentumDecisionCandidateDiagnostic {
   softAdjustments: MomentumDecisionReasonItem[];
   explainAdjustmentScore: number;
   t1DirectionRiskAdjustment?: number | null;
-  decisionScore: number;
   forwardAlphaScore: number;
   forwardAlphaAdjustment: number;
   portfolioPriority: number;

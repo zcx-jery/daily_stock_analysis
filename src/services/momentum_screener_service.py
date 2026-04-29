@@ -364,7 +364,7 @@ class MomentumScreenerService:
         if use_sector_context:
             self._emit_progress(
                 progress_callback,
-                stage_key="sector_context",
+                stage_key="sector_context_load",
                 stage_label="加载题材与板块上下文",
                 progress_pct=34.0,
                 trade_date=resolved_trade_date,
@@ -1036,12 +1036,13 @@ class MomentumScreenerService:
             return []
 
         provisional_scoring_started_at = time.perf_counter()
-        provisional_results = self._score_candidate_batch(
+        ranked_seed_candidates = self._build_v13_profile_seed_candidates(
             prepared_rows=prepared_rows,
             profile=profile,
             v13_profile_map=None,
             progress_callback=progress_callback,
             trade_date=trade_date,
+            stage_key="provisional_candidate_scoring",
             stage_label="构建全候选评分画像",
             progress_base=58.0,
             progress_span=8.0,
@@ -1052,9 +1053,9 @@ class MomentumScreenerService:
             trade_date=trade_date,
             profile=profile,
             truth_mode=truth_mode,
-            extra={"result_count": len(provisional_results)},
+            extra={"result_count": len(ranked_seed_candidates)},
         )
-        if not provisional_results:
+        if not ranked_seed_candidates:
             return []
 
         full_truth_mode = _normalize_truth_mode(truth_mode) == MOMENTUM_TRUTH_MODE_FULL
@@ -1070,8 +1071,9 @@ class MomentumScreenerService:
         v13_profile_started_at = time.perf_counter()
         v13_profile_map = self._build_standard_v13_profile_map(
             trade_date=trade_date,
-            provisional_results=provisional_results,
+            ranked_candidates=ranked_seed_candidates,
             truth_mode=truth_mode,
+            progress_callback=progress_callback,
         )
         self._log_timing(
             event="build_standard_v13_profile_map",
@@ -1089,6 +1091,7 @@ class MomentumScreenerService:
             v13_profile_map=v13_profile_map,
             progress_callback=progress_callback,
             trade_date=trade_date,
+            stage_key="official_candidate_scoring",
             stage_label="执行全候选 V1.3 正式重评分" if full_truth_mode else "融合 V1.3 信号重排",
             progress_base=72.0,
             progress_span=22.0,
@@ -1115,6 +1118,8 @@ class MomentumScreenerService:
         total_candidates: int,
     ) -> List[tuple[pd.Series, Dict[str, Any]]]:
         prepared_rows: List[tuple[pd.Series, Dict[str, Any]]] = []
+        stage_started_at = time.perf_counter()
+        progress_interval = max(25, total_candidates // 10) if total_candidates > 0 else 25
         for index, row in candidates.iterrows():
             history = self._load_history(_safe_str(row.get("ts_code") or row.get("symbol")), trade_date)
             if history.empty:
@@ -1133,17 +1138,100 @@ class MomentumScreenerService:
                 },
             )
             prepared_rows.append((row, features))
+            processed_rows = len(prepared_rows)
             self._emit_progress(
                 progress_callback,
-                stage_key="scoring",
+                stage_key="prepare_candidate_scoring_rows",
                 stage_label="构建全候选评分画像",
-                progress_pct=46.0 + min(12.0, ((len(prepared_rows) / max(1, total_candidates)) * 12.0)),
-                processed_item_count=len(prepared_rows),
+                progress_pct=46.0 + min(12.0, ((processed_rows / max(1, total_candidates)) * 12.0)),
+                processed_item_count=processed_rows,
                 total_item_count=total_candidates,
                 trade_date=trade_date,
             )
+            if (
+                processed_rows == 1
+                or processed_rows == total_candidates
+                or processed_rows % progress_interval == 0
+            ):
+                self._log_timing(
+                    event="prepare_candidate_scoring_rows_progress",
+                    elapsed_seconds=time.perf_counter() - stage_started_at,
+                    trade_date=trade_date,
+                    extra={"processed_rows": processed_rows, "total_candidates": total_candidates},
+                )
 
         return prepared_rows
+
+    def _build_v13_profile_seed_candidates(
+        self,
+        *,
+        prepared_rows: List[tuple[pd.Series, Dict[str, Any]]],
+        profile: str,
+        v13_profile_map: Optional[Dict[str, Dict[str, Any]]] = None,
+        progress_callback: Optional[MomentumScreeningProgressCallback],
+        trade_date: str,
+        stage_key: str,
+        stage_label: str,
+        progress_base: float,
+        progress_span: float,
+    ) -> List[Dict[str, Any]]:
+        baseline_results = self._score_candidate_batch(
+            prepared_rows=prepared_rows,
+            profile=profile,
+            v13_profile_map=v13_profile_map,
+            progress_callback=progress_callback,
+            trade_date=trade_date,
+            stage_key=stage_key,
+            stage_label=stage_label,
+            progress_base=progress_base,
+            progress_span=progress_span,
+        )
+        if not baseline_results:
+            return []
+
+        seed_candidates = [
+            self._project_v13_profile_seed_candidate(item)
+            for item in baseline_results
+            if _safe_str(item.get("ts_code"))
+        ]
+        return self._finalize_v13_profile_seed_candidates(seed_candidates)
+
+    @staticmethod
+    def _project_v13_profile_seed_candidate(item: Dict[str, Any]) -> Dict[str, Any]:
+        themes = [
+            str(theme).strip()
+            for theme in (item.get("themes") or [])
+            if str(theme).strip()
+        ]
+        return {
+            "ts_code": _safe_str(item.get("ts_code")),
+            "name": _safe_str(item.get("name")),
+            "rank_score": round(_safe_float(item.get("rank_score")), 1),
+            "final_score": round(_safe_float(item.get("final_score")), 1),
+            "themes": themes,
+            "leader_level": _safe_str(item.get("leader_level")),
+        }
+
+    def _profile_seed_sort_key(self, item: Dict[str, Any]) -> tuple[float, float, str]:
+        return (
+            -_safe_float(item.get("rank_score")),
+            -_safe_float(item.get("final_score")),
+            _safe_str(item.get("ts_code")),
+        )
+
+    def _finalize_v13_profile_seed_candidates(
+        self,
+        candidates: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        ranked_candidates = [
+            dict(item)
+            for item in candidates
+            if _safe_str(item.get("ts_code"))
+        ]
+        ranked_candidates.sort(key=self._profile_seed_sort_key)
+        for rank, item in enumerate(ranked_candidates, start=1):
+            item["rank"] = rank
+        return ranked_candidates
 
     def _score_candidate_batch(
         self,
@@ -1153,6 +1241,7 @@ class MomentumScreenerService:
         v13_profile_map: Optional[Dict[str, Dict[str, Any]]],
         progress_callback: Optional[MomentumScreeningProgressCallback],
         trade_date: str,
+        stage_key: str,
         stage_label: str,
         progress_base: float,
         progress_span: float,
@@ -1160,6 +1249,8 @@ class MomentumScreenerService:
         results: List[Dict[str, Any]] = []
         profile_map = v13_profile_map or {}
         total_rows = len(prepared_rows)
+        stage_started_at = time.perf_counter()
+        progress_interval = max(25, total_rows // 10) if total_rows > 0 else 25
         for row, features in prepared_rows:
             scored_features = dict(features)
             if profile_map:
@@ -1168,15 +1259,27 @@ class MomentumScreenerService:
                 results.append(self._score_aggressive(row, scored_features))
             else:
                 results.append(self._score_standard(row, scored_features))
+            processed_rows = len(results)
             self._emit_progress(
                 progress_callback,
-                stage_key="scoring",
+                stage_key=stage_key,
                 stage_label=stage_label,
-                progress_pct=progress_base + min(progress_span, ((len(results) / max(1, total_rows)) * progress_span)),
-                processed_item_count=len(results),
+                progress_pct=progress_base + min(progress_span, ((processed_rows / max(1, total_rows)) * progress_span)),
+                processed_item_count=processed_rows,
                 total_item_count=total_rows,
                 trade_date=trade_date,
             )
+            if (
+                processed_rows == 1
+                or processed_rows == total_rows
+                or processed_rows % progress_interval == 0
+            ):
+                self._log_timing(
+                    event=f"{stage_key}_progress",
+                    elapsed_seconds=time.perf_counter() - stage_started_at,
+                    trade_date=trade_date,
+                    extra={"processed_rows": processed_rows, "total_rows": total_rows},
+                )
 
         return results
 
@@ -1231,14 +1334,36 @@ class MomentumScreenerService:
             return None
         return self._v13_data_service
 
+    @staticmethod
+    def _call_v13_context_builder(
+        builder: Callable[..., Dict[str, Any]],
+        *,
+        trade_date: str,
+        ts_codes: List[str],
+        progress_callback: Optional[MomentumScreeningProgressCallback],
+    ) -> Dict[str, Any]:
+        if progress_callback is None:
+            return builder(trade_date=trade_date, ts_codes=ts_codes)
+        try:
+            return builder(
+                trade_date=trade_date,
+                ts_codes=ts_codes,
+                progress_callback=progress_callback,
+            )
+        except TypeError as exc:
+            if "progress_callback" not in str(exc):
+                raise
+            return builder(trade_date=trade_date, ts_codes=ts_codes)
+
     def _build_standard_v13_profile_map(
         self,
         *,
         trade_date: str,
-        provisional_results: List[Dict[str, Any]],
+        ranked_candidates: List[Dict[str, Any]],
         truth_mode: str = "light",
+        progress_callback: Optional[MomentumScreeningProgressCallback] = None,
     ) -> Dict[str, Dict[str, Any]]:
-        if not provisional_results:
+        if not ranked_candidates:
             return {}
 
         required_fetcher_methods = (
@@ -1256,19 +1381,9 @@ class MomentumScreenerService:
         if v13_service is None:
             return {}
 
-        ranked_candidates = [
-            dict(item)
-            for item in provisional_results
-            if _safe_str(item.get("ts_code"))
-        ]
+        ranked_candidates = self._finalize_v13_profile_seed_candidates(ranked_candidates)
         if not ranked_candidates:
             return {}
-
-        ranked_candidates.sort(
-            key=self._official_result_sort_key,
-        )
-        for rank, item in enumerate(ranked_candidates, start=1):
-            item["rank"] = rank
 
         normalized_truth_mode = _normalize_truth_mode(truth_mode)
         v13_ranked_candidates = self._select_v13_profile_candidates(
@@ -1283,19 +1398,25 @@ class MomentumScreenerService:
             build_screening_context = getattr(v13_service, "build_screening_context", None)
             context_build_started_at = time.perf_counter()
             if normalized_truth_mode == "full":
-                context = v13_service.build_context(
+                context = self._call_v13_context_builder(
+                    v13_service.build_context,
                     trade_date=trade_date,
                     ts_codes=ts_codes,
+                    progress_callback=progress_callback,
                 )
             elif callable(build_screening_context):
-                context = build_screening_context(
+                context = self._call_v13_context_builder(
+                    build_screening_context,
                     trade_date=trade_date,
                     ts_codes=ts_codes,
+                    progress_callback=progress_callback,
                 )
             else:
-                context = v13_service.build_context(
+                context = self._call_v13_context_builder(
+                    v13_service.build_context,
                     trade_date=trade_date,
                     ts_codes=ts_codes,
+                    progress_callback=progress_callback,
                 )
             self._log_timing(
                 event="v13_context_build",

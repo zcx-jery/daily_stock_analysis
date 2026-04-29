@@ -287,6 +287,11 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
         self.assertIn("gate_module_breakdown", summary["summary"])
         self.assertIn("regime_breakdown", summary["summary"])
         self.assertIn("v13_diagnostics", summary["summary"])
+        self.assertIn("mainline_quality", summary["summary"]["v13_diagnostics"])
+        self.assertIn("theme_concentration", summary["summary"]["v13_diagnostics"])
+        self.assertIn("sentiment_alignment", summary["summary"]["v13_diagnostics"])
+        self.assertIn("failure_attribution_breakdown", summary["summary"]["v13_diagnostics"])
+        self.assertEqual(summary["summary"]["v13_diagnostics"]["mainline_quality"]["sample_days"], 3)
         self.assertTrue(any(item["key"] == "buy_point_clarity" for item in summary["summary"]["gate_module_breakdown"]))
 
         detail = self.service.get_daily_detail(result["run_id"], "2026-04-10")
@@ -295,6 +300,9 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
         self.assertTrue(detail["decision_top3"])
         self.assertIn("official_score", detail["candidate_top10"][0])
         self.assertIn("official_score", detail["decision_top3"][0])
+        self.assertNotIn("rank_score", detail["candidate_top10"][0])
+        self.assertNotIn("rank_score", detail["decision_top3"][0])
+        self.assertNotIn("decision_score", detail["decision_top3"][0])
         self.assertIn("decision_diagnostics", detail["candidate_top10"][0])
         self.assertIn("forward_alpha_score", detail["candidate_top10"][0]["decision_diagnostics"])
         self.assertIn("gate_snapshot", detail["diagnosis"])
@@ -333,6 +341,97 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
         self.assertEqual(diagnostics["top_mainline"]["theme_name"], "机器人")
         self.assertEqual(diagnostics["short_term_sentiment"]["level"], "tradable")
         self.assertTrue(any("机器人" in line for line in diagnostics["summary_lines"]))
+
+    def test_v13_structured_diagnostics_capture_daily_failure_attribution(self) -> None:
+        row = self._build_daily_summary_fixture()
+        row.decision_payload_json = self.service._dump_json(
+            {
+                "mainline_radar": [
+                    {
+                        "theme_id": "T001",
+                        "theme_name": "Robotics",
+                        "score": 82.5,
+                        "level": "strong",
+                        "candidate_count": 6,
+                        "top10_count": 3,
+                    }
+                ],
+                "short_term_sentiment": {
+                    "level": "tradable",
+                    "level_label": "Tradable",
+                    "score": 71.0,
+                },
+                "v13_data_status": {"status": "partial", "is_degraded": True, "reason": "fallback"},
+                "action": {
+                    "level": "stand_aside",
+                    "label": "Stand Aside",
+                },
+                "opportunity_quality": {
+                    "theme_concentration_pass": False,
+                    "portfolio_unresolved": False,
+                },
+                "portfolio": [
+                    {
+                        "slot": "main",
+                        "ts_code": "600001.SH",
+                        "theme": "AI Infra",
+                        "role": "front",
+                        "buy_point_status": "unclear",
+                        "suggested_action": "wait_for_trigger",
+                        "entry_range_low": 10.1,
+                        "entry_range_high": 10.5,
+                        "risk_score": 42.0,
+                    }
+                ],
+                "candidate_diagnostics": [
+                    {
+                        "rank": 1,
+                        "ts_code": "300001.SZ",
+                        "theme": "Robotics",
+                        "official_score": 85.0,
+                    },
+                    {
+                        "rank": 4,
+                        "ts_code": "600001.SH",
+                        "theme": "AI Infra",
+                        "official_score": 73.0,
+                    },
+                ],
+            }
+        )
+
+        diagnostics = self.service._extract_v13_diagnostics_from_daily_row(row)
+
+        self.assertEqual(diagnostics["mainline_quality"]["key"], "mainline_quality")
+        self.assertEqual(diagnostics["theme_concentration"]["level"], "weak")
+        self.assertEqual(diagnostics["candidate_pool_bias"]["level"], "weak")
+        self.assertTrue(any(item["key"] == "theme_concentration" for item in diagnostics["failure_attribution"]))
+        self.assertTrue(any("主要拖累" in line for line in diagnostics["summary_lines"]))
+
+    def test_summary_refresh_detects_missing_m9_v13_fields(self) -> None:
+        self.assertTrue(
+            self.service._summary_requires_refresh(
+                {
+                    "benchmark_comparison": [],
+                    "layer_diagnostics": [],
+                    "gate_module_breakdown": [],
+                    "regime_breakdown": [],
+                    "candidate_top10_positive_t2_rate": 0.0,
+                    "candidate_top10_t1_direction_pass_rate": 0.0,
+                    "candidate_top10_t2_continuation_pass_rate": 0.0,
+                    "decision_top3_t1_direction_pass_rate": 0.0,
+                    "decision_top3_t2_continuation_pass_rate": 0.0,
+                    "market_environment_breakdown": {},
+                    "strategy_health_mode": "cached_only",
+                    "strategy_health_validation_status_breakdown": {},
+                    "attack_permission_breakdown": {},
+                    "theme_confidence_breakdown": {},
+                    "v13_diagnostics": {
+                        "evaluated_trade_dates": 1,
+                    },
+                }
+            )
+        )
 
     def test_create_run_rejects_invalid_date_range(self) -> None:
         with self.assertRaises(ValueError):

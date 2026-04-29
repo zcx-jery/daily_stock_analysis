@@ -12,7 +12,11 @@ from unittest.mock import patch
 import pandas as pd
 
 from src.services.momentum_screener_service import MomentumScreenerService
-from src.services.momentum_secondary_decision_service import MomentumSecondaryDecisionService
+from src.services.momentum_secondary_decision_service import (
+    STRATEGY_HEALTH_CACHE_TTL,
+    STRATEGY_HEALTH_SAMPLE_CACHE_TTL,
+    MomentumSecondaryDecisionService,
+)
 from tests.test_momentum_screener_service import _FakeFetcher
 
 
@@ -299,8 +303,14 @@ class _FallbackForwardFetcher:
         )
 
 
-def _build_historical_strategy_fixture(*, short_successes: int, long_successes: int):
-    current_trade_date = "2026-04-10"
+def _build_historical_strategy_fixture(
+    *,
+    short_successes: int,
+    long_successes: int,
+    current_trade_date: str = "2026-04-10",
+    historical_start_date: date = date(2026, 2, 8),
+    historical_day_count: int = 60,
+):
     current_screening = {
         "profile": "aggressive",
         "trade_date": current_trade_date,
@@ -350,8 +360,8 @@ def _build_historical_strategy_fixture(*, short_successes: int, long_successes: 
     }
 
     historical_dates = [
-        (date(2026, 2, 8) + timedelta(days=index)).strftime("%Y-%m-%d")
-        for index in range(60)
+        (historical_start_date + timedelta(days=index)).strftime("%Y-%m-%d")
+        for index in range(historical_day_count)
     ]
     historical_dates_desc = list(reversed(historical_dates))
     success_dates = set(historical_dates_desc[:short_successes])
@@ -402,6 +412,10 @@ def _build_historical_strategy_fixture(*, short_successes: int, long_successes: 
 
 
 class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
+    def test_strategy_health_cache_ttls_match_aggregate_and_sample_policies(self) -> None:
+        self.assertEqual(STRATEGY_HEALTH_CACHE_TTL, timedelta(hours=12))
+        self.assertEqual(STRATEGY_HEALTH_SAMPLE_CACHE_TTL, timedelta(days=30))
+
     @staticmethod
     def _selected_candidate_fixture(
         *,
@@ -566,6 +580,10 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         self.assertIn("base_rank_score", result["portfolio"][0])
         self.assertIn("decision_adjustment_reason", result["portfolio"][0])
         self.assertIn("soft_adjustments", result["portfolio"][0])
+        self.assertNotIn("rank_score", result["portfolio"][0])
+        self.assertNotIn("decision_score", result["portfolio"][0])
+        self.assertNotIn("rank_score", result["excluded_candidates"][0])
+        self.assertNotIn("rank_score", result["themes"][0]["representatives"][0])
 
     def test_build_from_screening_uses_v13_mainline_radar_for_portfolio(self) -> None:
         v13_data_service = _FakeV13DecisionDataService()
@@ -642,6 +660,7 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         self.assertEqual(diagnostic["base_rank_score"], 84.0)
         self.assertTrue(diagnostic["decision_adjustment_reason"])
         self.assertIsInstance(diagnostic["soft_adjustments"], list)
+        self.assertNotIn("rank_score", diagnostic)
 
     def test_build_from_screening_limits_v13_context_codes_for_full_ranked_pool(self) -> None:
         v13_data_service = _FakeV13DecisionDataService()
@@ -981,10 +1000,8 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
             item for item in result["candidate_diagnostics"] if item["ts_code"] == "600201.SH"
         )
         self.assertEqual(risky_diagnostic["t1_direction_risk_adjustment"], -12.0)
-        self.assertLess(
-            risky_diagnostic["decision_score"],
-            risky_diagnostic["rule_base_score"] + risky_diagnostic["explain_adjustment_score"],
-        )
+        self.assertLessEqual(risky_diagnostic["decision_adjustment"], 0)
+        self.assertNotIn("decision_score", risky_diagnostic)
 
     def test_build_from_screening_keeps_secondary_on_mainline_when_cross_theme_is_too_weak(self) -> None:
         service = MomentumSecondaryDecisionService(screener_service=None)
@@ -1143,8 +1160,77 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
                 request_params=request_params,
             )
 
-            self.assertIsNotNone(trade_result)
-            self.assertEqual(trade_result["selected_count"], 2)
+        self.assertIsNotNone(trade_result)
+        self.assertEqual(trade_result["selected_count"], 2)
+
+    def test_strategy_health_trade_date_reuses_cached_sample_across_service_instances(self) -> None:
+        screening, request_params, screener_service, stock_repo = _build_historical_strategy_fixture(
+            short_successes=14,
+            long_successes=38,
+        )
+        historical_trade_date = sorted(screener_service.screens_by_date.keys())[0]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            first_service = MomentumSecondaryDecisionService(
+                screener_service=screener_service,
+                stock_repo=stock_repo,
+                strategy_health_async=False,
+                strategy_health_cache_dir=Path(temp_dir),
+            )
+            first = first_service._evaluate_strategy_health_trade_date(
+                historical_trade_date=historical_trade_date,
+                request_params=request_params,
+            )
+            initial_calls = len(screener_service.screen_calls)
+
+            second_service = MomentumSecondaryDecisionService(
+                screener_service=screener_service,
+                stock_repo=stock_repo,
+                strategy_health_async=False,
+                strategy_health_cache_dir=Path(temp_dir),
+            )
+            second = second_service._evaluate_strategy_health_trade_date(
+                historical_trade_date=historical_trade_date,
+                request_params=request_params,
+            )
+
+            self.assertIsNotNone(first)
+            self.assertEqual(second, first)
+            self.assertEqual(len(screener_service.screen_calls), initial_calls)
+
+    def test_strategy_health_trade_date_reuses_cached_empty_sample_across_service_instances(self) -> None:
+        screening, request_params, screener_service, stock_repo = _build_historical_strategy_fixture(
+            short_successes=14,
+            long_successes=38,
+        )
+        historical_trade_date = sorted(screener_service.screens_by_date.keys())[0]
+        screener_service.screens_by_date[historical_trade_date] = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            first_service = MomentumSecondaryDecisionService(
+                screener_service=screener_service,
+                stock_repo=stock_repo,
+                strategy_health_async=False,
+                strategy_health_cache_dir=Path(temp_dir),
+            )
+            first = first_service._evaluate_strategy_health_trade_date(
+                historical_trade_date=historical_trade_date,
+                request_params=request_params,
+            )
+            initial_calls = len(screener_service.screen_calls)
+
+            second_service = MomentumSecondaryDecisionService(
+                screener_service=screener_service,
+                stock_repo=stock_repo,
+                strategy_health_async=False,
+                strategy_health_cache_dir=Path(temp_dir),
+            )
+            second = second_service._evaluate_strategy_health_trade_date(
+                historical_trade_date=historical_trade_date,
+                request_params=request_params,
+            )
+
+            self.assertIsNone(first)
+            self.assertIsNone(second)
+            self.assertEqual(len(screener_service.screen_calls), initial_calls)
 
     def test_build_from_screening_downgrades_action_when_real_historical_validation_is_weak(self) -> None:
         screening, request_params, screener_service, stock_repo = _build_historical_strategy_fixture(
@@ -1371,6 +1457,43 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
             self.assertFalse(second["strategy_health"]["is_warming"])
             self.assertEqual(second["strategy_health"]["status"], first["strategy_health"]["status"])
             self.assertEqual(second["action"]["level"], first["action"]["level"])
+            self.assertEqual(len(screener_service.screen_calls), initial_calls + 1)
+
+    def test_build_from_screening_reuses_cached_historical_samples_across_adjacent_trade_dates(self) -> None:
+        screening, request_params, screener_service, stock_repo = _build_historical_strategy_fixture(
+            short_successes=14,
+            long_successes=38,
+            historical_day_count=62,
+        )
+        next_request_params = {**request_params, "trade_date": "2026-04-11"}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            first_service = MomentumSecondaryDecisionService(
+                screener_service=screener_service,
+                stock_repo=stock_repo,
+                strategy_health_async=False,
+                strategy_health_cache_dir=Path(temp_dir),
+            )
+            first, _ = first_service._build_historical_strategy_health(
+                trade_date=screening["trade_date"],
+                request_params=request_params,
+            )
+            initial_calls = len(screener_service.screen_calls)
+
+            second_service = MomentumSecondaryDecisionService(
+                screener_service=screener_service,
+                stock_repo=stock_repo,
+                strategy_health_async=False,
+                strategy_health_cache_dir=Path(temp_dir),
+            )
+            second, _ = second_service._build_historical_strategy_health(
+                trade_date="2026-04-11",
+                request_params=next_request_params,
+            )
+
+            self.assertIsNotNone(first)
+            self.assertIsNotNone(second)
+            self.assertEqual(second["status"], "healthy")
+            self.assertEqual(second["long_window"]["sample_count"], 60)
             self.assertEqual(len(screener_service.screen_calls), initial_calls + 1)
 
     def test_build_from_screening_surfaces_partial_historical_health_while_background_job_continues(self) -> None:
@@ -2158,6 +2281,84 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         self.assertEqual(result["base_level"], "observe_only")
         self.assertEqual(result["level"], "observe_only")
         self.assertFalse(result["gate_context"]["promotion_applied"])
+
+    def test_opportunity_theme_concentration_pass_uses_portfolio_dominant_theme(self) -> None:
+        service = MomentumSecondaryDecisionService(screener_service=None)
+
+        result = service._build_opportunity_quality(
+            candidates=[],
+            themes=[
+                {"name": "AI Infra", "score": 92.0},
+                {"name": "Medical", "score": 84.0},
+            ],
+            portfolio=[
+                {
+                    "slot": "main",
+                    "theme": "Energy Metal",
+                    "buy_point_status": "clear",
+                    "risk_score": 18.0,
+                    "entry_range_low": 10.1,
+                    "entry_range_high": 10.4,
+                },
+                {
+                    "slot": "secondary",
+                    "theme": "Energy Metal",
+                    "buy_point_status": "waiting",
+                    "risk_score": 22.0,
+                    "entry_range_low": 9.8,
+                    "entry_range_high": 10.0,
+                },
+                {"slot": "watch", "theme": "Medical", "buy_point_status": "waiting", "risk_score": 24.0},
+            ],
+        )
+
+        self.assertTrue(result["theme_concentration_pass"])
+        self.assertEqual(result["matrix_level"], "strong")
+
+    def test_build_action_caps_paused_constructive_same_theme_setup_to_observe_only(self) -> None:
+        service = MomentumSecondaryDecisionService(screener_service=None)
+
+        base_action = service._build_action(
+            "standard",
+            market_environment={
+                "level": "medium",
+                "modules": [
+                    {"key": "core_premium", "level": "medium"},
+                    {"key": "breadth_premium", "level": "strong"},
+                ],
+            },
+            opportunity_quality={
+                "level": "strong",
+                "matrix_level": "strong",
+                "clear_count": 2,
+                "main_risk_reward_pass": True,
+                "theme_concentration_pass": True,
+                "modules": [{"key": "buy_point_clarity", "level": "strong", "clear_count": 2}],
+            },
+            historical_validity={"level": "weak", "attack_permission_status": "paused"},
+            portfolio=[
+                {"slot": "main", "theme": "Energy Metal", "buy_point_status": "clear", "risk_tags": [], "risk_score": 18.0},
+                {"slot": "secondary", "theme": "Energy Metal", "buy_point_status": "waiting", "risk_tags": [], "risk_score": 22.0},
+                {"slot": "watch", "theme": "Medical", "buy_point_status": "waiting", "risk_tags": [], "risk_score": 24.0},
+            ],
+        )
+
+        result = service._apply_historical_validity_to_action(
+            base_action,
+            {
+                "level": "weak",
+                "label": "弱",
+                "attack_permission_status": "paused",
+            },
+            market_environment={"level": "medium"},
+            opportunity_quality={
+                "level": "strong",
+                "matrix_level": "strong",
+            },
+        )
+
+        self.assertEqual(base_action["level"], "normal_go")
+        self.assertEqual(result["level"], "observe_only")
 
     def test_build_attack_permission_recovers_on_high_profit_controlled_drawdown(self) -> None:
         service = MomentumSecondaryDecisionService(screener_service=None)

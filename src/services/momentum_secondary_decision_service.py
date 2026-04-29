@@ -200,7 +200,10 @@ ROLE_VALIDATION_TARGETS = {
 }
 STRATEGY_HEALTH_CACHE_TTL = timedelta(hours=12)
 STRATEGY_HEALTH_CACHE_VERSION = "v4"
+STRATEGY_HEALTH_SAMPLE_CACHE_TTL = timedelta(days=30)
+STRATEGY_HEALTH_SAMPLE_CACHE_VERSION = "v1"
 STRATEGY_HEALTH_DISK_CACHE_DIRNAME = "momentum_strategy_health"
+STRATEGY_HEALTH_SAMPLE_DISK_CACHE_DIRNAME = "samples"
 STRATEGY_HEALTH_ASYNC_DEFAULT_DELAY_SECONDS = 20.0
 STRATEGY_HEALTH_WAIT_TIMEOUT_SECONDS = 8.0
 STRATEGY_HEALTH_WAIT_POLL_INTERVAL_SECONDS = 0.1
@@ -374,6 +377,7 @@ class MomentumSecondaryDecisionService:
         self.strategy_health_async = strategy_health_async
         self.strategy_health_async_delay_seconds = max(0.0, float(strategy_health_async_delay_seconds))
         self._strategy_health_cache: Dict[str, Dict[str, Any]] = {}
+        self._strategy_health_sample_cache: Dict[str, Dict[str, Any]] = {}
         self._strategy_health_jobs: Dict[str, Any] = {}
         self._strategy_health_jobs_lock = Lock()
         self._strategy_health_executor = (
@@ -386,6 +390,7 @@ class MomentumSecondaryDecisionService:
             if strategy_health_cache_dir is not None
             else Path.cwd() / "data" / "cache" / STRATEGY_HEALTH_DISK_CACHE_DIRNAME
         )
+        self._strategy_health_sample_cache_dir = self._strategy_health_cache_dir / STRATEGY_HEALTH_SAMPLE_DISK_CACHE_DIRNAME
 
     def build(
         self,
@@ -1373,7 +1378,6 @@ class MomentumSecondaryDecisionService:
                             "role": item["_role_label"],
                             "buy_point_label": item["_buy_point_label"],
                             "official_score": round(_official_sort_score(item), 1),
-                            "rank_score": round(_safe_float(item.get("rank_score")), 1),
                             "v13_mainline_score": (
                                 round(_safe_float(item.get("_v13_mainline_score")), 1)
                                 if item.get("_v13_mainline_score")
@@ -1500,7 +1504,6 @@ class MomentumSecondaryDecisionService:
                     "reason_detail": reason_detail,
                     "official_score": official_score,
                     "base_rank_score": official_score,
-                    "rank_score": round(_safe_float(candidate.get("rank_score")), 1),
                     "decision_adjustment": decision_adjustment,
                     "decision_adjustment_reason": self._describe_adjustments(soft_adjustments),
                     "hard_blockers": hard_blockers,
@@ -1588,7 +1591,6 @@ class MomentumSecondaryDecisionService:
                     "buy_point_label": candidate["_buy_point_label"],
                     "official_score": base_rank_score,
                     "base_rank_score": base_rank_score,
-                    "rank_score": round(_safe_float(candidate.get("rank_score")), 2),
                     "continuation_score": round(_safe_float(candidate.get("continuation_score")), 2),
                     "extension_score": round(_safe_float(candidate.get("extension_score")), 2),
                     "extension_signal_score": round(self._extension_signal_score(candidate), 2),
@@ -1611,7 +1613,6 @@ class MomentumSecondaryDecisionService:
                         _safe_float(candidate.get("_t1_direction_risk_adjustment")),
                         2,
                     ),
-                    "decision_score": round(_safe_float(candidate.get("_decision_score")), 2),
                     "forward_alpha_score": round(forward_alpha_score, 2),
                     "forward_alpha_adjustment": round((forward_alpha_score - 50.0) * 0.55, 2),
                     "portfolio_priority": portfolio_priority,
@@ -2464,17 +2465,29 @@ class MomentumSecondaryDecisionService:
         return _safe_float(main_item.get("risk_score"), 100.0) <= 35.0
 
     @staticmethod
+    def _portfolio_theme_counts(portfolio: List[Dict[str, Any]]) -> Dict[str, int]:
+        counts: Dict[str, int] = defaultdict(int)
+        for item in portfolio:
+            theme_name = _safe_str(item.get("theme"), item.get("_theme"))
+            if theme_name:
+                counts[theme_name] += 1
+        return counts
+
+    @staticmethod
     def _opportunity_theme_concentration_pass(
         portfolio: List[Dict[str, Any]],
         themes: List[Dict[str, Any]],
     ) -> bool:
-        if not portfolio or not themes:
+        if not portfolio:
             return False
-        first_theme = _safe_str(themes[0].get("name"))
-        if not first_theme:
-            return False
-        same_theme_count = sum(1 for item in portfolio if _safe_str(item.get("theme")) == first_theme)
-        return same_theme_count >= 2
+        # Opportunity quality should judge whether the portfolio itself is focused.
+        # Whether that focus also aligns with the top V1.3 mainline is tracked
+        # separately in the structured diagnostics and backtest attribution.
+        dominant_theme_count = max(
+            MomentumSecondaryDecisionService._portfolio_theme_counts(portfolio).values(),
+            default=0,
+        )
+        return dominant_theme_count >= 2
 
     @staticmethod
     def _build_opportunity_role_structure(portfolio: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -2642,11 +2655,7 @@ class MomentumSecondaryDecisionService:
                 if "main_risk_reward_pass" not in opportunity_quality:
                     main_risk_reward_pass = self._opportunity_main_risk_reward_pass(main_item)
                 if "theme_concentration_pass" not in opportunity_quality:
-                    theme_counts: Dict[str, int] = defaultdict(int)
-                    for item in portfolio:
-                        theme_name = _safe_str(item.get("theme"))
-                        if theme_name:
-                            theme_counts[theme_name] += 1
+                    theme_counts = self._portfolio_theme_counts(portfolio)
                     theme_concentration_pass = max(theme_counts.values(), default=0) >= 2
                 if clear_count >= 3:
                     opportunity_matrix_level = "strong" if main_risk_reward_pass else "upper_mid"
@@ -3734,9 +3743,9 @@ class MomentumSecondaryDecisionService:
                 continue
         return ""
 
-    def _build_strategy_health_cache_key(self, trade_date: str, request_params: Dict[str, Any]) -> str:
+    @staticmethod
+    def _build_strategy_health_request_signature(request_params: Dict[str, Any]) -> str:
         normalized = {
-            "trade_date": trade_date,
             "min_change_pct": round(_safe_float(request_params.get("min_change_pct"), MOMENTUM_DEFAULT_MIN_CHANGE_PCT), 3),
             "min_amount": round(_safe_float(request_params.get("min_amount"), MOMENTUM_DEFAULT_MIN_AMOUNT), 3),
             "min_turnover": round(_safe_float(request_params.get("min_turnover"), MOMENTUM_DEFAULT_MIN_TURNOVER), 3),
@@ -3745,6 +3754,14 @@ class MomentumSecondaryDecisionService:
             "profile": _safe_str(request_params.get("profile"), "standard"),
         }
         return "|".join(f"{key}={value}" for key, value in normalized.items())
+
+    def _build_strategy_health_cache_key(self, trade_date: str, request_params: Dict[str, Any]) -> str:
+        request_signature = self._build_strategy_health_request_signature(request_params)
+        return f"trade_date={trade_date}|{request_signature}"
+
+    def _build_strategy_health_sample_cache_key(self, historical_trade_date: str, request_params: Dict[str, Any]) -> str:
+        request_signature = self._build_strategy_health_request_signature(request_params)
+        return f"historical_trade_date={historical_trade_date}|{request_signature}"
 
     def _load_cached_strategy_health(self, cache_key: str) -> Optional[Dict[str, Any]]:
         state = self._load_strategy_health_state(cache_key)
@@ -3783,6 +3800,46 @@ class MomentumSecondaryDecisionService:
             },
         )
 
+    @staticmethod
+    def _extract_strategy_health_sample_cache_value(cached: Optional[Dict[str, Any]]) -> Tuple[bool, Optional[Dict[str, Any]]]:
+        if not isinstance(cached, dict):
+            return False, None
+        status = _safe_str(cached.get("status"))
+        if status == "miss":
+            return True, None
+        value = cached.get("value")
+        if status == "hit" and isinstance(value, dict):
+            return True, deepcopy(value)
+        return False, None
+
+    def _load_cached_strategy_health_sample(self, cache_key: str) -> Tuple[bool, Optional[Dict[str, Any]]]:
+        cached = self._strategy_health_sample_cache.get(cache_key)
+        if cached is not None:
+            if cached["expires_at"] <= datetime.now():
+                self._strategy_health_sample_cache.pop(cache_key, None)
+            else:
+                return self._extract_strategy_health_sample_cache_value(cached.get("value"))
+
+        disk_cached = self._load_disk_cached_strategy_health_sample(cache_key)
+        if disk_cached is not None:
+            self._strategy_health_sample_cache[cache_key] = {
+                "value": deepcopy(disk_cached),
+                "expires_at": datetime.now() + STRATEGY_HEALTH_SAMPLE_CACHE_TTL,
+            }
+            return self._extract_strategy_health_sample_cache_value(disk_cached)
+        return False, None
+
+    def _store_cached_strategy_health_sample(self, cache_key: str, value: Optional[Dict[str, Any]]) -> None:
+        cache_value = {
+            "status": "hit" if isinstance(value, dict) else "miss",
+            "value": deepcopy(value) if isinstance(value, dict) else None,
+        }
+        self._strategy_health_sample_cache[cache_key] = {
+            "value": deepcopy(cache_value),
+            "expires_at": datetime.now() + STRATEGY_HEALTH_SAMPLE_CACHE_TTL,
+        }
+        self._store_disk_cached_strategy_health_sample(cache_key, cache_value)
+
     def _load_strategy_health_state(self, cache_key: str) -> Optional[Dict[str, Any]]:
         cached = self._strategy_health_cache.get(cache_key)
         if cached is not None:
@@ -3813,6 +3870,10 @@ class MomentumSecondaryDecisionService:
     def _strategy_health_cache_path(self, cache_key: str) -> Path:
         digest = hashlib.sha1(f"{STRATEGY_HEALTH_CACHE_VERSION}|{cache_key}".encode("utf-8")).hexdigest()
         return self._strategy_health_cache_dir / f"{digest}.json"
+
+    def _strategy_health_sample_cache_path(self, cache_key: str) -> Path:
+        digest = hashlib.sha1(f"{STRATEGY_HEALTH_SAMPLE_CACHE_VERSION}|{cache_key}".encode("utf-8")).hexdigest()
+        return self._strategy_health_sample_cache_dir / f"{digest}.json"
 
     def _load_disk_cached_strategy_health(self, cache_key: str) -> Optional[Dict[str, Any]]:
         cache_path = self._strategy_health_cache_path(cache_key)
@@ -3850,6 +3911,43 @@ class MomentumSecondaryDecisionService:
             cache_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         except OSError:
             logger.warning("Failed to write momentum strategy health disk cache: %s", cache_path)
+
+    def _load_disk_cached_strategy_health_sample(self, cache_key: str) -> Optional[Dict[str, Any]]:
+        cache_path = self._strategy_health_sample_cache_path(cache_key)
+        if not cache_path.exists():
+            return None
+
+        try:
+            payload = json.loads(cache_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            logger.warning("Failed to read momentum strategy health sample disk cache: %s", cache_path)
+            return None
+
+        expires_at = self._parse_strategy_health_cache_timestamp(payload.get("expires_at"))
+        if expires_at is None or expires_at <= datetime.now():
+            try:
+                cache_path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("Failed to remove expired momentum strategy health sample cache: %s", cache_path)
+            return None
+
+        value = payload.get("value")
+        if not isinstance(value, dict):
+            return None
+        return value
+
+    def _store_disk_cached_strategy_health_sample(self, cache_key: str, value: Dict[str, Any]) -> None:
+        cache_path = self._strategy_health_sample_cache_path(cache_key)
+        payload = {
+            "version": STRATEGY_HEALTH_SAMPLE_CACHE_VERSION,
+            "expires_at": (datetime.now() + STRATEGY_HEALTH_SAMPLE_CACHE_TTL).isoformat(),
+            "value": value,
+        }
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            logger.warning("Failed to write momentum strategy health sample disk cache: %s", cache_path)
 
     @staticmethod
     def _parse_strategy_health_cache_timestamp(value: Any) -> Optional[datetime]:
@@ -3947,6 +4045,15 @@ class MomentumSecondaryDecisionService:
         if self.screener_service is None:
             return None
 
+        sample_cache_key = self._build_strategy_health_sample_cache_key(historical_trade_date, request_params)
+        cache_hit, cached_sample = self._load_cached_strategy_health_sample(sample_cache_key)
+        if cache_hit:
+            return cached_sample
+
+        def _store_sample_and_return(value: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+            self._store_cached_strategy_health_sample(sample_cache_key, value)
+            return value
+
         strategy_health_top_n = max(
             int(_safe_float(request_params.get("top_n"), STRATEGY_HEALTH_MAX_SCORED_CANDIDATES)),
             STRATEGY_HEALTH_MAX_SCORED_CANDIDATES,
@@ -3965,17 +4072,17 @@ class MomentumSecondaryDecisionService:
         )
         results = self._extract_decision_source_results(screening)
         if not results:
-            return None
+            return _store_sample_and_return(None)
 
         candidates = [self._build_candidate_view(item) for item in results]
         themes = self._build_theme_summaries(candidates)
         if not themes:
-            return None
+            return _store_sample_and_return(None)
         theme_score_map = {theme["name"]: theme["score"] for theme in themes}
         portfolio = self._build_portfolio(candidates, themes, theme_score_map)
         actionable_items = [item for item in portfolio if item.get("suggested_action") != "observe_only"]
         if not actionable_items:
-            return None
+            return _store_sample_and_return(None)
 
         candidate_map = {item["ts_code"]: item for item in candidates}
         item_results: List[Dict[str, Any]] = []
@@ -3989,7 +4096,7 @@ class MomentumSecondaryDecisionService:
                 item_results.append(evaluated)
 
         if not item_results:
-            return None
+            return _store_sample_and_return(None)
 
         success_count = sum(1 for item in item_results if item["success"])
         required_success_count = max(1, ceil(len(item_results) * 2 / 3))
@@ -4000,15 +4107,17 @@ class MomentumSecondaryDecisionService:
             and avg_profit_window_pct >= 2.0
             and avg_max_drawdown_pct <= 3.0
         )
-        return {
-            "trade_date": historical_trade_date,
-            "selected_count": len(item_results),
-            "success_count": success_count,
-            "required_success_count": required_success_count,
-            "success": combo_success,
-            "profit_window_pct": avg_profit_window_pct,
-            "max_drawdown_pct": avg_max_drawdown_pct,
-        }
+        return _store_sample_and_return(
+            {
+                "trade_date": historical_trade_date,
+                "selected_count": len(item_results),
+                "success_count": success_count,
+                "required_success_count": required_success_count,
+                "success": combo_success,
+                "profit_window_pct": avg_profit_window_pct,
+                "max_drawdown_pct": avg_max_drawdown_pct,
+            }
+        )
 
     def _evaluate_strategy_health_portfolio_item(
         self,
@@ -5214,10 +5323,8 @@ class MomentumSecondaryDecisionService:
             "score": round(slot_score, 1),
             "official_score": official_score,
             "base_rank_score": official_score,
-            "rank_score": round(_safe_float(candidate.get("rank_score")), 1),
             "risk_score": round(_safe_float(candidate.get("risk_score")), 1),
             "rule_base_score": round(_safe_float(candidate.get("_rule_base_score")), 1),
-            "decision_score": round(_safe_float(candidate.get("_decision_score")), 1),
             "decision_adjustment": decision_adjustment,
             "decision_adjustment_reason": self._describe_adjustments(soft_adjustments),
             "hard_blockers": hard_blockers,

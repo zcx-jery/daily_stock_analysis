@@ -116,7 +116,6 @@ const standardResponse: MomentumScreenerResponse = {
       riskScore: 40,
       buyabilityScore: null,
       finalScore: 85,
-      rankScore: 76,
       officialScore: 84.6,
       themes: ['Power Equipment'],
       leaderLevel: 'leader',
@@ -142,7 +141,6 @@ const standardResponse: MomentumScreenerResponse = {
       riskScore: 10,
       buyabilityScore: null,
       finalScore: 78,
-      rankScore: 68,
       officialScore: 74.2,
       themes: ['Power Equipment'],
       leaderLevel: 'front',
@@ -181,7 +179,6 @@ const aggressiveResponse: MomentumScreenerResponse = {
       entryRangeLow: 10.34,
       entryRangeHigh: 10.66,
       finalScore: 92,
-      rankScore: 82,
       officialScore: 88.4,
       themes: ['Robotics'],
       leaderLevel: 'leader',
@@ -225,7 +222,6 @@ const mixedKeyResponse: MomentumScreenerResponse = {
       entryRangeLow: 16.8,
       entryRangeHigh: 17.2,
       finalScore: 69.8,
-      rankScore: 69.8,
       officialScore: 71.2,
       themes: ['鐢靛姏璁惧'],
       leaderLevel: 'leader',
@@ -456,7 +452,7 @@ function buildDecisionResponse(screening: MomentumScreenerResponse): MomentumScr
       themes: [
         {
           name: topThemeName,
-          score: screening.results[0]?.rankScore ?? 70,
+          score: screening.results[0]?.officialScore ?? 70,
           strengthLabel: '主线清晰',
           candidateCount: topThemeCandidates.length,
           clearBuyPointCount: Math.max(1, Math.min(2, topThemeCandidates.length)),
@@ -469,7 +465,6 @@ function buildDecisionResponse(screening: MomentumScreenerResponse): MomentumScr
             role: item.leaderLevel === 'leader' ? '龙头核心' : item.leaderLevel === 'front' ? '前排换手' : '观察备选',
             buyPointLabel: item.buyabilityScore != null && item.buyabilityScore >= 70 ? '买点清晰' : '等待触发',
             officialScore: item.officialScore,
-            rankScore: item.rankScore,
           })),
         },
       ],
@@ -482,10 +477,9 @@ function buildDecisionResponse(screening: MomentumScreenerResponse): MomentumScr
         name: item.name,
         theme: item.themes[0] ?? '未分类',
         role: item.leaderLevel === 'leader' ? '龙头核心' : item.leaderLevel === 'front' ? '前排换手' : '观察备选',
-        score: item.rankScore + 8 - index,
+        score: item.officialScore + 8 - index,
         officialScore: item.officialScore,
-        baseRankScore: item.officialScore ?? item.rankScore,
-        rankScore: item.rankScore,
+        baseRankScore: item.officialScore,
         riskScore: item.riskScore,
         decisionAdjustment: index === 0 ? 1.6 : index === 1 ? 0.8 : -0.4,
         decisionAdjustmentReason:
@@ -509,13 +503,13 @@ function buildDecisionResponse(screening: MomentumScreenerResponse): MomentumScr
         buyPointStatus:
           item.buyabilityScore != null && item.buyabilityScore >= 70
             ? 'clear'
-            : item.rankScore >= 70
+            : item.officialScore >= 70
               ? 'waiting'
               : 'unclear',
         buyPointLabel:
           item.buyabilityScore != null && item.buyabilityScore >= 70
             ? '买点清晰'
-            : item.rankScore >= 70
+            : item.officialScore >= 70
               ? '等待触发'
               : '买点不清晰',
         suggestedAction:
@@ -565,24 +559,23 @@ function buildDecisionResponse(screening: MomentumScreenerResponse): MomentumScr
         buyPointStatus:
           item.buyabilityScore != null && item.buyabilityScore >= 70
             ? 'clear'
-            : item.rankScore >= 70
+            : item.officialScore >= 70
               ? 'waiting'
               : 'unclear',
         buyPointLabel:
           item.buyabilityScore != null && item.buyabilityScore >= 70
             ? '买点清晰'
-            : item.rankScore >= 70
+            : item.officialScore >= 70
               ? '等待触发'
               : '买点不清晰',
         officialScore: item.officialScore,
-        baseRankScore: item.officialScore ?? item.rankScore,
-        rankScore: item.rankScore,
+        baseRankScore: item.officialScore,
         continuationScore: item.continuationScore,
         extensionScore: item.extensionScore,
         extensionSignalScore: item.extensionScore,
         buyabilityScore: item.buyabilityScore ?? null,
         riskScore: item.riskScore,
-        ruleBaseScore: item.rankScore,
+        ruleBaseScore: item.officialScore,
         decisionAdjustment: index === 0 ? 1.6 : index === 1 ? 0.8 : -0.4,
         decisionAdjustmentReason:
           index === 0
@@ -604,10 +597,9 @@ function buildDecisionResponse(screening: MomentumScreenerResponse): MomentumScr
         ],
         explainAdjustmentScore: 0,
         t1DirectionRiskAdjustment: 0,
-        decisionScore: item.rankScore + 8 - index,
         forwardAlphaScore: 50,
         forwardAlphaAdjustment: 0,
-        portfolioPriority: item.rankScore + 8 - index,
+        portfolioPriority: item.officialScore + 8 - index,
         selectedSlot: index === 0 ? 'main' : index === 1 ? 'secondary' : index === 2 ? 'watch' : null,
         isSelected: index < portfolioSource.length,
       })),
@@ -622,15 +614,14 @@ function buildDecisionResponse(screening: MomentumScreenerResponse): MomentumScr
         reason: '主线内名次不够',
         reasonDetail: '同一主线里已有更高的官方总分和更清晰的槽位位置。',
         officialScore: item.officialScore,
-        baseRankScore: item.officialScore ?? item.rankScore,
-        rankScore: item.rankScore,
+        baseRankScore: item.officialScore,
         decisionAdjustment: -1.2,
         decisionAdjustmentReason: '加分来自主线顺风，扣分来自角色重复与槽位靠后。',
         hardBlockers: [{ key: 'mainline_rank_not_enough', label: '主线内名次不够', detail: '主仓与次仓已被更强候选占据。' }],
         softAdjustments: [{ key: 'role_back', label: '后排跟随', delta: -1.0 }],
       })),
       evidence: {
-        themeValidation: [`${topThemeName} 主线评分 ${(screening.results[0]?.rankScore ?? 70).toFixed(1)}。`],
+        themeValidation: [`${topThemeName} 主线评分 ${(screening.results[0]?.officialScore ?? 70).toFixed(1)}。`],
         todayReasoning: ['系统已基于当前候选引擎重新收口默认组合与落选原因。'],
       },
       actionChecklist: {
@@ -1381,7 +1372,6 @@ describe('MomentumScreenerPage', () => {
           riskScore: 28,
           buyabilityScore: 58,
           finalScore: 72,
-          rankScore: 65,
           officialScore: 69.2,
           themes: ['Power Equipment'],
           leaderLevel: 'mid',
@@ -1401,7 +1391,6 @@ describe('MomentumScreenerPage', () => {
           riskScore: 34,
           buyabilityScore: 52,
           finalScore: 68,
-          rankScore: 61,
           officialScore: 64.4,
           themes: ['Power Equipment'],
           leaderLevel: 'back',

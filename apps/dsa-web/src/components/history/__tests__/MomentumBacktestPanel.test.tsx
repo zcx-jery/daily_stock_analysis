@@ -246,6 +246,92 @@ const summaryResponse = {
         reason: '部分板块数据降级。',
         isDegraded: true,
       },
+      mainlineQuality: {
+        key: 'mainline_quality',
+        label: '主线质量',
+        level: 'general' as const,
+        levelLabel: '中',
+        score: 68.2,
+        sampleDays: 3,
+        strongDays: 1,
+        generalDays: 2,
+        weakDays: 0,
+        summary: 'Top 主线稳定，但数据降级日拉低了区间均分。',
+      },
+      themeConcentration: {
+        key: 'theme_concentration',
+        label: '题材集中度',
+        level: 'strong' as const,
+        levelLabel: '强',
+        score: 79.4,
+        sampleDays: 3,
+        strongDays: 2,
+        generalDays: 1,
+        weakDays: 0,
+        summary: '默认组合大多仍围绕锂电主线展开。',
+      },
+      sentimentAlignment: {
+        key: 'sentiment_alignment',
+        label: '情绪与动作匹配',
+        level: 'weak' as const,
+        levelLabel: '弱',
+        score: 48.6,
+        sampleDays: 3,
+        strongDays: 0,
+        generalDays: 2,
+        weakDays: 1,
+        summary: '部分交易日短线情绪转弱，但动作矩阵仍偏进攻。',
+      },
+      roleFit: {
+        key: 'role_fit',
+        label: '角色适配度',
+        level: 'general' as const,
+        levelLabel: '中',
+        score: 64.5,
+        sampleDays: 3,
+        strongDays: 1,
+        generalDays: 2,
+        weakDays: 0,
+        summary: '主仓角色总体稳定，但次仓切换略显拥挤。',
+      },
+      pricePosition: {
+        key: 'price_position',
+        label: '价格位置',
+        level: 'general' as const,
+        levelLabel: '中',
+        score: 61.8,
+        sampleDays: 3,
+        strongDays: 1,
+        generalDays: 1,
+        weakDays: 1,
+        summary: '可执行买点存在，但并非每天都足够清晰。',
+      },
+      candidatePoolBias: {
+        key: 'candidate_pool_bias',
+        label: '候选池偏差',
+        level: 'weak' as const,
+        levelLabel: '弱',
+        score: 43.2,
+        sampleDays: 3,
+        strongDays: 0,
+        generalDays: 2,
+        weakDays: 1,
+        summary: '个别交易日组合偏离了主线 Top 候选。',
+      },
+      failureAttributionBreakdown: [
+        {
+          key: 'candidate_pool_bias',
+          label: '候选池偏差',
+          summary: '个别交易日组合偏离了主线 Top 候选。',
+          days: 1,
+        },
+        {
+          key: 'sentiment_alignment',
+          label: '情绪与动作匹配',
+          summary: '部分交易日短线情绪转弱，但动作矩阵仍偏进攻。',
+          days: 1,
+        },
+      ],
     },
   },
 };
@@ -425,6 +511,61 @@ const detailResponse = {
       summary: '锂电聚集 5 只候选，Top10 有 2 只，主线强度为主线强。',
     },
     mainlineCount: 1,
+    mainlineQuality: {
+      key: 'mainline_quality',
+      label: '主线质量',
+      level: 'strong' as const,
+      levelLabel: '强',
+      score: 81.6,
+      summary: 'Top 主线分数和 Top10 占位都处在高位。',
+    },
+    themeConcentration: {
+      key: 'theme_concentration',
+      label: '题材集中度',
+      level: 'general' as const,
+      levelLabel: '中',
+      score: 62.4,
+      summary: '默认组合仍围绕锂电，但次仓分散了一部分注意力。',
+    },
+    sentimentAlignment: {
+      key: 'sentiment_alignment',
+      label: '情绪与动作匹配',
+      level: 'general' as const,
+      levelLabel: '中',
+      score: 58.0,
+      summary: '短线情绪可做，但动作矩阵没有完全放开。',
+    },
+    roleFit: {
+      key: 'role_fit',
+      label: '角色适配度',
+      level: 'strong' as const,
+      levelLabel: '强',
+      score: 77.2,
+      summary: '主仓仍由龙头核心承担，角色分工清晰。',
+    },
+    pricePosition: {
+      key: 'price_position',
+      label: '价格位置',
+      level: 'general' as const,
+      levelLabel: '中',
+      score: 63.8,
+      summary: '主仓有计划区间，但次仓仍需等触发。',
+    },
+    candidatePoolBias: {
+      key: 'candidate_pool_bias',
+      label: '候选池偏差',
+      level: 'weak' as const,
+      levelLabel: '弱',
+      score: 44.2,
+      summary: '有更靠前的同主线候选没有进入默认组合。',
+    },
+    failureAttribution: [
+      {
+        key: 'candidate_pool_bias',
+        label: '候选池偏差',
+        summary: '有更靠前的同主线候选没有进入默认组合。',
+      },
+    ],
     summaryLines: [
       'Top 主线为 锂电，主线雷达分 82.5。',
       '短线情绪为 可做，分数 70.6。',
@@ -597,6 +738,22 @@ describe('MomentumBacktestPanel', () => {
     ).toBeInTheDocument();
   });
 
+  it('maps fine-grained candidate pool substeps into human-readable task hints', async () => {
+    mockListRuns.mockResolvedValue({
+      ...recentRunsResponse,
+      currentRunning: {
+        ...runningRun,
+        currentStageKey: 'cyq_chips',
+        currentStageLabel: '加载筹码明细快照',
+      },
+    });
+
+    render(<MomentumBacktestPanel />);
+
+    expect(await screen.findAllByText((content) => content.includes('加载筹码明细快照'))).toHaveLength(2);
+    expect(screen.getByText('正在逐股拉取筹码明细，这通常是 Full Truth 回测里最重的真实数据步骤之一。')).toBeInTheDocument();
+  });
+
   it('creates a run, shows task feedback, and renders gate diagnostics', async () => {
     render(<MomentumBacktestPanel />);
 
@@ -637,6 +794,9 @@ describe('MomentumBacktestPanel', () => {
     expect(screen.getByText('覆盖子题材：电解液、隔膜、锂矿')).toBeInTheDocument();
     expect(screen.getByText('短线情绪')).toBeInTheDocument();
 
+    expect(screen.getByText('主线质量')).toBeInTheDocument();
+    expect(screen.getByText('区间主要拖累')).toBeInTheDocument();
+
     const detailButton = screen
       .getAllByRole('button')
       .find((button) => button.textContent?.includes('查看') || button.textContent?.includes('鏌ョ湅'));
@@ -646,6 +806,8 @@ describe('MomentumBacktestPanel', () => {
     expect(await screen.findByText('当日主线与情绪诊断')).toBeInTheDocument();
     expect(screen.getByText('Top 主线为 锂电，主线雷达分 82.5。')).toBeInTheDocument();
     expect(screen.getByText('短线情绪为 可做，分数 70.6。')).toBeInTheDocument();
+    expect(screen.getByText('当日主要拖累')).toBeInTheDocument();
+    expect(screen.getAllByText('候选池偏差').length).toBeGreaterThan(0);
     expect(screen.getByText('74.2')).toBeInTheDocument();
   });
 

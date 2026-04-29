@@ -77,6 +77,14 @@ GATE_MODULE_LABELS = {
     "historical_validity": "20日进攻许可",
     "action_matrix": "鍔ㄤ綔鐭╅樀鏀跺彛",
 }
+V13_STRUCTURED_DIAGNOSTIC_LABELS = {
+    "mainline_quality": "主线质量",
+    "theme_concentration": "题材集中度",
+    "sentiment_alignment": "情绪与动作匹配",
+    "role_fit": "角色适配度",
+    "price_position": "价格位置",
+    "candidate_pool_bias": "候选池偏差",
+}
 RESTRICTED_ACTION_LEVELS = {"observe_only", "stand_aside"}
 ACTIVE_RUN_STATUSES = {"queued", "running"}
 TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled"}
@@ -1908,6 +1916,7 @@ class MomentumBacktestService:
         return summary
 
     def _build_v13_run_diagnostics(self, daily_rows: List[MomentumBacktestDailySummary]) -> Dict[str, Any]:
+        return self._build_v13_run_diagnostics_v2(daily_rows)
         sentiment_breakdown: Dict[str, int] = {}
         data_status_breakdown: Dict[str, int] = {}
         top_theme_breakdown: Dict[str, int] = {}
@@ -1963,6 +1972,7 @@ class MomentumBacktestService:
         self,
         row: MomentumBacktestDailySummary,
     ) -> Dict[str, Any]:
+        return self._extract_v13_diagnostics_from_daily_row_v2(row)
         decision = self._load_json(row.decision_payload_json)
         if not isinstance(decision, dict):
             return {
@@ -2008,6 +2018,602 @@ class MomentumBacktestService:
             "summary_lines": summary_lines,
         }
 
+    def _build_v13_run_diagnostics_v2(self, daily_rows: List[MomentumBacktestDailySummary]) -> Dict[str, Any]:
+        sentiment_breakdown: Dict[str, int] = {}
+        data_status_breakdown: Dict[str, int] = {}
+        top_theme_breakdown: Dict[str, int] = {}
+        top_mainline_scores: List[float] = []
+        radar_available_days = 0
+        degraded_days = 0
+        structured_trackers: Dict[str, Dict[str, Any]] = {}
+        failure_breakdown: Dict[str, Dict[str, Any]] = {}
+
+        for row in daily_rows:
+            diagnostics = self._extract_v13_diagnostics_from_daily_row_v2(row)
+            data_status = diagnostics.get("v13_data_status") or {}
+            status = str(data_status.get("status") or "missing")
+            data_status_breakdown[status] = data_status_breakdown.get(status, 0) + 1
+            if data_status.get("is_degraded") or status in {"partial", "degraded", "failed", "missing"}:
+                degraded_days += 1
+
+            sentiment = diagnostics.get("short_term_sentiment") or {}
+            sentiment_level = str(sentiment.get("level") or "missing")
+            sentiment_breakdown[sentiment_level] = sentiment_breakdown.get(sentiment_level, 0) + 1
+
+            radar = diagnostics.get("mainline_radar") or []
+            if radar:
+                radar_available_days += 1
+                top_item = radar[0]
+                top_theme = str(top_item.get("theme_name") or top_item.get("theme_id") or "unknown")
+                top_theme_breakdown[top_theme] = top_theme_breakdown.get(top_theme, 0) + 1
+                score = self._to_float(top_item.get("score"))
+                if score is not None:
+                    top_mainline_scores.append(score)
+
+            for key, label in V13_STRUCTURED_DIAGNOSTIC_LABELS.items():
+                item = diagnostics.get(key)
+                if not isinstance(item, dict):
+                    continue
+                tracker = structured_trackers.setdefault(
+                    key,
+                    {
+                        "key": key,
+                        "label": label,
+                        "sample_days": 0,
+                        "strong_days": 0,
+                        "general_days": 0,
+                        "weak_days": 0,
+                        "_scores": [],
+                    },
+                )
+                tracker["sample_days"] += 1
+                level = str(item.get("level") or "weak")
+                if level not in {"strong", "general", "weak"}:
+                    level = "weak"
+                tracker[f"{level}_days"] += 1
+                score = self._to_float(item.get("score"))
+                if score is not None:
+                    tracker["_scores"].append(score)
+
+            for entry in diagnostics.get("failure_attribution") or []:
+                if not isinstance(entry, dict):
+                    continue
+                entry_key = str(entry.get("key") or "")
+                if not entry_key:
+                    continue
+                bucket = failure_breakdown.setdefault(
+                    entry_key,
+                    {
+                        "key": entry_key,
+                        "label": str(entry.get("label") or entry_key),
+                        "days": 0,
+                    },
+                )
+                bucket["days"] += 1
+
+        top_themes = [
+            {"theme": theme, "days": days}
+            for theme, days in sorted(top_theme_breakdown.items(), key=lambda item: item[1], reverse=True)[:8]
+        ]
+        coverage = self._safe_ratio(radar_available_days, len(daily_rows))
+        avg_score = self._avg_metric(top_mainline_scores)
+        structured_diagnostics: Dict[str, Dict[str, Any]] = {}
+        weak_dimensions: List[str] = []
+        for key, label in V13_STRUCTURED_DIAGNOSTIC_LABELS.items():
+            tracker = structured_trackers.get(key)
+            if tracker:
+                avg_item_score = self._avg_metric(tracker.pop("_scores"))
+                level = self._v13_diagnostic_level(avg_item_score)
+                item = {
+                    "key": key,
+                    "label": label,
+                    "level": level,
+                    "level_label": self._v13_diagnostic_level_label(level),
+                    "score": avg_item_score,
+                    "avg_score": avg_item_score,
+                    "sample_days": tracker["sample_days"],
+                    "strong_days": tracker["strong_days"],
+                    "general_days": tracker["general_days"],
+                    "weak_days": tracker["weak_days"],
+                    "summary": (
+                        f"{label}区间均分 {self._format_number(avg_item_score)}，"
+                        f"强/中/弱分别为 {tracker['strong_days']} / {tracker['general_days']} / {tracker['weak_days']} 天。"
+                    ),
+                }
+            else:
+                item = {
+                    "key": key,
+                    "label": label,
+                    "level": "weak",
+                    "level_label": self._v13_diagnostic_level_label("weak"),
+                    "score": None,
+                    "avg_score": None,
+                    "sample_days": 0,
+                    "strong_days": 0,
+                    "general_days": 0,
+                    "weak_days": 0,
+                    "summary": "当前没有可用的 V1.3 诊断样本。",
+                }
+            structured_diagnostics[key] = item
+            if item["sample_days"] > 0 and item["level"] == "weak":
+                weak_dimensions.append(label)
+
+        failure_items = sorted(
+            failure_breakdown.values(),
+            key=lambda item: (-int(item.get("days") or 0), str(item.get("label") or item.get("key") or "")),
+        )[:6]
+        summary = (
+            f"V1.3 主线雷达覆盖 {radar_available_days}/{len(daily_rows)} 个交易日"
+            f"（{self._format_pct(coverage)}），Top 主线均分 {self._format_number(avg_score)}，"
+            f"数据降级 {degraded_days} 天。"
+        )
+        if weak_dimensions:
+            summary = f"{summary} 当前偏弱项：{'、'.join(weak_dimensions[:3])}。"
+        return {
+            "evaluated_trade_dates": len(daily_rows),
+            "radar_available_days": radar_available_days,
+            "radar_coverage_pct": coverage,
+            "avg_top_mainline_score": avg_score,
+            "sentiment_breakdown": sentiment_breakdown,
+            "data_status_breakdown": data_status_breakdown,
+            "degraded_days": degraded_days,
+            "top_theme_breakdown": top_themes,
+            "summary": summary,
+            **structured_diagnostics,
+            "failure_attribution_breakdown": failure_items,
+        }
+
+    def _extract_v13_diagnostics_from_daily_row_v2(
+        self,
+        row: MomentumBacktestDailySummary,
+    ) -> Dict[str, Any]:
+        decision = self._load_json(row.decision_payload_json)
+        if not isinstance(decision, dict):
+            message = "当日决策快照不可用，无法提取 V1.3 诊断。"
+            return {
+                "mainline_radar": [],
+                "short_term_sentiment": None,
+                "v13_data_status": {"status": "missing", "reason": "当日决策快照不可用。"},
+                "top_mainline": None,
+                "mainline_count": 0,
+                "summary_lines": [message],
+                **{
+                    key: self._build_v13_diagnostic_item(
+                        key=key,
+                        label=label,
+                        score=0.0,
+                        summary=message,
+                        metrics={"available": False},
+                    )
+                    for key, label in V13_STRUCTURED_DIAGNOSTIC_LABELS.items()
+                },
+                "failure_attribution": [
+                    {"key": "data_status", "label": "数据状态", "summary": message},
+                ],
+            }
+
+        radar = decision.get("mainline_radar")
+        if not isinstance(radar, list):
+            radar = []
+        radar = [item for item in radar if isinstance(item, dict)]
+        sentiment = decision.get("short_term_sentiment")
+        if not isinstance(sentiment, dict):
+            sentiment = None
+        data_status = decision.get("v13_data_status")
+        if not isinstance(data_status, dict):
+            data_status = {"status": "missing"}
+        action = decision.get("action")
+        if not isinstance(action, dict):
+            action = {}
+        opportunity_quality = decision.get("opportunity_quality")
+        if not isinstance(opportunity_quality, dict):
+            opportunity_quality = {}
+        portfolio = decision.get("portfolio")
+        if not isinstance(portfolio, list):
+            portfolio = []
+        portfolio = [item for item in portfolio if isinstance(item, dict)]
+        candidate_diagnostics = decision.get("candidate_diagnostics")
+        if not isinstance(candidate_diagnostics, list):
+            candidate_diagnostics = []
+        candidate_diagnostics = [item for item in candidate_diagnostics if isinstance(item, dict)]
+
+        top_mainline = radar[0] if radar else None
+        summary_lines = []
+        if top_mainline:
+            summary_lines.append(
+                f"Top 主线为 {top_mainline.get('theme_name') or top_mainline.get('theme_id') or '未命名主线'}，"
+                f"主线雷达分 {self._format_number(self._to_float(top_mainline.get('score')))}。"
+            )
+        else:
+            summary_lines.append("当日没有可用的 V1.3 主线雷达结果。")
+        if sentiment:
+            summary_lines.append(
+                f"短线情绪为 {sentiment.get('level_label') or sentiment.get('level') or '未知'}，"
+                f"分数 {self._format_number(self._to_float(sentiment.get('score')))}。"
+            )
+        if data_status.get("status") and data_status.get("status") != "ok":
+            summary_lines.append(f"数据状态为 {data_status.get('status')}，需要关注降级或缺失。")
+
+        structured_items = self._build_v13_daily_structured_diagnostics(
+            row=row,
+            radar=radar,
+            sentiment=sentiment,
+            data_status=data_status,
+            action=action,
+            opportunity_quality=opportunity_quality,
+            portfolio=portfolio,
+            candidate_diagnostics=candidate_diagnostics,
+        )
+        failure_attribution = self._build_v13_failure_attribution(
+            structured_items,
+            data_status=data_status,
+        )
+        if failure_attribution:
+            summary_lines.append(
+                f"主要拖累：{'、'.join(str(item.get('label') or item.get('key') or '') for item in failure_attribution[:3])}。"
+            )
+        return {
+            "mainline_radar": radar,
+            "short_term_sentiment": sentiment,
+            "v13_data_status": data_status,
+            "top_mainline": top_mainline,
+            "mainline_count": len(radar),
+            "summary_lines": summary_lines,
+            **structured_items,
+            "failure_attribution": failure_attribution,
+        }
+
+    def _build_v13_daily_structured_diagnostics(
+        self,
+        *,
+        row: MomentumBacktestDailySummary,
+        radar: List[Dict[str, Any]],
+        sentiment: Optional[Dict[str, Any]],
+        data_status: Dict[str, Any],
+        action: Dict[str, Any],
+        opportunity_quality: Dict[str, Any],
+        portfolio: List[Dict[str, Any]],
+        candidate_diagnostics: List[Dict[str, Any]],
+    ) -> Dict[str, Dict[str, Any]]:
+        top_mainline = radar[0] if radar else {}
+        top_theme = str(top_mainline.get("theme_name") or top_mainline.get("theme_id") or "")
+        top_score = self._to_float(top_mainline.get("score")) or 0.0
+        mainline_count = len(radar)
+        top_candidate_count = int(self._to_float(top_mainline.get("candidate_count")) or 0)
+        top10_count = int(self._to_float(top_mainline.get("top10_count")) or 0)
+        data_status_value = str(data_status.get("status") or "missing").strip().casefold()
+        is_degraded = bool(data_status.get("is_degraded")) or data_status_value in {"partial", "degraded", "failed", "missing"}
+
+        portfolio_size = len(portfolio)
+        theme_counts: Dict[str, int] = {}
+        same_theme_portfolio_count = 0
+        off_mainline_selected_count = 0
+        clear_count = 0
+        waiting_count = 0
+        unclear_count = 0
+        ready_count = 0
+        entry_range_count = 0
+        risk_values: List[Optional[float]] = []
+        selected_codes = set()
+        main_item: Optional[Dict[str, Any]] = None
+
+        for item in portfolio:
+            theme_name = str(item.get("theme") or "")
+            if theme_name:
+                theme_counts[theme_name] = theme_counts.get(theme_name, 0) + 1
+            if top_theme and theme_name == top_theme:
+                same_theme_portfolio_count += 1
+            elif top_theme and theme_name:
+                off_mainline_selected_count += 1
+            if str(item.get("slot") or "") == "main" and main_item is None:
+                main_item = item
+            buy_point_status = self._buy_point_bucket(item.get("buy_point_status"))
+            if buy_point_status == "clear":
+                clear_count += 1
+            elif buy_point_status == "waiting":
+                waiting_count += 1
+            else:
+                unclear_count += 1
+            if str(item.get("suggested_action") or "") == "ready":
+                ready_count += 1
+            if self._to_float(item.get("entry_range_low")) is not None and self._to_float(item.get("entry_range_high")) is not None:
+                entry_range_count += 1
+            risk_values.append(self._to_float(item.get("risk_score")))
+            ts_code = str(item.get("ts_code") or "")
+            if ts_code:
+                selected_codes.add(ts_code)
+
+        unique_theme_count = len(theme_counts)
+        avg_risk_score = self._avg_metric(risk_values)
+        theme_share_pct = self._safe_ratio(same_theme_portfolio_count, portfolio_size) or 0.0
+        portfolio_unresolved = bool(opportunity_quality.get("portfolio_unresolved")) if opportunity_quality else portfolio_size <= 1
+        theme_concentration_pass = (
+            bool(opportunity_quality.get("theme_concentration_pass"))
+            if opportunity_quality
+            else same_theme_portfolio_count >= min(2, portfolio_size)
+        )
+
+        action_level = str(action.get("level") or row.action_level or "")
+        action_label = str(action.get("label") or row.action_label or action_level or "--")
+        sentiment_level = str((sentiment or {}).get("level") or "missing")
+        sentiment_label = str((sentiment or {}).get("level_label") or sentiment_level or "missing")
+        sentiment_score = self._to_float((sentiment or {}).get("score"))
+
+        ranked_candidates = sorted(
+            candidate_diagnostics,
+            key=lambda item: int(self._to_float(item.get("rank")) or 999),
+        )
+        candidate_rank_by_code = {
+            str(item.get("ts_code") or ""): int(self._to_float(item.get("rank")) or 999)
+            for item in ranked_candidates
+            if item.get("ts_code")
+        }
+        selected_ranks = [
+            candidate_rank_by_code[code]
+            for code in selected_codes
+            if code in candidate_rank_by_code and candidate_rank_by_code[code] < 999
+        ]
+        selected_avg_rank = self._avg_metric(selected_ranks)
+        selected_within_top5 = sum(1 for rank in selected_ranks if rank <= 5)
+        best_selected_rank = min(selected_ranks) if selected_ranks else None
+        best_unselected_rank = next(
+            (
+                int(self._to_float(item.get("rank")) or 999)
+                for item in ranked_candidates
+                if str(item.get("ts_code") or "") not in selected_codes
+            ),
+            None,
+        )
+        same_theme_unselected_top5 = sum(
+            1
+            for item in ranked_candidates
+            if (
+                int(self._to_float(item.get("rank")) or 999) <= 5
+                and str(item.get("ts_code") or "") not in selected_codes
+                and top_theme
+                and str(item.get("theme") or "") == top_theme
+            )
+        )
+
+        mainline_quality_score = (
+            top_score * 0.65
+            + min(mainline_count, 3) / 3.0 * 10.0
+            + min(top_candidate_count, 8) / 8.0 * 10.0
+            + min(top10_count, 3) / 3.0 * 8.0
+            + (8.0 if str(top_mainline.get("level") or "") == "strong" else 4.0 if top_mainline else 0.0)
+            - (10.0 if is_degraded else 0.0)
+        )
+        theme_concentration_score = (
+            theme_share_pct * 0.55
+            + min(top10_count, 3) / 3.0 * 15.0
+            + min(top_candidate_count, 8) / 8.0 * 10.0
+            + (12.0 if theme_concentration_pass else 0.0)
+            - max(unique_theme_count - 2, 0) * 4.0
+            - (18.0 if portfolio_size > 0 and same_theme_portfolio_count == 0 else 0.0)
+        )
+        sentiment_alignment_score = 100.0 - min(
+            abs(self._action_openness_score(action_level) - self._sentiment_signal_score(sentiment_level)) * 1.4,
+            75.0,
+        )
+        if sentiment_score is not None:
+            sentiment_alignment_score = sentiment_alignment_score * 0.55 + sentiment_score * 0.45
+        if is_degraded:
+            sentiment_alignment_score -= 5.0
+        role_fit_score = (
+            {
+                "leader": 82.0,
+                "front": 72.0,
+                "mid": 58.0,
+                "back": 40.0,
+                "other": 52.0,
+                "missing": 28.0,
+            }.get(self._role_bucket((main_item or {}).get("role")), 52.0) * 0.7
+            + (self._safe_ratio(clear_count, portfolio_size) or 0.0) * 0.15
+            + (self._safe_ratio(ready_count, portfolio_size) or 0.0) * 0.15
+            - (15.0 if portfolio_unresolved else 0.0)
+            - (20.0 if main_item is None else 0.0)
+        )
+        risk_buffer = max(0.0, 100.0 - (avg_risk_score or 55.0) * 1.5)
+        price_position_score = (
+            (self._safe_ratio(clear_count, portfolio_size) or 0.0) * 0.4
+            + (self._safe_ratio(waiting_count, portfolio_size) or 0.0) * 0.15
+            + (self._safe_ratio(entry_range_count, portfolio_size) or 0.0) * 0.2
+            + risk_buffer * 0.25
+            - unclear_count * 6.0
+        )
+        candidate_pool_bias_score = 0.0
+        if portfolio_size > 0:
+            candidate_pool_bias_score = 60.0
+            if best_selected_rank == 1:
+                candidate_pool_bias_score += 12.0
+            candidate_pool_bias_score += selected_within_top5 / float(portfolio_size) * 18.0
+            if top_theme and same_theme_portfolio_count > 0:
+                candidate_pool_bias_score += 8.0
+            if off_mainline_selected_count == 0:
+                candidate_pool_bias_score += 4.0
+            if top_theme and same_theme_portfolio_count == 0:
+                candidate_pool_bias_score -= 18.0
+            candidate_pool_bias_score -= max((selected_avg_rank or 6.0) - 4.0, 0.0) * 5.5
+            if off_mainline_selected_count > 0 and same_theme_unselected_top5 > 0:
+                candidate_pool_bias_score -= min(same_theme_unselected_top5, 2) * 6.0
+            if (
+                best_unselected_rank is not None
+                and best_selected_rank is not None
+                and best_unselected_rank < best_selected_rank
+            ):
+                candidate_pool_bias_score -= 8.0
+
+        return {
+            "mainline_quality": self._build_v13_diagnostic_item(
+                key="mainline_quality",
+                label=V13_STRUCTURED_DIAGNOSTIC_LABELS["mainline_quality"],
+                score=mainline_quality_score,
+                summary=(
+                    f"Top 主线 {top_theme or '缺失'} 分数 {self._format_number(top_score)}，"
+                    f"雷达 {mainline_count} 条，候选 {top_candidate_count} 只，Top10 占位 {top10_count} 只。"
+                ),
+                metrics={
+                    "top_theme": top_theme or None,
+                    "top_mainline_score": top_score,
+                    "mainline_count": mainline_count,
+                    "candidate_count": top_candidate_count,
+                    "top10_count": top10_count,
+                    "is_degraded": is_degraded,
+                },
+                strong_threshold=76.0,
+                general_threshold=58.0,
+            ),
+            "theme_concentration": self._build_v13_diagnostic_item(
+                key="theme_concentration",
+                label=V13_STRUCTURED_DIAGNOSTIC_LABELS["theme_concentration"],
+                score=theme_concentration_score,
+                summary=(
+                    f"默认组合 {same_theme_portfolio_count}/{portfolio_size} 只围绕 {top_theme or '当前 Top 主线'}，"
+                    f"集中度判定为{'通过' if theme_concentration_pass else '未通过'}。"
+                ),
+                metrics={
+                    "top_theme": top_theme or None,
+                    "same_theme_selected_count": same_theme_portfolio_count,
+                    "portfolio_size": portfolio_size,
+                    "theme_share_pct": theme_share_pct,
+                    "unique_theme_count": unique_theme_count,
+                    "theme_concentration_pass": theme_concentration_pass,
+                },
+                strong_threshold=72.0,
+                general_threshold=52.0,
+            ),
+            "sentiment_alignment": self._build_v13_diagnostic_item(
+                key="sentiment_alignment",
+                label=V13_STRUCTURED_DIAGNOSTIC_LABELS["sentiment_alignment"],
+                score=sentiment_alignment_score,
+                summary=(
+                    f"短线情绪 {sentiment_label}，动作矩阵落在 {action_label}，"
+                    f"当前更偏向{'同向' if self._v13_diagnostic_level(sentiment_alignment_score) != 'weak' else '错位'}。"
+                ),
+                metrics={
+                    "sentiment_level": sentiment_level,
+                    "sentiment_score": sentiment_score,
+                    "action_level": action_level,
+                    "action_label": action_label,
+                    "is_degraded": is_degraded,
+                },
+                strong_threshold=74.0,
+                general_threshold=54.0,
+            ),
+            "role_fit": self._build_v13_diagnostic_item(
+                key="role_fit",
+                label=V13_STRUCTURED_DIAGNOSTIC_LABELS["role_fit"],
+                score=role_fit_score,
+                summary=(
+                    f"主仓角色为 {str((main_item or {}).get('role') or '缺失')}，"
+                    f"买点清晰 {clear_count}/{portfolio_size}，可执行 {ready_count}/{portfolio_size}。"
+                ),
+                metrics={
+                    "main_role": (main_item or {}).get("role"),
+                    "portfolio_size": portfolio_size,
+                    "clear_count": clear_count,
+                    "ready_count": ready_count,
+                    "portfolio_unresolved": portfolio_unresolved,
+                },
+                strong_threshold=74.0,
+                general_threshold=55.0,
+            ),
+            "price_position": self._build_v13_diagnostic_item(
+                key="price_position",
+                label=V13_STRUCTURED_DIAGNOSTIC_LABELS["price_position"],
+                score=price_position_score,
+                summary=(
+                    f"买点清晰 {clear_count} 只、等待触发 {waiting_count} 只，"
+                    f"有计划区间 {entry_range_count} 只，组合平均风险分 {self._format_number(avg_risk_score)}。"
+                ),
+                metrics={
+                    "portfolio_size": portfolio_size,
+                    "clear_count": clear_count,
+                    "waiting_count": waiting_count,
+                    "unclear_count": unclear_count,
+                    "entry_range_count": entry_range_count,
+                    "avg_risk_score": avg_risk_score,
+                },
+                strong_threshold=72.0,
+                general_threshold=52.0,
+            ),
+            "candidate_pool_bias": self._build_v13_diagnostic_item(
+                key="candidate_pool_bias",
+                label=V13_STRUCTURED_DIAGNOSTIC_LABELS["candidate_pool_bias"],
+                score=candidate_pool_bias_score,
+                summary=(
+                    f"入选标的平均候选排名 {self._format_number(selected_avg_rank)}，"
+                    f"Top5 内入选 {selected_within_top5} 只，非主线入选 {off_mainline_selected_count} 只。"
+                ),
+                metrics={
+                    "portfolio_size": portfolio_size,
+                    "selected_avg_rank": selected_avg_rank,
+                    "selected_within_top5": selected_within_top5,
+                    "best_selected_rank": best_selected_rank,
+                    "best_unselected_rank": best_unselected_rank,
+                    "off_mainline_selected_count": off_mainline_selected_count,
+                    "same_theme_unselected_top5": same_theme_unselected_top5,
+                },
+                strong_threshold=74.0,
+                general_threshold=55.0,
+            ),
+        }
+
+    def _build_v13_diagnostic_item(
+        self,
+        *,
+        key: str,
+        label: str,
+        score: Optional[float],
+        summary: str,
+        metrics: Dict[str, Any],
+        strong_threshold: float = 75.0,
+        general_threshold: float = 55.0,
+    ) -> Dict[str, Any]:
+        normalized_score = self._clamp_score(score)
+        level = self._v13_diagnostic_level(
+            normalized_score,
+            strong_threshold=strong_threshold,
+            general_threshold=general_threshold,
+        )
+        return {
+            "key": key,
+            "label": label,
+            "level": level,
+            "level_label": self._v13_diagnostic_level_label(level),
+            "score": normalized_score,
+            "summary": summary,
+            "metrics": metrics,
+        }
+
+    def _build_v13_failure_attribution(
+        self,
+        diagnostics: Dict[str, Dict[str, Any]],
+        *,
+        data_status: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        items: List[Dict[str, Any]] = []
+        for key in V13_STRUCTURED_DIAGNOSTIC_LABELS:
+            item = diagnostics.get(key)
+            if isinstance(item, dict) and str(item.get("level") or "") == "weak":
+                items.append(
+                    {
+                        "key": key,
+                        "label": str(item.get("label") or key),
+                        "summary": str(item.get("summary") or ""),
+                    }
+                )
+        data_status_value = str(data_status.get("status") or "").strip().casefold()
+        if bool(data_status.get("is_degraded")) or data_status_value in {"partial", "degraded", "failed", "missing"}:
+            items.append(
+                {
+                    "key": "data_status",
+                    "label": "数据状态",
+                    "summary": str(data_status.get("reason") or f"数据状态为 {data_status.get('status') or 'missing'}。"),
+                }
+            )
+        return items[:4]
+
     def _extract_strategy_health_meta_from_daily_row(
         self,
         row: MomentumBacktestDailySummary,
@@ -2045,7 +2651,13 @@ class MomentumBacktestService:
         }
         if not isinstance(summary, dict):
             return True
-        return any(key not in summary for key in required_keys)
+        if any(key not in summary for key in required_keys):
+            return True
+        v13_diagnostics = summary.get("v13_diagnostics")
+        if not isinstance(v13_diagnostics, dict):
+            return True
+        required_v13_keys = set(V13_STRUCTURED_DIAGNOSTIC_LABELS.keys()) | {"failure_attribution_breakdown"}
+        return any(key not in v13_diagnostics for key in required_v13_keys)
 
     @staticmethod
     def _daily_row_matches_filters(
@@ -2599,6 +3211,82 @@ class MomentumBacktestService:
         return round(numerator * 100.0 / denominator, 4)
 
     @staticmethod
+    def _clamp_score(value: Optional[float], *, minimum: float = 0.0, maximum: float = 100.0) -> Optional[float]:
+        if value is None:
+            return None
+        return round(max(minimum, min(maximum, float(value))), 1)
+
+    @staticmethod
+    def _v13_diagnostic_level(
+        score: Optional[float],
+        *,
+        strong_threshold: float = 75.0,
+        general_threshold: float = 55.0,
+    ) -> str:
+        if score is None:
+            return "weak"
+        if score >= strong_threshold:
+            return "strong"
+        if score >= general_threshold:
+            return "general"
+        return "weak"
+
+    @staticmethod
+    def _v13_diagnostic_level_label(level: str) -> str:
+        return {
+            "strong": "强",
+            "general": "中",
+            "weak": "弱",
+        }.get(level, level or "--")
+
+    @staticmethod
+    def _role_bucket(role: Any) -> str:
+        value = str(role or "")
+        normalized = value.strip().casefold()
+        if not normalized:
+            return "missing"
+        if "leader" in normalized or "龙头" in value or "榫欏ご" in value:
+            return "leader"
+        if "front" in normalized or "前排" in value or "鍓嶆帓" in value:
+            return "front"
+        if "mid" in normalized or "中位" in value or "涓綅" in value:
+            return "mid"
+        if "back" in normalized or "后排" in value or "鍚庢帓" in value:
+            return "back"
+        return "other"
+
+    @staticmethod
+    def _buy_point_bucket(status: Any) -> str:
+        normalized = str(status or "").strip().casefold()
+        if normalized == "clear":
+            return "clear"
+        if normalized in {"waiting", "wait_for_trigger"}:
+            return "waiting"
+        if normalized == "unclear":
+            return "unclear"
+        return "unclear"
+
+    @staticmethod
+    def _action_openness_score(level: Any) -> float:
+        return {
+            "strong_go": 90.0,
+            "normal_go": 75.0,
+            "cautious_go": 60.0,
+            "observe_only": 35.0,
+            "stand_aside": 20.0,
+        }.get(str(level or ""), 40.0)
+
+    @staticmethod
+    def _sentiment_signal_score(level: Any) -> float:
+        return {
+            "hot": 82.0,
+            "tradable": 70.0,
+            "cold": 46.0,
+            "weak": 28.0,
+            "missing": 20.0,
+        }.get(str(level or "missing"), 40.0)
+
+    @staticmethod
     def _quality_level(
         *,
         positive_rate: Optional[float],
@@ -2804,7 +3492,6 @@ class MomentumBacktestService:
             "role": row.role,
             "market_segment": row.market_segment,
             "official_score": MomentumBacktestService._to_float(payload_snapshot.get("official_score")),
-            "rank_score": row.rank_score,
             "final_score": row.final_score,
             "continuation_score": row.continuation_score,
             "extension_score": row.extension_score,
@@ -2831,9 +3518,7 @@ class MomentumBacktestService:
             "name": row.name,
             "theme": row.theme,
             "role": row.role,
-            "decision_score": row.decision_score,
             "official_score": MomentumBacktestService._to_float(payload_snapshot.get("official_score")),
-            "rank_score": row.rank_score,
             "risk_score": row.risk_score,
             "buy_point_status": row.buy_point_status,
             "suggested_action": row.suggested_action,

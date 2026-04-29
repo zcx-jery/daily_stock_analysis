@@ -423,8 +423,14 @@ function buildScreeningRunStageHint(run: MomentumScreeningRunResponse): string |
   if (stageKey === 'trade_snapshot') {
     return '正在加载当日行情、涨停和成交快照，为候选池与题材判断准备底稿。';
   }
-  if (stageKey === 'sector_context') {
+  if (stageKey === 'sector_context' || stageKey === 'sector_context_load') {
     return '正在整理板块、题材与资金映射，这一步会决定“资金主攻题材”的解释底稿。';
+  }
+  if (stageKey === 'prepare_candidate_scoring_rows') {
+    return '正在逐股加载历史、结构与资金特征，为全候选正式评分准备统一画像。';
+  }
+  if (stageKey === 'provisional_candidate_scoring') {
+    return '正在执行第一遍候选评分，先用基础信号给全候选建立初步排序。';
   }
   if (stageKey === 'scoring') {
     return '候选池和题材画像已经齐了，后台正在执行正式评分、排序和结果收口。';
@@ -451,6 +457,18 @@ function buildScreeningRunStageHint(run: MomentumScreeningRunResponse): string |
     return isFullTruth
       ? '正在汇总 V1.3 真实题材画像；这一步会继续拉取真实成分、资金与主线映射。'
       : '正在补齐轻量 V1.3 上下文，用于给候选池和排序提供题材解释。';
+  }
+  if (stageKey === 'dc_members') {
+    return '正在拉取东财题材成分映射，这通常是 Full Truth 画像里的固定大头。';
+  }
+  if (stageKey === 'cyq_perf') {
+    return '正在补齐获利盘与成本分布摘要，用于判断筹码优势和上方压力。';
+  }
+  if (stageKey === 'cyq_chips') {
+    return '正在逐股拉取筹码明细，这通常是当前真实性链路里最重的真实数据步骤之一。';
+  }
+  if (stageKey === 'official_candidate_scoring' || stageKey === 'official_result_finalize') {
+    return 'V1.3 正式画像已经齐了，后台正在生成官方总分并收口最终排序。';
   }
   return null;
 }

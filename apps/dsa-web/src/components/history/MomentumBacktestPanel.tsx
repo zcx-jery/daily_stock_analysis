@@ -20,7 +20,9 @@ import type {
   MomentumBacktestSummary,
   MomentumBacktestV13DataStatus,
   MomentumBacktestV13Diagnostics,
+  MomentumBacktestV13FailureAttributionItem,
   MomentumBacktestV13MainlineItem,
+  MomentumBacktestV13StructuredDiagnostic,
 } from '../../types/momentumBacktest';
 import { ApiErrorAlert, Badge, Card, Drawer, EmptyState } from '../common';
 
@@ -265,14 +267,113 @@ function gateBadge(level?: string | null, label?: string | null) {
   }
 }
 
+type BacktestStageDescriptor = {
+  label: string;
+  hint?: string | null;
+};
+
+const BACKTEST_SUBSTAGE_LABELS: Record<string, BacktestStageDescriptor> = {
+  sector_context: {
+    label: '加载题材与板块上下文',
+    hint: '正在整理行业、板块和题材映射，为候选池评分补齐板块底座。',
+  },
+  sector_context_load: {
+    label: '加载题材与板块上下文',
+    hint: '正在整理行业、板块和题材映射，为候选池评分补齐板块底座。',
+  },
+  prepare_candidate_scoring_rows: {
+    label: '构建全候选评分画像',
+    hint: '正在逐股加载历史和基础特征，为后续正式评分准备候选行。',
+  },
+  provisional_candidate_scoring: {
+    label: '第一遍候选评分',
+    hint: '先按基础信号给全候选做初步打分，再决定后续 V1.3 正式画像覆盖范围。',
+  },
+  v13_context: {
+    label: '加载全候选 V1.3 正式画像',
+    hint: '正在补齐主线、题材成分、资金和筹码维度，这一段通常是 Full Truth 的主要耗时来源。',
+  },
+  limit_prices: {
+    label: '加载涨停价快照',
+    hint: '正在补齐当日涨停价与约束信息，为题材和涨停结构判断提供底稿。',
+  },
+  limit_events: {
+    label: '加载涨停事件快照',
+    hint: '正在整理涨停、炸板和封板事件，供后续结构质量判断使用。',
+  },
+  dc_concepts: {
+    label: '加载东财题材快照',
+    hint: '正在拉取东财题材列表和板块强弱信息。',
+  },
+  dc_moneyflow: {
+    label: '加载板块资金快照',
+    hint: '正在补齐东财板块资金流，用于判断主线资金强度。',
+  },
+  dc_members: {
+    label: '加载东财题材成分',
+    hint: '正在拉取东财题材成员映射，这一步通常是候选池正式画像里的固定大头。',
+  },
+  stock_moneyflow_dc: {
+    label: '加载东财个股资金',
+    hint: '正在补齐东财个股资金流，用于判断个股承接质量。',
+  },
+  stock_moneyflow_ths: {
+    label: '加载同花顺个股资金',
+    hint: '正在补齐同花顺个股资金快照，用于和东财资金维度交叉验证。',
+  },
+  cyq_perf: {
+    label: '加载获利盘分布快照',
+    hint: '正在补齐获利盘与成本分布摘要，用于判断筹码优势。',
+  },
+  cyq_chips: {
+    label: '加载筹码明细快照',
+    hint: '正在逐股拉取筹码明细，这通常是 Full Truth 回测里最重的真实数据步骤之一。',
+  },
+  kpl_list: {
+    label: '加载开盘啦题材映射',
+    hint: '正在补齐开盘啦题材和板块映射，为主线识别提供辅助维度。',
+  },
+  ths_hot: {
+    label: '加载同花顺热度快照',
+    hint: '正在拉取同花顺热度榜，用于判断题材热度与市场关注度。',
+  },
+  ths_members: {
+    label: '加载同花顺题材成分',
+    hint: '正在补齐同花顺题材成员映射，用于交叉核对主线成员。',
+  },
+  ths_index_names: {
+    label: '加载同花顺题材名称',
+    hint: '正在整理同花顺题材名称与代码映射，供页面解释和主线归因使用。',
+  },
+  official_candidate_scoring: {
+    label: '生成官方总分',
+    hint: 'V1.3 正式画像已经齐了，正在做第二遍正式评分并收口官方顺序。',
+  },
+  v13_mainline_radar_build: {
+    label: '生成主线雷达',
+    hint: '正在从候选池和题材画像中收口主线雷达，供后续执行决策使用。',
+  },
+  official_result_finalize: {
+    label: '收口官方排序结果',
+    hint: '正在写入最终官方顺序、名次和阶段诊断，马上就会进入下一个环节。',
+  },
+};
+
+function describeRunStage(run?: MomentumBacktestRunResponse | null): BacktestStageDescriptor {
+  const stageKey = run?.currentStageKey ?? '';
+  const stageLabel = run?.currentStageLabel ?? '--';
+  return BACKTEST_SUBSTAGE_LABELS[stageKey] ?? { label: stageLabel, hint: null };
+}
+
 function formatRunStage(run?: MomentumBacktestRunResponse | null): string {
-  if (!run?.currentStageLabel) {
+  if (!run?.currentStageLabel && !run?.currentStageKey) {
     return '--';
   }
+  const stageLabel = describeRunStage(run).label;
   if (run.currentTradeDate) {
-    return `${run.currentTradeDate} ${run.currentStageLabel}`;
+    return `${run.currentTradeDate} ${stageLabel}`;
   }
-  return run.currentStageLabel;
+  return stageLabel;
 }
 
 function runProgressPct(run?: MomentumBacktestRunResponse | null): number {
@@ -334,7 +435,7 @@ function buildRefreshNotice(
   }
 
   const progress = `${run.processedTradeDates} / ${run.totalTradeDates}`;
-  const stage = run.currentStageLabel ?? '--';
+  const stage = describeRunStage(run).label;
 
   switch (run.status) {
     case 'running':
@@ -361,6 +462,7 @@ function RunProgressPanel({
 }) {
   const progressPctValue = runProgressPct(run);
   const visualWidth = run.status === 'queued' ? Math.max(progressPctValue, 6) : progressPctValue;
+  const stage = describeRunStage(run);
 
   return (
     <div className="rounded-xl border border-info/20 bg-info/6 px-4 py-4">
@@ -391,9 +493,10 @@ function RunProgressPanel({
       </div>
       <div className="mt-3 grid gap-2 text-xs text-muted-text md:grid-cols-3">
         <span>当前交易日 {run.currentTradeDate ?? '--'}</span>
-        <span>当前阶段 {run.currentStageLabel ?? '--'}</span>
+        <span>当前阶段 {stage.label}</span>
         <span>最近心跳 {formatDateTime(run.heartbeatAt ?? run.updatedAt)}</span>
       </div>
+      {stage.hint ? <p className="mt-3 text-xs leading-6 text-secondary-text">{stage.hint}</p> : null}
     </div>
   );
 }
@@ -579,10 +682,94 @@ function V13TopMainlineCard({
   );
 }
 
+function collectV13StructuredDiagnostics(
+  diagnostics?: MomentumBacktestV13Diagnostics | null,
+): MomentumBacktestV13StructuredDiagnostic[] {
+  if (!diagnostics) {
+    return [];
+  }
+  return [
+    diagnostics.mainlineQuality,
+    diagnostics.themeConcentration,
+    diagnostics.sentimentAlignment,
+    diagnostics.roleFit,
+    diagnostics.pricePosition,
+    diagnostics.candidatePoolBias,
+  ].filter((item): item is MomentumBacktestV13StructuredDiagnostic => Boolean(item));
+}
+
+function V13StructuredDiagnosticCard({
+  item,
+  aggregate = false,
+}: {
+  item: MomentumBacktestV13StructuredDiagnostic;
+  aggregate?: boolean;
+}) {
+  const scoreValue = item.score ?? item.avgScore;
+  return (
+    <div className="rounded-2xl border border-border/60 bg-card/60 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-sm font-medium text-foreground">{item.label ?? item.key ?? '结构化诊断'}</div>
+          <div className="mt-1 text-xs text-muted-text">
+            {aggregate ? `样本 ${item.sampleDays ?? 0} 天` : '单日诊断'} · 评分 {num(scoreValue)}
+          </div>
+        </div>
+        {item.level ? levelBadge(item.level) : <Badge variant="default">诊断</Badge>}
+      </div>
+      {item.summary ? <p className="mt-3 text-sm leading-6 text-secondary-text">{item.summary}</p> : null}
+      <div className={`mt-4 grid gap-3 ${aggregate ? 'sm:grid-cols-3' : 'sm:grid-cols-2'}`}>
+        <DetailMetric label="评分" value={num(scoreValue)} />
+        <DetailMetric label="层级" value={item.levelLabel ?? item.level ?? '--'} />
+        {aggregate ? (
+          <DetailMetric
+            label="强 / 中 / 弱"
+            value={`${item.strongDays ?? 0} / ${item.generalDays ?? 0} / ${item.weakDays ?? 0}`}
+          />
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function V13FailureAttributionSection({
+  title,
+  items,
+}: {
+  title: string;
+  items?: MomentumBacktestV13FailureAttributionItem[];
+}) {
+  if (!items?.length) {
+    return null;
+  }
+
+  return (
+    <div className="rounded-2xl border border-border/60 bg-card/60 p-4">
+      <div className="text-sm font-medium text-foreground">{title}</div>
+      <div className="mt-3 space-y-2">
+        {items.map((item, index) => (
+          <div
+            key={`${item.key ?? item.label ?? 'item'}-${index}`}
+            className="rounded-xl border border-border/50 bg-background/40 px-3 py-3"
+          >
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-sm font-medium text-foreground">{item.label ?? item.key ?? '未命名原因'}</div>
+              {item.days != null ? <Badge variant="default">{item.days} 天</Badge> : null}
+            </div>
+            {item.summary ? <p className="mt-2 text-sm leading-6 text-secondary-text">{item.summary}</p> : null}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function V13RunDiagnosticsSection({ diagnostics }: { diagnostics?: MomentumBacktestV13Diagnostics | null }) {
   if (!diagnostics) {
     return null;
   }
+
+  const structuredItems = collectV13StructuredDiagnostics(diagnostics);
 
   return (
     <Card padding="lg" className="space-y-4">
@@ -624,6 +811,17 @@ function V13RunDiagnosticsSection({ diagnostics }: { diagnostics?: MomentumBackt
               ) : null}
             </div>
           ) : null}
+          {structuredItems.length > 0 ? (
+            <div className="space-y-3">
+              <div className="text-sm font-medium text-foreground">结构化诊断</div>
+              <div className="grid gap-3 lg:grid-cols-2">
+                {structuredItems.map((item) => (
+                  <V13StructuredDiagnosticCard key={item.key ?? item.label ?? 'structured'} item={item} aggregate />
+                ))}
+              </div>
+            </div>
+          ) : null}
+          <V13FailureAttributionSection title="区间主要拖累" items={diagnostics.failureAttributionBreakdown} />
         </div>
         <div className="space-y-4">
           <div className="rounded-2xl border border-border/60 bg-card/60 p-4">
@@ -674,6 +872,8 @@ function V13DailyDiagnosticsSection({ diagnostics }: { diagnostics?: MomentumBac
     return null;
   }
 
+  const structuredItems = collectV13StructuredDiagnostics(diagnostics);
+
   return (
     <Card padding="lg" className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -698,6 +898,17 @@ function V13DailyDiagnosticsSection({ diagnostics }: { diagnostics?: MomentumBac
         <DetailMetric label="数据状态" value={diagnostics.v13DataStatus?.status ?? '--'} />
       </div>
       {diagnostics.topMainline ? <V13TopMainlineCard item={diagnostics.topMainline} compact /> : null}
+      {structuredItems.length > 0 ? (
+        <div className="space-y-3">
+          <div className="text-sm font-medium text-foreground">结构化拆解</div>
+          <div className="grid gap-3 lg:grid-cols-2">
+            {structuredItems.map((item) => (
+              <V13StructuredDiagnosticCard key={item.key ?? item.label ?? 'structured'} item={item} />
+            ))}
+          </div>
+        </div>
+      ) : null}
+      <V13FailureAttributionSection title="当日主要拖累" items={diagnostics.failureAttribution} />
     </Card>
   );
 }
@@ -1752,7 +1963,7 @@ export const MomentumBacktestPanel: React.FC = () => {
                           </td>
                           <td className="px-3 py-3 text-secondary-text">{item.theme ?? '--'} / {item.role ?? '--'}</td>
                           <td className="px-3 py-3 text-secondary-text">
-                            {num(item.officialScore ?? item.rankScore)}
+                            {num(item.officialScore)}
                           </td>
                           <td className="px-3 py-3 text-secondary-text">{item.outcome?.settlementPass ? '是' : '否'}</td>
                           <td className="px-3 py-3 text-secondary-text">{pct(item.outcome?.t2ProfitWindowPct)}</td>

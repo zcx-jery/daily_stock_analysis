@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [文档] 同步强势筛选二次决策 SPEC、产品原则和 V1.3 设计文档，统一“二次决策已退回收口层、原始排序 Top3 仅作为正式排序前排代理”的口径。
+- [文档] 更新强势筛选 V1 回测验收标准，明确 V1.3 下二次决策已退回收口层，相对基准检查不再表述为“二次决策必须创造增量价值”。
+- [改进] 强势筛选二次决策将 `theme_concentration_pass` 统一为“默认组合至少 2 只同主题”口径，避免 fresh/fallback 两条链路对同一组合给出不一致的机会质量和动作闸门结论。
+- [改进] 强势筛选与历史回测共用的 20/60 日策略健康度新增 30 天单样本缓存，继续保留 12 小时聚合缓存，避免相邻交易日重复回放相同历史样本。
+- [改进] 动量回测的 `v13_diagnostics` 新增 `mainline_quality`、`theme_concentration`、`sentiment_alignment`、`role_fit`、`price_position`、`candidate_pool_bias` 结构化诊断，以及区间/当日失败归因展示。
+- [改进] 强势筛选 M2.7 主排序链路将 V1.3 profile map 的正式输入收口为全候选 baseline seed candidates，`official_score` 正式重评分不再直接消费 provisional 结果载荷。
+- [改进] 回测任务中心开始把 `sector_context_load`、`dc_members`、`cyq_perf`、`cyq_chips`、`official_candidate_scoring` 等细粒度子步骤映射到 UI，并补充可读解释文案。
 - [改进] M2.7 主排序实时收口改为只按 official_score 排序，rank_score 仅保留旧缓存回放与兼容字段语义，不再参与正式排序或 V1.3 正式画像前序排序。
 - [改进] AI 点评上下文、回测明细和页面内部排序继续收口为 official_score 优先，旧 rank_score 仅保留兼容字段语义，不再作为默认解释主轴。
 - [改进] 二次决策新增基准顺位、收口修正、硬阻断、轻修正和标准化落选原因字段，并在强势筛选页面补充“基准顺位 / 收口说明 / 展开说明”展示，进一步收口为执行层。

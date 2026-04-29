@@ -524,7 +524,8 @@
 
 #### 7.5.3 主线集中度
 
-- 默认组合中至少 `2` 只来自第一主线，视为 `theme_concentration_ok = true`
+- 默认组合中至少 `2` 只来自同一主题，视为 `theme_concentration_ok = true`
+- 若该主题与雷达第一主线不完全一致，可在 `V1.3 diagnostics` 中继续作为 off-mainline 偏差单独提示，但不再直接把机会质量降成“未集中”。
 
 #### 7.5.4 合成规则
 
