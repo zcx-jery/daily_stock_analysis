@@ -315,6 +315,7 @@ const detailResponse = {
       theme: '锂电',
       role: '龙头核心',
       marketSegment: '主板',
+      officialScore: 74.2,
       rankScore: 68,
       finalScore: 67.7,
       continuationScore: 71.2,
@@ -352,6 +353,7 @@ const detailResponse = {
       theme: '锂电',
       role: '龙头核心',
       decisionScore: 67.7,
+      officialScore: 74.2,
       rankScore: 68,
       riskScore: 18.1,
       buyPointStatus: '等待触发',
@@ -644,6 +646,7 @@ describe('MomentumBacktestPanel', () => {
     expect(await screen.findByText('当日主线与情绪诊断')).toBeInTheDocument();
     expect(screen.getByText('Top 主线为 锂电，主线雷达分 82.5。')).toBeInTheDocument();
     expect(screen.getByText('短线情绪为 可做，分数 70.6。')).toBeInTheDocument();
+    expect(screen.getByText('74.2')).toBeInTheDocument();
   });
 
   it('supports cancelling the running task and deleting a queued task', async () => {

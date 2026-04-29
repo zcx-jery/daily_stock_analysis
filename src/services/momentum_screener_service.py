@@ -10,6 +10,7 @@ import hashlib
 import json
 import logging
 from pathlib import Path
+import time
 from typing import Any, Callable, Dict, List, Optional
 
 import pandas as pd
@@ -25,9 +26,11 @@ MOMENTUM_EOD_READY_COVERAGE_RATIO = 0.6
 MOMENTUM_MARKET_CLOSE_CUTOFF = "15:00"
 MOMENTUM_ENTRY_BASELINE_VERSION = "v1_4_3_0"
 MOMENTUM_MARKET_SCOPE_VERSION = "v1_a_share_main_chinext_star"
-MOMENTUM_SCREENING_CACHE_VERSION = "v1_4_3_0_ranked_screening_v13_standard_v1"
+MOMENTUM_SCREENING_CACHE_VERSION = "v1_4_3_0_official_score_v1"
 MOMENTUM_DEFAULT_TOP_N = 30
 MOMENTUM_V13_PROFILE_MAX_CANDIDATES = 12
+MOMENTUM_TRUTH_MODE_FULL = "full"
+MOMENTUM_TRUTH_MODE_LIGHT = "light"
 MOMENTUM_DEFAULT_MIN_CHANGE_PCT = 4.0
 MOMENTUM_DEFAULT_MIN_AMOUNT = 2e8
 MOMENTUM_DEFAULT_MIN_TURNOVER = 2.0
@@ -54,6 +57,18 @@ def _safe_str(value: Any, default: str = "") -> str:
     if value is None:
         return default
     return str(value)
+
+
+def _normalize_truth_mode(value: Any) -> str:
+    return (
+        MOMENTUM_TRUTH_MODE_FULL
+        if _safe_str(value).strip().lower() == MOMENTUM_TRUTH_MODE_FULL
+        else MOMENTUM_TRUTH_MODE_LIGHT
+    )
+
+
+def _clamp_score_100(value: Any) -> float:
+    return max(0.0, min(100.0, _safe_float(value)))
 
 
 class MomentumScreenerService:
@@ -183,6 +198,30 @@ class MomentumScreenerService:
             payload["trade_date"] = str(trade_date)
         progress_callback(payload)
 
+    @staticmethod
+    def _log_timing(
+        *,
+        event: str,
+        elapsed_seconds: float,
+        trade_date: Optional[str] = None,
+        profile: Optional[str] = None,
+        truth_mode: Optional[str] = None,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        parts = [
+            f"event={event}",
+            f"elapsed_seconds={elapsed_seconds:.3f}",
+        ]
+        if trade_date:
+            parts.append(f"trade_date={trade_date}")
+        if profile:
+            parts.append(f"profile={profile}")
+        if truth_mode:
+            parts.append(f"truth_mode={truth_mode}")
+        for key, value in (extra or {}).items():
+            parts.append(f"{key}={value}")
+        logger.info("Momentum screener timing: %s", " ".join(parts))
+
     def screen(
         self,
         *,
@@ -201,7 +240,7 @@ class MomentumScreenerService:
     ) -> Dict[str, Any]:
         if profile not in {"standard", "aggressive"}:
             raise ValueError("仅支持 profile=standard 或 profile=aggressive")
-        normalized_truth_mode = "full" if _safe_str(truth_mode).strip().lower() == "full" else "light"
+        normalized_truth_mode = _normalize_truth_mode(truth_mode)
 
         self._emit_progress(
             progress_callback,
@@ -283,6 +322,7 @@ class MomentumScreenerService:
             progress_pct=22.0,
             trade_date=resolved_trade_date,
         )
+        candidate_pool_started_at = time.perf_counter()
         candidates = self._load_candidate_pool(
             trade_date=resolved_trade_date,
             snapshot=snapshot,
@@ -291,6 +331,14 @@ class MomentumScreenerService:
             min_turnover=min_turnover,
             exclude_st=exclude_st,
             main_board_only=main_board_only,
+        )
+        self._log_timing(
+            event="candidate_pool_load",
+            elapsed_seconds=time.perf_counter() - candidate_pool_started_at,
+            trade_date=resolved_trade_date,
+            profile=profile,
+            truth_mode=normalized_truth_mode,
+            extra={"candidate_count": len(candidates)},
         )
 
         if candidates.empty:
@@ -322,6 +370,7 @@ class MomentumScreenerService:
                 trade_date=resolved_trade_date,
                 total_item_count=len(scoring_candidates),
             )
+            sector_context_started_at = time.perf_counter()
             try:
                 sector_context = self._load_sector_context(
                     trade_date=resolved_trade_date,
@@ -333,6 +382,14 @@ class MomentumScreenerService:
                     resolved_trade_date,
                 )
                 sector_context = {"mapping": {}, "sector_pct_map": {}}
+            self._log_timing(
+                event="sector_context_load",
+                elapsed_seconds=time.perf_counter() - sector_context_started_at,
+                trade_date=resolved_trade_date,
+                profile=profile,
+                truth_mode=normalized_truth_mode,
+                extra={"scoring_candidate_count": len(scoring_candidates)},
+            )
         else:
             logger.debug(
                 "Momentum screener skipped sector context for trade_date=%s to use local industry fallback",
@@ -348,6 +405,7 @@ class MomentumScreenerService:
             trade_date=resolved_trade_date,
             total_item_count=len(scoring_candidates),
         )
+        scoring_started_at = time.perf_counter()
         results = self._score_candidates(
             candidates=scoring_candidates,
             trade_date=resolved_trade_date,
@@ -355,9 +413,24 @@ class MomentumScreenerService:
             truth_mode=normalized_truth_mode,
             progress_callback=progress_callback,
         )
-        results = sorted(results, key=lambda item: item["rank_score"], reverse=True)
-        for index, item in enumerate(results, start=1):
-            item["rank"] = index
+        self._log_timing(
+            event="candidate_scoring_pipeline",
+            elapsed_seconds=time.perf_counter() - scoring_started_at,
+            trade_date=resolved_trade_date,
+            profile=profile,
+            truth_mode=normalized_truth_mode,
+            extra={"scoring_candidate_count": len(scoring_candidates)},
+        )
+        finalize_started_at = time.perf_counter()
+        results = self._finalize_official_results(results)
+        self._log_timing(
+            event="official_result_finalize",
+            elapsed_seconds=time.perf_counter() - finalize_started_at,
+            trade_date=resolved_trade_date,
+            profile=profile,
+            truth_mode=normalized_truth_mode,
+            extra={"result_count": len(results)},
+        )
 
         cached_payload = {
             "profile": profile,
@@ -941,81 +1014,209 @@ class MomentumScreenerService:
         sector_stats = self._build_sector_stats(candidates, sector_context)
         total_candidates = len(candidates)
 
+        prepare_rows_started_at = time.perf_counter()
+        prepared_rows = self._prepare_candidate_scoring_rows(
+            candidates=candidates,
+            trade_date=trade_date,
+            amount_rank=amount_rank,
+            main_inflow_rank=main_inflow_rank,
+            sector_stats=sector_stats,
+            progress_callback=progress_callback,
+            total_candidates=total_candidates,
+        )
+        self._log_timing(
+            event="prepare_candidate_scoring_rows",
+            elapsed_seconds=time.perf_counter() - prepare_rows_started_at,
+            trade_date=trade_date,
+            profile=profile,
+            truth_mode=truth_mode,
+            extra={"prepared_row_count": len(prepared_rows), "total_candidates": total_candidates},
+        )
+        if not prepared_rows:
+            return []
+
+        provisional_scoring_started_at = time.perf_counter()
+        provisional_results = self._score_candidate_batch(
+            prepared_rows=prepared_rows,
+            profile=profile,
+            v13_profile_map=None,
+            progress_callback=progress_callback,
+            trade_date=trade_date,
+            stage_label="构建全候选评分画像",
+            progress_base=58.0,
+            progress_span=8.0,
+        )
+        self._log_timing(
+            event="provisional_candidate_scoring",
+            elapsed_seconds=time.perf_counter() - provisional_scoring_started_at,
+            trade_date=trade_date,
+            profile=profile,
+            truth_mode=truth_mode,
+            extra={"result_count": len(provisional_results)},
+        )
+        if not provisional_results:
+            return []
+
+        full_truth_mode = _normalize_truth_mode(truth_mode) == MOMENTUM_TRUTH_MODE_FULL
+        self._emit_progress(
+            progress_callback,
+            stage_key="v13_context",
+            stage_label="加载全候选 V1.3 正式画像" if full_truth_mode else "加载 V1.3 真实题材画像",
+            progress_pct=66.0,
+            processed_item_count=len(prepared_rows),
+            total_item_count=total_candidates,
+            trade_date=trade_date,
+        )
+        v13_profile_started_at = time.perf_counter()
+        v13_profile_map = self._build_standard_v13_profile_map(
+            trade_date=trade_date,
+            provisional_results=provisional_results,
+            truth_mode=truth_mode,
+        )
+        self._log_timing(
+            event="build_standard_v13_profile_map",
+            elapsed_seconds=time.perf_counter() - v13_profile_started_at,
+            trade_date=trade_date,
+            profile=profile,
+            truth_mode=truth_mode,
+            extra={"profile_count": len(v13_profile_map)},
+        )
+
+        final_scoring_started_at = time.perf_counter()
+        final_results = self._score_candidate_batch(
+            prepared_rows=prepared_rows,
+            profile=profile,
+            v13_profile_map=v13_profile_map,
+            progress_callback=progress_callback,
+            trade_date=trade_date,
+            stage_label="执行全候选 V1.3 正式重评分" if full_truth_mode else "融合 V1.3 信号重排",
+            progress_base=72.0,
+            progress_span=22.0,
+        )
+        self._log_timing(
+            event="official_candidate_scoring",
+            elapsed_seconds=time.perf_counter() - final_scoring_started_at,
+            trade_date=trade_date,
+            profile=profile,
+            truth_mode=truth_mode,
+            extra={"result_count": len(final_results)},
+        )
+        return final_results
+
+    def _prepare_candidate_scoring_rows(
+        self,
+        *,
+        candidates: pd.DataFrame,
+        trade_date: str,
+        amount_rank: pd.Series,
+        main_inflow_rank: pd.Series,
+        sector_stats: Dict[str, Dict[str, Any]],
+        progress_callback: Optional[MomentumScreeningProgressCallback],
+        total_candidates: int,
+    ) -> List[tuple[pd.Series, Dict[str, Any]]]:
         prepared_rows: List[tuple[pd.Series, Dict[str, Any]]] = []
-        results: List[Dict[str, Any]] = []
         for index, row in candidates.iterrows():
             history = self._load_history(_safe_str(row.get("ts_code") or row.get("symbol")), trade_date)
             if history.empty:
                 logger.debug("跳过缺少历史数据的候选股: %s", row["ts_code"])
                 continue
 
+            sector_name = _safe_str(row.get("sector_name"), _safe_str(row.get("industry"), "未分类"))
             features = self._build_features(
                 row,
                 history,
                 {
                     "amount_rank_pct": _safe_float(amount_rank.iloc[index]),
                     "main_inflow_rank_pct": _safe_float(main_inflow_rank.iloc[index]),
-                    "sector": _safe_str(row.get("sector_name"), _safe_str(row.get("industry"), "未分类")),
-                    "sector_stats": sector_stats.get(
-                        _safe_str(row.get("sector_name"), _safe_str(row.get("industry"), "未分类")),
-                        {},
-                    ),
+                    "sector": sector_name,
+                    "sector_stats": sector_stats.get(sector_name, {}),
                 },
             )
             prepared_rows.append((row, features))
-            if profile == "aggressive":
-                results.append(self._score_aggressive(row, features))
-            else:
-                results.append(self._score_standard(row, features))
             self._emit_progress(
                 progress_callback,
                 stage_key="scoring",
-                stage_label="执行基础评分",
-                progress_pct=46.0 + min(18.0, ((len(prepared_rows) / max(1, total_candidates)) * 18.0)),
+                stage_label="构建全候选评分画像",
+                progress_pct=46.0 + min(12.0, ((len(prepared_rows) / max(1, total_candidates)) * 12.0)),
                 processed_item_count=len(prepared_rows),
                 total_item_count=total_candidates,
                 trade_date=trade_date,
             )
 
-        if not results:
-            return results
+        return prepared_rows
 
-        self._emit_progress(
-            progress_callback,
-            stage_key="v13_context",
-            stage_label="加载 V1.3 真实题材画像",
-            progress_pct=66.0,
-            processed_item_count=len(prepared_rows),
-            total_item_count=total_candidates,
-            trade_date=trade_date,
-        )
-        v13_profile_map = self._build_standard_v13_profile_map(
-            trade_date=trade_date,
-            provisional_results=results,
-            truth_mode=truth_mode,
-        )
-        if not v13_profile_map:
-            return results
-
-        enhanced_results: List[Dict[str, Any]] = []
+    def _score_candidate_batch(
+        self,
+        *,
+        prepared_rows: List[tuple[pd.Series, Dict[str, Any]]],
+        profile: str,
+        v13_profile_map: Optional[Dict[str, Dict[str, Any]]],
+        progress_callback: Optional[MomentumScreeningProgressCallback],
+        trade_date: str,
+        stage_label: str,
+        progress_base: float,
+        progress_span: float,
+    ) -> List[Dict[str, Any]]:
+        results: List[Dict[str, Any]] = []
+        profile_map = v13_profile_map or {}
+        total_rows = len(prepared_rows)
         for row, features in prepared_rows:
-            enhanced_features = dict(features)
-            enhanced_features["v13_profile"] = v13_profile_map.get(_safe_str(row.get("ts_code")), {})
+            scored_features = dict(features)
+            if profile_map:
+                scored_features["v13_profile"] = profile_map.get(_safe_str(row.get("ts_code")), {})
             if profile == "aggressive":
-                enhanced_results.append(self._score_aggressive(row, enhanced_features))
+                results.append(self._score_aggressive(row, scored_features))
             else:
-                enhanced_results.append(self._score_standard(row, enhanced_features))
+                results.append(self._score_standard(row, scored_features))
             self._emit_progress(
                 progress_callback,
                 stage_key="scoring",
-                stage_label="融合 V1.3 信号重排",
-                progress_pct=72.0 + min(22.0, ((len(enhanced_results) / max(1, len(prepared_rows))) * 22.0)),
-                processed_item_count=len(enhanced_results),
-                total_item_count=len(prepared_rows),
+                stage_label=stage_label,
+                progress_pct=progress_base + min(progress_span, ((len(results) / max(1, total_rows)) * progress_span)),
+                processed_item_count=len(results),
+                total_item_count=total_rows,
                 trade_date=trade_date,
             )
 
-        return enhanced_results
+        return results
+
+    def _live_result_official_score(self, item: Dict[str, Any]) -> float:
+        return _safe_float(item.get("official_score"))
+
+    def _legacy_compatible_official_score(self, item: Dict[str, Any]) -> float:
+        return _safe_float(item.get("official_score"), _safe_float(item.get("rank_score")))
+
+    def _official_result_sort_key(self, item: Dict[str, Any]) -> tuple[float, float, str]:
+        return (
+            -self._live_result_official_score(item),
+            -_safe_float(item.get("final_score")),
+            _safe_str(item.get("ts_code")),
+        )
+
+    def _finalize_official_results(
+        self,
+        results: List[Dict[str, Any]],
+        *,
+        allow_rank_score_fallback: bool = False,
+    ) -> List[Dict[str, Any]]:
+        normalized_results: List[Dict[str, Any]] = []
+        official_score_loader = (
+            self._legacy_compatible_official_score
+            if allow_rank_score_fallback
+            else self._live_result_official_score
+        )
+        for item in results:
+            normalized = dict(item)
+            official_score = round(official_score_loader(normalized), 1)
+            normalized["official_score"] = official_score
+            normalized["rank_score"] = round(_safe_float(normalized.get("rank_score"), official_score), 1)
+            normalized["final_score"] = round(_safe_float(normalized.get("final_score")), 1)
+            normalized_results.append(normalized)
+
+        normalized_results.sort(key=self._official_result_sort_key)
+        for index, item in enumerate(normalized_results, start=1):
+            item["rank"] = index
+        return normalized_results
 
     def _get_v13_data_service(self) -> Optional[MomentumV13DataService]:
         if self._v13_data_service is not None:
@@ -1064,24 +1265,15 @@ class MomentumScreenerService:
             return {}
 
         ranked_candidates.sort(
-            key=lambda item: (
-                _safe_float(item.get("rank_score")),
-                _safe_float(item.get("final_score")),
-            ),
-            reverse=True,
+            key=self._official_result_sort_key,
         )
         for rank, item in enumerate(ranked_candidates, start=1):
             item["rank"] = rank
 
-        # V1.3 正式增强里最重的个股级资金流 / 筹码 / 成分查询只覆盖前排候选。
-        # 这样能保证官方 Top30 的主路径继续吸收 6000 积分增强，同时避免大候选池日
-        # 因为逐股补全几百只尾部样本而把筛选请求拖到网关超时。
-        v13_ranked_candidates = ranked_candidates[:MOMENTUM_V13_PROFILE_MAX_CANDIDATES]
-        normalized_truth_mode = "full" if _safe_str(truth_mode).strip().lower() == "full" else "light"
-        v13_ranked_candidates = (
-            ranked_candidates
-            if normalized_truth_mode == "full"
-            else v13_ranked_candidates
+        normalized_truth_mode = _normalize_truth_mode(truth_mode)
+        v13_ranked_candidates = self._select_v13_profile_candidates(
+            ranked_candidates=ranked_candidates,
+            truth_mode=normalized_truth_mode,
         )
         if not v13_ranked_candidates:
             return {}
@@ -1089,6 +1281,7 @@ class MomentumScreenerService:
         try:
             ts_codes = [_safe_str(item.get("ts_code")) for item in v13_ranked_candidates]
             build_screening_context = getattr(v13_service, "build_screening_context", None)
+            context_build_started_at = time.perf_counter()
             if normalized_truth_mode == "full":
                 context = v13_service.build_context(
                     trade_date=trade_date,
@@ -1104,10 +1297,27 @@ class MomentumScreenerService:
                     trade_date=trade_date,
                     ts_codes=ts_codes,
                 )
+            self._log_timing(
+                event="v13_context_build",
+                elapsed_seconds=time.perf_counter() - context_build_started_at,
+                trade_date=trade_date,
+                profile="standard",
+                truth_mode=normalized_truth_mode,
+                extra={"ts_code_count": len(ts_codes)},
+            )
+            mainline_radar_started_at = time.perf_counter()
             mainline_radar = v13_service.build_mainline_radar(
                 candidates=v13_ranked_candidates,
                 context=context,
                 limit=max(2, len(v13_ranked_candidates)),
+            )
+            self._log_timing(
+                event="v13_mainline_radar_build",
+                elapsed_seconds=time.perf_counter() - mainline_radar_started_at,
+                trade_date=trade_date,
+                profile="standard",
+                truth_mode=normalized_truth_mode,
+                extra={"radar_count": len(mainline_radar)},
             )
         except Exception as exc:  # pragma: no cover - fallback to legacy scoring on provider issues
             logger.warning(
@@ -1122,6 +1332,20 @@ class MomentumScreenerService:
             context=context,
             mainline_radar=mainline_radar,
         )
+
+    def _select_v13_profile_candidates(
+        self,
+        *,
+        ranked_candidates: List[Dict[str, Any]],
+        truth_mode: str,
+    ) -> List[Dict[str, Any]]:
+        normalized_truth_mode = _normalize_truth_mode(truth_mode)
+        if normalized_truth_mode == MOMENTUM_TRUTH_MODE_FULL:
+            return list(ranked_candidates)
+
+        # light 模式仍保留为过渡链路：只对前排候选补最重的个股级资金流 / 筹码 / 成分查询。
+        # full 模式则明确代表“全候选正式画像”，不能再偷偷退回前排增强口径。
+        return list(ranked_candidates[:MOMENTUM_V13_PROFILE_MAX_CANDIDATES])
 
     def _index_standard_v13_profiles(
         self,
@@ -1523,6 +1747,10 @@ class MomentumScreenerService:
             for item in payload.get("ranked_results", [])
             if isinstance(item, dict)
         ]
+        ranked_results = self._finalize_official_results(
+            ranked_results,
+            allow_rank_score_fallback=True,
+        )
         return {
             "profile": _safe_str(payload.get("profile"), "standard"),
             "truth_mode": _safe_str(payload.get("truth_mode"), "light"),
@@ -2138,6 +2366,182 @@ class MomentumScreenerService:
             "sources": chip_sources,
         }
 
+    @staticmethod
+    def _normalize_component_score(score: float, max_score: float) -> float:
+        if max_score <= 0:
+            return 0.0
+        return _clamp_score_100((score / max_score) * 100.0)
+
+    @staticmethod
+    def _score_v13_theme_rank_quality(v13_profile: Dict[str, Any]) -> float:
+        stock_theme_rank = int(_safe_float(v13_profile.get("stock_theme_rank"), 999.0))
+        candidate_count = int(_safe_float(v13_profile.get("candidate_count")))
+        if stock_theme_rank <= 1:
+            return 96.0
+        if stock_theme_rank == 2:
+            return 88.0
+        if stock_theme_rank == 3:
+            return 78.0
+        if candidate_count >= 4 and stock_theme_rank >= 6:
+            return 34.0
+        if candidate_count >= 3 and stock_theme_rank >= 4:
+            return 46.0
+        if stock_theme_rank <= 5:
+            return 58.0
+        return 50.0
+
+    @staticmethod
+    def _score_v13_limit_structure_quality(v13_profile: Dict[str, Any]) -> float:
+        limit_events = list(v13_profile.get("limit_events") or [])
+        open_times = max((int(_safe_float(event.get("open_times"))) for event in limit_events), default=0)
+        final_limit_flag = _safe_str(limit_events[-1].get("limit") if limit_events else "")
+        if final_limit_flag == "U" and open_times == 0:
+            return 92.0
+        if final_limit_flag == "U" and open_times <= 2:
+            return 80.0
+        if final_limit_flag == "Z":
+            return 36.0
+        if open_times >= 3:
+            return 44.0
+        if open_times == 2:
+            return 58.0
+        if open_times == 1:
+            return 68.0
+        return 52.0
+
+    def _score_v13_flow_quality(self, v13_profile: Dict[str, Any], row: pd.Series) -> float:
+        flow_signal = self._resolve_v13_stock_flow(v13_profile, row)
+        if not flow_signal.get("sources"):
+            return 50.0
+
+        net_amount = _safe_float(flow_signal.get("net_amount"))
+        net_ratio = _safe_float(flow_signal.get("net_ratio"))
+        if net_amount > 0 and net_ratio >= 0.04:
+            return 92.0
+        if net_amount > 0 and net_ratio >= 0.025:
+            return 82.0
+        if net_amount > 0 and net_ratio >= 0.01:
+            return 68.0
+        if net_amount < 0 and net_ratio >= 0.02:
+            return 22.0
+        if net_amount < 0 and net_ratio >= 0.01:
+            return 34.0
+        if net_amount < 0:
+            return 42.0
+        return 50.0
+
+    def _score_v13_chip_quality(self, v13_profile: Dict[str, Any], row: pd.Series) -> float:
+        chip_signal = self._resolve_v13_chip_signal(v13_profile, row)
+        if not chip_signal.get("available"):
+            return 50.0
+
+        chip_risk_score = _safe_float(chip_signal.get("risk_score"))
+        chip_buyability = int(_safe_float(chip_signal.get("buyability_score")))
+        score = max(0.0, 100.0 - chip_risk_score)
+        if chip_buyability >= 3:
+            score += 8.0
+        elif chip_buyability == 2:
+            score += 3.0
+        elif chip_buyability == 0:
+            score -= 8.0
+        return _clamp_score_100(score)
+
+    def _score_v13_kpl_quality(self, v13_profile: Dict[str, Any]) -> float:
+        kpl_status = _safe_str(v13_profile.get("kpl_status"))
+        if self._text_contains_any(kpl_status, ["\u6362\u624b", "\u56de\u5c01"]):
+            return 84.0
+        if self._text_contains_any(kpl_status, ["\u4e00\u5b57", "\u9876\u4e00\u5b57"]):
+            return 46.0
+        if kpl_status:
+            return 62.0
+        return 50.0
+
+    def _compute_standard_official_score(
+        self,
+        *,
+        row: pd.Series,
+        features: Dict[str, Any],
+        breakdown: Dict[str, Dict[str, Any]],
+        risk_penalty: float,
+    ) -> Dict[str, float]:
+        base_signal_score = (
+            self._normalize_component_score(breakdown["strength_confirmation"]["score"], 20.0) * 0.18
+            + self._normalize_component_score(breakdown["volume_price_structure"]["score"], 18.0) * 0.16
+            + self._normalize_component_score(breakdown["trend_position"]["score"], 12.0) * 0.10
+            + self._normalize_component_score(breakdown["sector_resonance"]["score"], 25.0) * 0.24
+            + self._normalize_component_score(breakdown["capital_support"]["score"], 17.0) * 0.20
+            + self._normalize_component_score(breakdown["elasticity_activity"]["score"], 8.0) * 0.12
+        )
+        risk_quality_score = _clamp_score_100(100.0 - (risk_penalty / 25.0) * 100.0)
+        v13_profile = features.get("v13_profile") or {}
+        if not v13_profile:
+            score = base_signal_score * 0.90 + risk_quality_score * 0.10
+            return {
+                "score": round(_clamp_score_100(score), 1),
+                "base_signal_score": round(base_signal_score, 2),
+                "v13_signal_score": round(base_signal_score, 2),
+                "risk_quality_score": round(risk_quality_score, 2),
+            }
+
+        v13_signal_score = (
+            _clamp_score_100(v13_profile.get("mainline_score")) * 0.24
+            + _clamp_score_100(v13_profile.get("theme_fund_strength_score")) * 0.22
+            + self._score_v13_theme_rank_quality(v13_profile) * 0.16
+            + self._score_v13_flow_quality(v13_profile, row) * 0.16
+            + self._score_v13_chip_quality(v13_profile, row) * 0.12
+            + self._score_v13_limit_structure_quality(v13_profile) * 0.10
+        )
+        score = base_signal_score * 0.56 + v13_signal_score * 0.34 + risk_quality_score * 0.10
+        return {
+            "score": round(_clamp_score_100(score), 1),
+            "base_signal_score": round(base_signal_score, 2),
+            "v13_signal_score": round(v13_signal_score, 2),
+            "risk_quality_score": round(risk_quality_score, 2),
+        }
+
+    def _compute_aggressive_official_score(
+        self,
+        *,
+        row: pd.Series,
+        features: Dict[str, Any],
+        breakdown: Dict[str, Dict[str, Any]],
+        risk_penalty: float,
+    ) -> Dict[str, float]:
+        base_signal_score = (
+            self._normalize_component_score(breakdown["strength_confirmation"]["score"], 30.0) * 0.28
+            + self._normalize_component_score(breakdown["capital_support"]["score"], 20.0) * 0.18
+            + self._normalize_component_score(breakdown["buyability"]["score"], 18.0) * 0.18
+            + self._normalize_component_score(breakdown["volume_price_track"]["score"], 14.0) * 0.14
+            + self._normalize_component_score(breakdown["sector_resonance"]["score"], 10.0) * 0.12
+            + self._normalize_component_score(breakdown["trend_elasticity"]["score"], 8.0) * 0.10
+        )
+        risk_quality_score = _clamp_score_100(100.0 - (risk_penalty / 20.0) * 100.0)
+        v13_profile = features.get("v13_profile") or {}
+        if not v13_profile:
+            score = base_signal_score * 0.88 + risk_quality_score * 0.12
+            return {
+                "score": round(_clamp_score_100(score), 1),
+                "base_signal_score": round(base_signal_score, 2),
+                "v13_signal_score": round(base_signal_score, 2),
+                "risk_quality_score": round(risk_quality_score, 2),
+            }
+
+        v13_signal_score = (
+            _clamp_score_100(v13_profile.get("theme_fund_strength_score")) * 0.20
+            + _clamp_score_100(v13_profile.get("mainline_score")) * 0.18
+            + self._score_v13_limit_structure_quality(v13_profile) * 0.20
+            + self._score_v13_flow_quality(v13_profile, row) * 0.16
+            + self._score_v13_chip_quality(v13_profile, row) * 0.12
+            + self._score_v13_kpl_quality(v13_profile) * 0.14
+        )
+        score = base_signal_score * 0.55 + v13_signal_score * 0.35 + risk_quality_score * 0.10
+        return {
+            "score": round(_clamp_score_100(score), 1),
+            "base_signal_score": round(base_signal_score, 2),
+            "v13_signal_score": round(v13_signal_score, 2),
+            "risk_quality_score": round(risk_quality_score, 2),
+        }
+
     def _score_standard(self, row: pd.Series, features: Dict[str, Any]) -> Dict[str, Any]:
         breakdown = {
             "strength_confirmation": self._score_strength_confirmation(row, features),
@@ -2164,6 +2568,13 @@ class MomentumScreenerService:
         ) * 100
         risk_score = (risk_penalty / 25.0) * 100
         rank_score = continuation_score * 0.65 + extension_score * 0.25 - risk_score * 0.10
+        official_signal = self._compute_standard_official_score(
+            row=row,
+            features=features,
+            breakdown=breakdown,
+            risk_penalty=risk_penalty,
+        )
+        official_score = _safe_float(official_signal.get("score"))
 
         sector_stats = features["sector_stats"]
         leader_rank = sector_stats.get("leader_map", {}).get(row["ts_code"], 999)
@@ -2189,6 +2600,10 @@ class MomentumScreenerService:
             "buyability_score": None,
             "final_score": round(final_score, 1),
             "rank_score": round(rank_score, 1),
+            "official_score": official_score,
+            "_official_base_signal_score": round(_safe_float(official_signal.get("base_signal_score")), 2),
+            "_official_v13_signal_score": round(_safe_float(official_signal.get("v13_signal_score")), 2),
+            "_official_risk_quality_score": round(_safe_float(official_signal.get("risk_quality_score")), 2),
             "themes": [features["sector"]],
             "leader_level": leader_level,
             "top_reasons": self._build_top_reasons(breakdown),
@@ -2278,6 +2693,13 @@ class MomentumScreenerService:
         ) * 100
         risk_score = (risk_penalty / 20.0) * 100
         rank_score = continuation_score * 0.55 + buyability_score * 0.25 + extension_score * 0.20 - risk_score * 0.12
+        official_signal = self._compute_aggressive_official_score(
+            row=row,
+            features=features,
+            breakdown=breakdown,
+            risk_penalty=risk_penalty,
+        )
+        official_score = _safe_float(official_signal.get("score"))
 
         sector_stats = features["sector_stats"]
         leader_rank = sector_stats.get("leader_map", {}).get(row["ts_code"], 999)
@@ -2299,6 +2721,10 @@ class MomentumScreenerService:
             "buyability_score": round(buyability_score, 1),
             "final_score": round(final_score, 1),
             "rank_score": round(rank_score, 1),
+            "official_score": official_score,
+            "_official_base_signal_score": round(_safe_float(official_signal.get("base_signal_score")), 2),
+            "_official_v13_signal_score": round(_safe_float(official_signal.get("v13_signal_score")), 2),
+            "_official_risk_quality_score": round(_safe_float(official_signal.get("risk_quality_score")), 2),
             "themes": [features["sector"]],
             "leader_level": self._classify_leader_level(leader_rank),
             "top_reasons": self._build_top_reasons(breakdown),

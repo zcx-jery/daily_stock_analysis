@@ -312,6 +312,7 @@ export interface MomentumBacktestCandidateDetailItem {
   theme?: string | null;
   role?: string | null;
   marketSegment?: string | null;
+  officialScore?: number | null;
   rankScore?: number | null;
   finalScore?: number | null;
   continuationScore?: number | null;
@@ -330,6 +331,7 @@ export interface MomentumBacktestDecisionDetailItem {
   theme?: string | null;
   role?: string | null;
   decisionScore?: number | null;
+  officialScore?: number | null;
   rankScore?: number | null;
   riskScore?: number | null;
   buyPointStatus?: string | null;

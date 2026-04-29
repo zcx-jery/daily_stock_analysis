@@ -159,14 +159,42 @@ class MomentumV13DataService:
         cached = self._cache_get(context_key, self._resource_ttls["context"])
         if cached is not None:
             return cached
+        total_started_at = time.perf_counter()
 
+        def _log_context_step(step: str, started_at: float, payload: Dict[str, Any]) -> None:
+            logger.info(
+                "Momentum V1.3 context timing: trade_date=%s variant=%s step=%s elapsed_seconds=%.3f ts_code_count=%s rows=%s status=%s",
+                self._display_trade_date(trade_date),
+                context_variant,
+                step,
+                time.perf_counter() - started_at,
+                len(normalized_codes),
+                len(_safe_list(payload.get("rows"))),
+                str(payload.get("status") or "unknown"),
+            )
+
+        started_at = time.perf_counter()
         limit_prices = self._load_limit_prices(trade_date)
+        _log_context_step("limit_prices", started_at, limit_prices)
+        started_at = time.perf_counter()
         limit_events = self._load_limit_events(trade_date)
+        _log_context_step("limit_events", started_at, limit_events)
+        started_at = time.perf_counter()
         dc_concepts = self._load_dc_concepts(trade_date)
+        _log_context_step("dc_concepts", started_at, dc_concepts)
+        started_at = time.perf_counter()
         dc_moneyflow = self._load_dc_moneyflow(trade_date)
+        _log_context_step("dc_moneyflow", started_at, dc_moneyflow)
+        started_at = time.perf_counter()
         dc_members = self._load_dc_members(trade_date, normalized_codes)
+        _log_context_step("dc_members", started_at, dc_members)
+        started_at = time.perf_counter()
         stock_moneyflow_dc = self._load_stock_moneyflow_dc(trade_date, normalized_codes)
+        _log_context_step("stock_moneyflow_dc", started_at, stock_moneyflow_dc)
+        started_at = time.perf_counter()
         stock_moneyflow_ths = self._load_stock_moneyflow_ths(trade_date, normalized_codes)
+        _log_context_step("stock_moneyflow_ths", started_at, stock_moneyflow_ths)
+        started_at = time.perf_counter()
         cyq_perf = (
             self._load_cyq_perf(trade_date, normalized_codes)
             if include_chip_snapshots
@@ -176,6 +204,9 @@ class MomentumV13DataService:
                 rows=[],
             )
         )
+        if include_chip_snapshots:
+            _log_context_step("cyq_perf", started_at, cyq_perf)
+        started_at = time.perf_counter()
         cyq_chips = (
             self._load_cyq_chips(trade_date, normalized_codes)
             if include_chip_snapshots
@@ -185,8 +216,15 @@ class MomentumV13DataService:
                 rows=[],
             )
         )
+        if include_chip_snapshots:
+            _log_context_step("cyq_chips", started_at, cyq_chips)
+        started_at = time.perf_counter()
         kpl_list = self._load_kpl_list(trade_date)
+        _log_context_step("kpl_list", started_at, kpl_list)
+        started_at = time.perf_counter()
         ths_hot = self._load_ths_hot(trade_date)
+        _log_context_step("ths_hot", started_at, ths_hot)
+        started_at = time.perf_counter()
         ths_members = (
             self._load_ths_members(normalized_codes)
             if include_ths_members
@@ -196,7 +234,12 @@ class MomentumV13DataService:
                 rows=[],
             )
         )
+        if include_ths_members:
+            _log_context_step("ths_members", started_at, ths_members)
+        started_at = time.perf_counter()
         theme_name_map = self._load_ths_index_names(ths_members) if include_ths_members else {}
+        if include_ths_members:
+            _log_context_step("ths_index_names", started_at, theme_name_map.get("_payload") or {})
 
         payloads = {
             "dc_concept": dc_concepts,
@@ -276,6 +319,14 @@ class MomentumV13DataService:
             "kpl_items": _safe_list(kpl_list.get("rows")),
             "raw_sources": {**payloads, "ths_index": ths_index_payload},
         }
+        logger.info(
+            "Momentum V1.3 context timing: trade_date=%s variant=%s step=build_context_total elapsed_seconds=%.3f ts_code_count=%s degraded=%s",
+            self._display_trade_date(trade_date),
+            context_variant,
+            time.perf_counter() - total_started_at,
+            len(normalized_codes),
+            bool(context.get("is_degraded")),
+        )
         self._cache_set(context_key, context)
         return context
 

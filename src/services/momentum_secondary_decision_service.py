@@ -130,6 +130,16 @@ MAIN_SLOT_REBALANCE_PRIORITY_TOLERANCE = 2.5
 MAINLINE_CONFIRMATION_PRIORITY_TOLERANCE = 3.0
 SAME_THEME_CONFIRMATION_PRIORITY_TOLERANCE = 3.0
 V13_CONTEXT_MAX_TS_CODES = 30
+DECISION_CANDIDATE_POOL_LIMIT = 12
+
+EXCLUDED_REASON_LABELS = {
+    "non_mainline_weak": "非主线 / 主线过弱",
+    "buy_point_unclear": "买点不清晰",
+    "role_duplicate": "角色重复",
+    "mainline_rank_not_enough": "主线内名次不够",
+    "hard_blocked": "命中硬阻断",
+    "slot_capacity": "本轮收口优先级更低",
+}
 
 BUY_SIGNAL_ACTION_LEVELS = {"strong_go", "normal_go", "cautious_go"}
 ACTION_CHECKLIST_ENABLED_LEVELS = {"strong_go", "normal_go", "cautious_go"}
@@ -333,6 +343,13 @@ def _normalize_leader_level(value: Any) -> str:
     if normalized in {"中位", "mid"}:
         return "mid"
     return "back"
+
+
+def _official_sort_score(item: Dict[str, Any]) -> float:
+    official_score = item.get("official_score")
+    if official_score is not None and official_score != "":
+        return _safe_float(official_score)
+    return _safe_float(item.get("rank_score"))
 
 
 class MomentumSecondaryDecisionService:
@@ -1270,11 +1287,12 @@ class MomentumSecondaryDecisionService:
         buy_point_status, buy_point_label = self._classify_buy_point(item, role_key)
         primary_reason = next(iter(item.get("top_reasons", [])), "综合强度更优")
         extension_signal_score = self._extension_signal_score(item)
+        official_score = _official_sort_score(item)
         rule_base_score = (
-            _safe_float(item.get("rank_score")) * 0.55
-            + _safe_float(item.get("continuation_score")) * 0.20
-            + _safe_float(item.get("buyability_score"), extension_signal_score) * 0.15
-            - _safe_float(item.get("risk_score")) * 0.10
+            official_score * 0.75
+            + _safe_float(item.get("continuation_score")) * 0.15
+            + _safe_float(item.get("buyability_score"), extension_signal_score) * 0.10
+            - _safe_float(item.get("risk_score")) * 0.05
         )
         explain_adjustment_score = (
             ROLE_TIEBREAKER_PRIORITY[role_key]
@@ -1292,6 +1310,7 @@ class MomentumSecondaryDecisionService:
                 "_role_label": role_label,
                 "_buy_point_status": buy_point_status,
                 "_buy_point_label": buy_point_label,
+                "_official_score": round(official_score, 2),
                 "_rule_base_score": round(rule_base_score, 2),
                 "_explain_adjustment_score": round(explain_adjustment_score, 2),
                 "_t1_direction_risk_adjustment": round(t1_direction_risk_adjustment, 2),
@@ -1309,11 +1328,11 @@ class MomentumSecondaryDecisionService:
 
         summaries: List[Dict[str, Any]] = []
         for theme, items in grouped.items():
-            sorted_items = sorted(items, key=lambda item: item["_decision_score"], reverse=True)
+            sorted_items = sorted(items, key=self._decision_candidate_sort_key, reverse=True)
             clear_count = sum(item["_buy_point_status"] == "clear" for item in sorted_items)
             leader_count = sum(item["_role_key"] == "leader" for item in sorted_items)
             front_count = sum(item["_role_key"] == "front" for item in sorted_items)
-            avg_rank_score = mean(_safe_float(item.get("rank_score")) for item in sorted_items)
+            avg_rank_score = mean(_official_sort_score(item) for item in sorted_items)
             rule_theme_score = min(
                 100.0,
                 avg_rank_score * 0.60
@@ -1353,6 +1372,7 @@ class MomentumSecondaryDecisionService:
                             "name": item["name"],
                             "role": item["_role_label"],
                             "buy_point_label": item["_buy_point_label"],
+                            "official_score": round(_official_sort_score(item), 1),
                             "rank_score": round(_safe_float(item.get("rank_score")), 1),
                             "v13_mainline_score": (
                                 round(_safe_float(item.get("_v13_mainline_score")), 1)
@@ -1377,11 +1397,7 @@ class MomentumSecondaryDecisionService:
         if not candidates:
             return []
 
-        sorted_candidates = sorted(
-            candidates,
-            key=lambda item: self._portfolio_priority(item, theme_score_map),
-            reverse=True,
-        )
+        sorted_candidates = self._build_decision_candidate_pool(candidates)
         selected: List[Tuple[str, Dict[str, Any]]] = []
         selected_codes: set[str] = set()
         selected_themes: List[str] = []
@@ -1438,26 +1454,57 @@ class MomentumSecondaryDecisionService:
 
             theme_name = candidate["_theme"]
             role_label = candidate["_role_label"]
+            official_score = round(_official_sort_score(candidate), 1)
+            hard_blockers = self._collect_candidate_hard_blocker_items(candidate, theme_score_map)
+            soft_adjustments = self._portfolio_adjustment_items(candidate, theme_score_map)
+            decision_adjustment = round(
+                self._portfolio_priority(candidate, theme_score_map) - _official_sort_score(candidate),
+                2,
+            )
+
             if theme_name not in selected_theme_names and theme_score_map.get(theme_name, 0.0) < 60:
-                reason = "非主线 / 主线过弱"
+                reason_key = "non_mainline_weak"
+                reason = EXCLUDED_REASON_LABELS[reason_key]
+                reason_detail = "??????????????????????????????"
             elif candidate["_buy_point_status"] == "unclear":
-                reason = "买点不清晰"
+                reason_key = "buy_point_unclear"
+                reason = EXCLUDED_REASON_LABELS[reason_key]
+                reason_detail = "??????????????????????????"
+            elif hard_blockers:
+                reason_key = "hard_blocked"
+                reason = EXCLUDED_REASON_LABELS[reason_key]
+                reason_detail = self._describe_adjustments([], blockers=hard_blockers)
             elif (theme_name, role_label) in selected_roles:
-                reason = "角色重复"
+                reason_key = "role_duplicate"
+                reason = EXCLUDED_REASON_LABELS[reason_key]
+                reason_detail = "????????????????????????????"
             elif theme_name == top_theme_name:
-                reason = "主线内名次不够"
+                reason_key = "mainline_rank_not_enough"
+                reason = EXCLUDED_REASON_LABELS[reason_key]
+                reason_detail = "???????????????????????????????"
             else:
-                reason = "近期验证偏弱"
+                reason_key = "slot_capacity"
+                reason = EXCLUDED_REASON_LABELS[reason_key]
+                reason_detail = "????????????????????????????"
 
             excluded.append(
                 {
                     "rank": int(candidate.get("rank", 0)),
+                    "base_rank": int(candidate.get("rank", 0)),
                     "ts_code": candidate["ts_code"],
                     "name": candidate["name"],
                     "theme": theme_name,
                     "role": role_label,
+                    "reason_key": reason_key,
                     "reason": reason,
+                    "reason_detail": reason_detail,
+                    "official_score": official_score,
+                    "base_rank_score": official_score,
                     "rank_score": round(_safe_float(candidate.get("rank_score")), 1),
+                    "decision_adjustment": decision_adjustment,
+                    "decision_adjustment_reason": self._describe_adjustments(soft_adjustments),
+                    "hard_blockers": hard_blockers,
+                    "soft_adjustments": soft_adjustments,
                 }
             )
 
@@ -1481,9 +1528,17 @@ class MomentumSecondaryDecisionService:
             ts_code = _safe_str(candidate.get("ts_code"))
             selected_slot = selected_slot_by_code.get(ts_code)
             forward_alpha_score = _safe_float(candidate.get("_forward_alpha_score"), 50.0)
+            base_rank = int(candidate.get("rank") or 0)
+            base_rank_score = round(_official_sort_score(candidate), 2)
+            soft_adjustments = self._portfolio_adjustment_items(candidate, theme_score_map)
+            preferred_slot = selected_slot or self._preferred_slot_for_candidate(candidate)
+            hard_blockers = self._slot_hard_blocker_items(preferred_slot, candidate, theme_score_map)
+            portfolio_priority = round(self._portfolio_priority(candidate, theme_score_map), 2)
+            decision_adjustment = round(portfolio_priority - _official_sort_score(candidate), 2)
             diagnostics.append(
                 {
-                    "rank": int(candidate.get("rank") or 0),
+                    "rank": base_rank,
+                    "base_rank": base_rank,
                     "ts_code": ts_code,
                     "name": _safe_str(candidate.get("name")),
                     "theme": candidate["_theme"],
@@ -1531,13 +1586,12 @@ class MomentumSecondaryDecisionService:
                     "role": candidate["_role_label"],
                     "buy_point_status": candidate["_buy_point_status"],
                     "buy_point_label": candidate["_buy_point_label"],
+                    "official_score": base_rank_score,
+                    "base_rank_score": base_rank_score,
                     "rank_score": round(_safe_float(candidate.get("rank_score")), 2),
                     "continuation_score": round(_safe_float(candidate.get("continuation_score")), 2),
                     "extension_score": round(_safe_float(candidate.get("extension_score")), 2),
-                    "extension_signal_score": round(
-                        self._extension_signal_score(candidate),
-                        2,
-                    ),
+                    "extension_signal_score": round(self._extension_signal_score(candidate), 2),
                     "buyability_score": (
                         round(_safe_float(candidate.get("buyability_score")), 2)
                         if candidate.get("buyability_score") is not None
@@ -1545,10 +1599,14 @@ class MomentumSecondaryDecisionService:
                     ),
                     "risk_score": round(_safe_float(candidate.get("risk_score")), 2),
                     "rule_base_score": round(_safe_float(candidate.get("_rule_base_score")), 2),
-                    "explain_adjustment_score": round(
-                        _safe_float(candidate.get("_explain_adjustment_score")),
-                        2,
+                    "decision_adjustment": decision_adjustment,
+                    "decision_adjustment_reason": self._describe_adjustments(
+                        soft_adjustments,
+                        blockers=hard_blockers if hard_blockers and not selected_slot else None,
                     ),
+                    "hard_blockers": hard_blockers,
+                    "soft_adjustments": soft_adjustments,
+                    "explain_adjustment_score": round(_safe_float(candidate.get("_explain_adjustment_score")), 2),
                     "t1_direction_risk_adjustment": round(
                         _safe_float(candidate.get("_t1_direction_risk_adjustment")),
                         2,
@@ -1556,7 +1614,7 @@ class MomentumSecondaryDecisionService:
                     "decision_score": round(_safe_float(candidate.get("_decision_score")), 2),
                     "forward_alpha_score": round(forward_alpha_score, 2),
                     "forward_alpha_adjustment": round((forward_alpha_score - 50.0) * 0.55, 2),
-                    "portfolio_priority": round(self._portfolio_priority(candidate, theme_score_map), 2),
+                    "portfolio_priority": portfolio_priority,
                     "selected_slot": selected_slot,
                     "is_selected": bool(selected_slot),
                 }
@@ -2726,7 +2784,7 @@ class MomentumSecondaryDecisionService:
         ready_count = sum(item.get("suggested_action") == "ready" for item in portfolio)
         clear_count = sum(item.get("buy_point_status") == "clear" for item in portfolio)
         avg_risk = mean(_safe_float(item.get("risk_score")) for item in portfolio)
-        avg_rank_score = mean(_safe_float(item.get("rank_score")) for item in portfolio)
+        avg_rank_score = mean(_official_sort_score(item) for item in portfolio)
         candidate_count = len(candidates)
         top_theme_count = int(themes[0].get("candidate_count", 0))
         dominant_share = top_theme_count / max(candidate_count, 1)
@@ -3031,7 +3089,7 @@ class MomentumSecondaryDecisionService:
         ready_count = sum(item.get("suggested_action") == "ready" for item in portfolio)
         clear_count = sum(item.get("buy_point_status") == "clear" for item in portfolio)
         avg_risk = mean(_safe_float(item.get("risk_score")) for item in portfolio)
-        avg_rank_score = mean(_safe_float(item.get("rank_score")) for item in portfolio)
+        avg_rank_score = mean(_official_sort_score(item) for item in portfolio)
         candidate_count = len(candidates)
         top_theme_count = int(themes[0].get("candidate_count", 0))
         dominant_share = top_theme_count / max(candidate_count, 1)
@@ -4429,7 +4487,7 @@ class MomentumSecondaryDecisionService:
 
     def _classify_buy_point(self, item: Dict[str, Any], role_key: str) -> Tuple[str, str]:
         buyability = item.get("buyability_score")
-        rank_score = _safe_float(item.get("rank_score"))
+        rank_score = _official_sort_score(item)
         continuation_score = _safe_float(item.get("continuation_score"))
         risk_score = _safe_float(item.get("risk_score"))
         has_entry_range = (
@@ -4483,7 +4541,7 @@ class MomentumSecondaryDecisionService:
         risk_tags = {str(tag) for tag in item.get("risk_tags", []) if tag}
         risk_score = _safe_float(item.get("risk_score"))
         pct_chg = _safe_float(item.get("pct_chg"))
-        rank_score = _safe_float(item.get("rank_score"))
+        rank_score = _official_sort_score(item)
         continuation_score = _safe_float(item.get("continuation_score"))
         extension_score = _safe_float(item.get("extension_score"))
         adjustment = 0.0
@@ -4608,52 +4666,236 @@ class MomentumSecondaryDecisionService:
 
         return _clamp_float(score)
 
-    def _portfolio_priority(self, item: Dict[str, Any], theme_score_map: Dict[str, float]) -> float:
-        priority = (
-            _safe_float(item["_decision_score"])
-            + (_safe_float(item.get("_forward_alpha_score"), 50.0) - 50.0) * 0.55
-            + _safe_float(theme_score_map.get(item["_theme"]), 50.0) * 0.08
-            - _safe_float(item.get("risk_score")) * 0.02
+    @staticmethod
+    def _decision_candidate_sort_key(item: Dict[str, Any]) -> Tuple[float, float, float]:
+        return (
+            _official_sort_score(item),
+            -int(_safe_float(item.get("rank"), 999.0)),
+            _safe_float(item.get("_forward_alpha_score"), 50.0),
         )
+
+    def _build_decision_candidate_pool(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return sorted(candidates, key=self._decision_candidate_sort_key, reverse=True)[:DECISION_CANDIDATE_POOL_LIMIT]
+
+    @staticmethod
+    def _reason_item(
+        key: str,
+        label: str,
+        *,
+        delta: Optional[float] = None,
+        detail: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"key": key, "label": label}
+        if delta is not None:
+            payload["delta"] = round(float(delta), 2)
+        if detail:
+            payload["detail"] = detail
+        return payload
+
+    @staticmethod
+    def _dedupe_reason_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        unique: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in items:
+            key = _safe_str(item.get("key"))
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            unique.append(item)
+        return unique
+
+    @staticmethod
+    def _sum_adjustment_deltas(items: List[Dict[str, Any]]) -> float:
+        return float(sum(_safe_float(item.get("delta")) for item in items))
+
+    @staticmethod
+    def _describe_adjustments(
+        adjustments: List[Dict[str, Any]],
+        *,
+        blockers: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
+        if blockers:
+            blocker_labels = [str(item.get("label")) for item in blockers if item.get("label")]
+            if blocker_labels:
+                return f"??????{'?'.join(blocker_labels[:2])}"
+
+        positive = [str(item.get("label")) for item in adjustments if _safe_float(item.get("delta")) > 0.05]
+        negative = [str(item.get("label")) for item in adjustments if _safe_float(item.get("delta")) < -0.05]
+        if positive and negative:
+            return f"????{'?'.join(positive[:2])}?????{'?'.join(negative[:2])}"
+        if positive:
+            return f"????{'?'.join(positive[:2])}"
+        if negative:
+            return f"????{'?'.join(negative[:2])}"
+        return "????????????????"
+
+    @staticmethod
+    def _preferred_slot_for_candidate(candidate: Dict[str, Any]) -> str:
+        role_key = _safe_str(candidate.get("_role_key"))
+        if role_key in {"leader", "front"}:
+            return "main"
+        if role_key == "mid":
+            return "secondary"
+        return "watch"
+
+    def _portfolio_adjustment_items(
+        self,
+        item: Dict[str, Any],
+        theme_score_map: Dict[str, float],
+    ) -> List[Dict[str, Any]]:
+        theme_score = _safe_float(theme_score_map.get(item["_theme"]), 50.0)
         v13_mainline_score = _safe_float(item.get("_v13_mainline_score"))
-        if v13_mainline_score > 0:
-            priority += (v13_mainline_score - 50.0) * 0.12
         role_key = _safe_str(item.get("_role_key"))
         buy_point_status = _safe_str(item.get("_buy_point_status"), item.get("buy_point_status"))
-        priority += {
-            "leader": 0.8,
-            "front": 2.0,
-            "mid": 0.6,
-            "back": -3.0,
-        }.get(role_key, 0.0)
+        risk_score = _safe_float(item.get("risk_score"))
+        adjustments: List[Dict[str, Any]] = []
+        if theme_score >= 80:
+            adjustments.append(self._reason_item("theme_tailwind", "??????", delta=1.0))
+        elif theme_score < 60:
+            adjustments.append(self._reason_item("theme_drag", "????", delta=-1.0))
+        if v13_mainline_score >= 85:
+            adjustments.append(self._reason_item("mainline_confirmed", "????", delta=0.8))
+        elif 0 < v13_mainline_score < 70:
+            adjustments.append(self._reason_item("mainline_questionable", "??????", delta=-0.6))
+        role_delta = {"leader": 0.6, "front": 1.0, "mid": 0.2, "back": -1.4}.get(role_key, 0.0)
+        if role_delta != 0:
+            adjustments.append(self._reason_item(f"role_{role_key}", f"{ROLE_LABELS.get(role_key, role_key)}????", delta=role_delta))
         if self._has_planned_buy_point(item):
-            priority += 1.2
+            adjustments.append(self._reason_item("planned_buy_point", "???????", delta=0.8))
+        elif buy_point_status == "waiting":
+            adjustments.append(self._reason_item("waiting_buy_point", "????????", delta=0.2))
         elif buy_point_status == "unclear":
-            priority -= 2.0
-        return priority
+            adjustments.append(self._reason_item("unclear_buy_point", "?????", delta=-1.8))
+        if risk_score >= 70:
+            adjustments.append(self._reason_item("risk_penalty", "????", delta=-1.2))
+        return adjustments
+
+    def _main_slot_adjustment_items(
+        self,
+        item: Dict[str, Any],
+        theme_score_map: Dict[str, float],
+    ) -> List[Dict[str, Any]]:
+        role_key = _safe_str(item.get("_role_key"))
+        buy_point_status = _safe_str(item.get("_buy_point_status"), item.get("buy_point_status"))
+        forward_alpha_score = _safe_float(item.get("_forward_alpha_score"), 50.0)
+        continuation_score = _safe_float(item.get("continuation_score"))
+        extension_score = _safe_float(item.get("extension_score"))
+        v13_mainline_score = _safe_float(item.get("_v13_mainline_score"))
+        v13_theme_strength_score = _safe_float(item.get("_v13_theme_strength_score"))
+        v13_fund_support_score = _safe_float(item.get("_v13_fund_support_score"))
+        v13_shadow_score = _safe_float(item.get("_v13_shadow_score"))
+        adjustments: List[Dict[str, Any]] = []
+        role_delta = {"leader": 0.8, "front": 1.4, "mid": -0.6, "back": -2.5}.get(role_key, 0.0)
+        if role_delta != 0:
+            adjustments.append(self._reason_item(f"main_role_{role_key}", f"{ROLE_LABELS.get(role_key, role_key)}????", delta=role_delta))
+        if buy_point_status == "clear":
+            adjustments.append(self._reason_item("main_clear_buy_point", "????", delta=1.4))
+        elif self._has_planned_buy_point(item):
+            adjustments.append(self._reason_item("main_planned_buy_point", "??????", delta=0.8))
+        elif buy_point_status == "waiting":
+            adjustments.append(self._reason_item("main_waiting_buy_point", "????", delta=-0.4))
+        else:
+            adjustments.append(self._reason_item("main_unclear_buy_point", "?????", delta=-2.2))
+        if v13_mainline_score > 0:
+            adjustments.append(self._reason_item("mainline_strength", "????", delta=_clamp_float((v13_mainline_score - 70.0) * 0.20, -4.5, 4.5)))
+        if v13_theme_strength_score >= 82:
+            adjustments.append(self._reason_item("theme_strength_boost", "??????", delta=1.2))
+        if v13_fund_support_score >= 82:
+            adjustments.append(self._reason_item("fund_support_boost", "??????", delta=0.8))
+        if v13_shadow_score > 0:
+            adjustments.append(self._reason_item("shadow_score_signal", "V1.3 ?????", delta=_clamp_float((v13_shadow_score - 68.0) * 0.08, -2.5, 2.5)))
+        adjustments.append(self._reason_item("forward_alpha_signal", "??????", delta=_clamp_float((forward_alpha_score - 80.0) * 0.18, -0.5, 2.4)))
+        if role_key == "front" and forward_alpha_score >= 82:
+            adjustments.append(self._reason_item("front_attack_window", "??????", delta=2.5))
+        if role_key == "front" and forward_alpha_score >= 82 and continuation_score >= 90 and extension_score >= 88:
+            adjustments.append(self._reason_item("front_continuation_bonus", "??????", delta=1.5))
+        return adjustments
+
+    def _watch_slot_adjustment_items(
+        self,
+        item: Dict[str, Any],
+        *,
+        main_theme: str,
+    ) -> List[Dict[str, Any]]:
+        role_key = _safe_str(item.get("_role_key"))
+        adjustments: List[Dict[str, Any]] = []
+        if _safe_str(item.get("_theme")) == main_theme:
+            adjustments.append(self._reason_item("watch_same_theme", "??????????", delta=1.0))
+        if role_key == "front":
+            adjustments.append(self._reason_item("watch_front_role", "??????", delta=1.0))
+        elif role_key == "leader":
+            adjustments.append(self._reason_item("watch_leader_role", "??????", delta=0.6))
+        if self._has_planned_buy_point(item):
+            adjustments.append(self._reason_item("watch_planned_buy_point", "???????", delta=0.8))
+        adjustments.append(self._reason_item("watch_forward_alpha", "???????", delta=_clamp_float((_safe_float(item.get("_forward_alpha_score")) - 82.0) * 0.08, -0.3, 1.4)))
+        return adjustments
+
+    def _collect_candidate_hard_blocker_items(
+        self,
+        item: Dict[str, Any],
+        theme_score_map: Dict[str, float],
+    ) -> List[Dict[str, Any]]:
+        items: List[Dict[str, Any]] = []
+        for slot in ("main", "secondary", "watch"):
+            items.extend(self._slot_hard_blocker_items(slot, item, theme_score_map))
+        return self._dedupe_reason_items(items)
+
+    def _slot_hard_blocker_items(
+        self,
+        slot: str,
+        item: Dict[str, Any],
+        theme_score_map: Dict[str, float],
+    ) -> List[Dict[str, Any]]:
+        official_score = _official_sort_score(item)
+        theme_score = _safe_float(theme_score_map.get(_safe_str(item.get("_theme"))), 50.0)
+        v13_mainline_score = _safe_float(item.get("_v13_mainline_score"))
+        role_key = _safe_str(item.get("_role_key"))
+        buy_point_status = _safe_str(item.get("_buy_point_status"), item.get("buy_point_status"))
+        risk_score = _safe_float(item.get("risk_score"))
+        blockers: List[Dict[str, Any]] = []
+
+        if slot == "main":
+            if official_score < 60:
+                blockers.append(self._reason_item("low_official_score", "????????????"))
+            if theme_score < 58 and v13_mainline_score < 75:
+                blockers.append(self._reason_item("weak_mainline", "??????????????"))
+            if role_key == "back":
+                blockers.append(self._reason_item("back_role_main", "???????????"))
+            if buy_point_status == "unclear" and not self._has_planned_buy_point(item):
+                blockers.append(self._reason_item("unclear_buy_point_main", "????????????"))
+            if risk_score >= 78:
+                blockers.append(self._reason_item("high_risk_main", "???????????"))
+        elif slot == "secondary":
+            if official_score < 55 and theme_score < 60:
+                blockers.append(self._reason_item("weak_secondary_score", "???????????"))
+            if risk_score >= 82 and buy_point_status == "unclear":
+                blockers.append(self._reason_item("high_risk_secondary", "????????????????"))
+            if role_key == "back" and theme_score < 62:
+                blockers.append(self._reason_item("back_role_secondary", "???????????"))
+        else:
+            if official_score < 50 and role_key == "back":
+                blockers.append(self._reason_item("back_role_watch", "????????????"))
+            if theme_score < 55 and role_key not in {"leader", "front"}:
+                blockers.append(self._reason_item("weak_watch_theme", "???????????"))
+        return blockers
+
+    def _slot_hard_blockers(
+        self,
+        slot: str,
+        item: Dict[str, Any],
+        theme_score_map: Dict[str, float],
+    ) -> List[str]:
+        return [str(reason.get("label")) for reason in self._slot_hard_blocker_items(slot, item, theme_score_map)]
+
+    def _portfolio_priority(self, item: Dict[str, Any], theme_score_map: Dict[str, float]) -> float:
+        official_score = _official_sort_score(item)
+        adjustments = self._portfolio_adjustment_items(item, theme_score_map)
+        return official_score + _clamp_float(self._sum_adjustment_deltas(adjustments), -3.0, 3.0)
 
     def _main_slot_priority(self, item: Dict[str, Any], theme_score_map: Dict[str, float]) -> float:
-        priority = self._portfolio_priority(item, theme_score_map)
-        role_key = _safe_str(item.get("_role_key"))
-        buy_point_status = _safe_str(item.get("_buy_point_status"), item.get("buy_point_status"))
-        v13_mainline_score = _safe_float(item.get("_v13_mainline_score"))
-        if v13_mainline_score > 0:
-            priority += (v13_mainline_score - 50.0) * 0.08
-        priority += {
-            "leader": 2.5,
-            "front": 4.0,
-            "mid": 0.5,
-            "back": -5.0,
-        }.get(role_key, 0.0)
-        if buy_point_status == "clear":
-            priority += 4.0
-        elif self._has_planned_buy_point(item):
-            priority += 2.0
-        elif buy_point_status == "waiting":
-            priority -= 1.5
-        else:
-            priority -= 8.0
-        return priority
+        official_score = _official_sort_score(item)
+        adjustments = self._main_slot_adjustment_items(item, theme_score_map)
+        return official_score + _clamp_float(self._sum_adjustment_deltas(adjustments), -4.0, 5.5)
 
     def _watch_slot_priority(
         self,
@@ -4662,18 +4904,9 @@ class MomentumSecondaryDecisionService:
         *,
         main_theme: str,
     ) -> float:
-        priority = self._portfolio_priority(item, theme_score_map)
-        role_key = _safe_str(item.get("_role_key"))
-        if _safe_str(item.get("_theme")) == main_theme:
-            priority += 2.5
-        if role_key == "front":
-            priority += 2.0
-        elif role_key == "leader":
-            priority += 0.8
-        if self._has_planned_buy_point(item):
-            priority += 1.0
-        priority += max(_safe_float(item.get("_forward_alpha_score")) - 75.0, 0.0) * 0.12
-        return priority
+        official_score = _official_sort_score(item)
+        adjustments = self._watch_slot_adjustment_items(item, main_theme=main_theme)
+        return official_score + _clamp_float(self._sum_adjustment_deltas(adjustments), -2.0, 3.0)
 
     def _rebalance_same_theme_main_slot(
         self,
@@ -4759,7 +4992,13 @@ class MomentumSecondaryDecisionService:
         candidates: List[Dict[str, Any]],
         theme_score_map: Dict[str, float],
     ) -> Dict[str, Any]:
-        return max(candidates, key=lambda item: self._main_slot_priority(item, theme_score_map))
+        eligible = [
+            item
+            for item in candidates
+            if not self._slot_hard_blockers("main", item, theme_score_map)
+        ]
+        pool = eligible or candidates
+        return max(pool, key=lambda item: self._main_slot_priority(item, theme_score_map))
 
     def _pick_secondary_candidate(
         self,
@@ -4773,7 +5012,15 @@ class MomentumSecondaryDecisionService:
         if not remaining:
             return None
 
-        best_remaining = max(remaining, key=lambda item: self._portfolio_priority(item, theme_score_map))
+        eligible_remaining = [
+            item
+            for item in remaining
+            if not self._slot_hard_blockers("secondary", item, theme_score_map)
+        ]
+        if not eligible_remaining:
+            return None
+
+        best_remaining = max(eligible_remaining, key=lambda item: self._portfolio_priority(item, theme_score_map))
         best_remaining_score = self._portfolio_priority(best_remaining, theme_score_map)
         main_role_key = _safe_str(main_candidate.get("_role_key"))
         main_buy_point_status = _safe_str(
@@ -4782,7 +5029,7 @@ class MomentumSecondaryDecisionService:
         )
         same_theme_confirmation = [
             item
-            for item in remaining
+            for item in eligible_remaining
             if (
                 item["_theme"] == main_candidate["_theme"]
                 and _safe_str(item.get("_role_key")) in {"leader", "front"}
@@ -4815,7 +5062,7 @@ class MomentumSecondaryDecisionService:
         if diversify_theme:
             cross_theme = [
                 item
-                for item in remaining
+                for item in eligible_remaining
                 if item["_theme"] != main_candidate["_theme"] and item["_theme"] in theme_names
             ]
             if cross_theme:
@@ -4829,13 +5076,13 @@ class MomentumSecondaryDecisionService:
 
         role_diversified = [
             item
-            for item in remaining
+            for item in eligible_remaining
             if item["_buy_point_status"] != "unclear" and item["_role_key"] != main_candidate["_role_key"]
         ]
         if role_diversified:
             return max(role_diversified, key=lambda item: self._portfolio_priority(item, theme_score_map))
 
-        if self._portfolio_priority(best_remaining, theme_score_map) < 55:
+        if _official_sort_score(best_remaining) < 55:
             return None
         return best_remaining
 
@@ -4850,13 +5097,21 @@ class MomentumSecondaryDecisionService:
         if not remaining:
             return None
 
-        mainline_watch = [
+        eligible_remaining = [
             item
             for item in remaining
+            if not self._slot_hard_blockers("watch", item, theme_score_map)
+        ]
+        if not eligible_remaining:
+            return None
+
+        mainline_watch = [
+            item
+            for item in eligible_remaining
             if item["_theme"] in selected_themes
             and (item["_role_key"] == "leader" or item["_buy_point_status"] != "unclear")
         ]
-        pool = mainline_watch or remaining
+        pool = mainline_watch or eligible_remaining
         main_theme = selected_themes[0] if selected_themes else ""
         candidate = max(
             pool,
@@ -4884,9 +5139,6 @@ class MomentumSecondaryDecisionService:
                 ):
                     candidate = best_mainline_confirmation
 
-        theme_score = _safe_float(theme_score_map.get(candidate["_theme"]), 0.0)
-        if theme_score < 55 and candidate["_role_key"] not in {"leader", "front"}:
-            return None
         return candidate
 
     def _build_portfolio_slot(
@@ -4896,10 +5148,26 @@ class MomentumSecondaryDecisionService:
         theme_score_map: Dict[str, float],
     ) -> Dict[str, Any]:
         suggested_action = self._suggested_action_for_candidate(slot, candidate)
+        official_score = round(_official_sort_score(candidate), 1)
+        hard_blockers = self._slot_hard_blocker_items(slot, candidate, theme_score_map)
+        if slot == "main":
+            soft_adjustments = self._main_slot_adjustment_items(candidate, theme_score_map)
+            slot_score = official_score + _clamp_float(self._sum_adjustment_deltas(soft_adjustments), -4.0, 5.5)
+        elif slot == "secondary":
+            soft_adjustments = self._portfolio_adjustment_items(candidate, theme_score_map)
+            slot_score = official_score + _clamp_float(self._sum_adjustment_deltas(soft_adjustments), -3.0, 3.0)
+        else:
+            soft_adjustments = self._watch_slot_adjustment_items(
+                candidate,
+                main_theme=_safe_str(candidate.get("_theme")),
+            )
+            slot_score = official_score + _clamp_float(self._sum_adjustment_deltas(soft_adjustments), -2.0, 3.0)
+        decision_adjustment = round(slot_score - official_score, 2)
         return {
             "slot": slot,
             "slot_label": SLOT_LABELS[slot],
             "rank": int(candidate.get("rank", 0)),
+            "base_rank": int(candidate.get("rank", 0)),
             "ts_code": candidate["ts_code"],
             "name": candidate["name"],
             "theme": candidate["_theme"],
@@ -4943,11 +5211,17 @@ class MomentumSecondaryDecisionService:
             ),
             "v13_shadow_summary": candidate.get("_v13_shadow_summary"),
             "role": candidate["_role_label"],
-            "score": round(self._portfolio_priority(candidate, theme_score_map), 1),
+            "score": round(slot_score, 1),
+            "official_score": official_score,
+            "base_rank_score": official_score,
             "rank_score": round(_safe_float(candidate.get("rank_score")), 1),
             "risk_score": round(_safe_float(candidate.get("risk_score")), 1),
             "rule_base_score": round(_safe_float(candidate.get("_rule_base_score")), 1),
             "decision_score": round(_safe_float(candidate.get("_decision_score")), 1),
+            "decision_adjustment": decision_adjustment,
+            "decision_adjustment_reason": self._describe_adjustments(soft_adjustments),
+            "hard_blockers": hard_blockers,
+            "soft_adjustments": soft_adjustments,
             "forward_alpha_score": round(_safe_float(candidate.get("_forward_alpha_score"), 50.0), 1),
             "t1_direction_risk_adjustment": round(
                 _safe_float(candidate.get("_t1_direction_risk_adjustment")),

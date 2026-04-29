@@ -5,13 +5,14 @@ import { momentumScreenerApi } from '../api/momentumScreener';
 import { systemConfigApi } from '../api/systemConfig';
 import ScreenerAiDrawer from '../components/screener/ScreenerAiDrawer';
 import { createParsedApiError, getParsedApiError, type ParsedApiError } from '../api/error';
-import { ApiErrorAlert, Badge, Button, Card, Drawer, EmptyState, Input, Select } from '../components/common';
+import { ApiErrorAlert, Badge, Button, Card, Drawer, EmptyState, Input } from '../components/common';
 import type {
   MomentumActionLevel,
   MomentumBuyPointStatus,
   MomentumDecisionCandidateDiagnostic,
   MomentumDecisionExcludedCandidate,
   MomentumDecisionPortfolioSlot,
+  MomentumDecisionReasonItem,
   MomentumDecisionTheme,
   MomentumIntradayPortfolioItem,
   MomentumIntradaySignal,
@@ -36,25 +37,15 @@ type SelectedResultState = {
   item: MomentumScreenerResult;
 };
 
-type SortKey = 'rank_score' | 'continuation_score' | 'extension_score' | 'risk_score' | 'buyability_score';
-
 const STORAGE_KEY = 'dsa.momentum-screener.page-state';
 const OFFICIAL_TOP_N = 30;
 const SCREENING_RUN_POLL_INTERVAL_MS = 1500;
 
-const SORT_OPTIONS = [
-  { value: 'rank_score', label: '按排序分' },
-  { value: 'continuation_score', label: '按延续分' },
-  { value: 'extension_score', label: '按弹性分' },
-  { value: 'risk_score', label: '按低风险优先' },
-  { value: 'buyability_score', label: '按可买分' },
-];
+const OFFICIAL_SCORE_LABEL = '官方总分';
 
 const DEFAULT_FORM: FormState = {
   tradeDate: '',
 };
-
-const DEFAULT_SORT: SortKey = 'rank_score';
 
 function buildScreeningPayload(nextForm: FormState): MomentumScreenerRequest {
   return {
@@ -66,7 +57,6 @@ function buildScreeningPayload(nextForm: FormState): MomentumScreenerRequest {
 
 type PersistedState = {
   form: FormState;
-  sortBy: SortKey;
   hasPersisted: boolean;
 };
 
@@ -155,24 +145,23 @@ const gateModuleLabelMap: Record<string, string> = {
 
 function loadPersistedState(): PersistedState {
   if (typeof window === 'undefined') {
-    return { form: DEFAULT_FORM, sortBy: DEFAULT_SORT, hasPersisted: false };
+    return { form: DEFAULT_FORM, hasPersisted: false };
   }
 
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) {
-      return { form: DEFAULT_FORM, sortBy: DEFAULT_SORT, hasPersisted: false };
+      return { form: DEFAULT_FORM, hasPersisted: false };
     }
 
-    const parsed = JSON.parse(raw) as Partial<{ form: Partial<FormState>; sortBy: SortKey }>;
+    const parsed = JSON.parse(raw) as Partial<{ form: Partial<FormState> }>;
     const parsedForm = parsed.form;
     return {
       form: { tradeDate: parsedForm?.tradeDate ?? DEFAULT_FORM.tradeDate },
-      sortBy: parsed.sortBy ?? DEFAULT_SORT,
       hasPersisted: true,
     };
   } catch {
-    return { form: DEFAULT_FORM, sortBy: DEFAULT_SORT, hasPersisted: false };
+    return { form: DEFAULT_FORM, hasPersisted: false };
   }
 }
 
@@ -182,11 +171,11 @@ function buildFormFromSystemConfig(): FormState {
   };
 }
 
-function persistState(form: FormState, sortBy: SortKey) {
+function persistState(form: FormState) {
   if (typeof window === 'undefined') {
     return;
   }
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ form, sortBy }));
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ form }));
 }
 
 function translateLeaderLevel(level: string): string {
@@ -540,27 +529,56 @@ function formatOptionalScore(value?: number | null): string {
   return value.toFixed(1);
 }
 
-function sortResults(results: MomentumScreenerResult[], sortBy: SortKey): MomentumScreenerResult[] {
+function formatSignedScoreDelta(value?: number | null): string {
+  if (value == null || Number.isNaN(value) || Math.abs(value) < 0.05) {
+    return '0.0';
+  }
+  return `${value > 0 ? '+' : ''}${value.toFixed(1)}`;
+}
+
+function decisionReasonBadgeVariant(
+  item: MomentumDecisionReasonItem,
+): 'success' | 'warning' | 'default' | 'info' {
+  if (item.delta == null) {
+    return 'warning';
+  }
+  if (item.delta > 0.05) {
+    return 'success';
+  }
+  if (item.delta < -0.05) {
+    return 'warning';
+  }
+  return 'default';
+}
+
+const DecisionReasonBadgeList: React.FC<{
+  items: MomentumDecisionReasonItem[];
+  emptyText: string;
+}> = ({ items, emptyText }) => {
+  if (items.length === 0) {
+    return <p className="text-xs leading-5 text-secondary-text">{emptyText}</p>;
+  }
+
+  return (
+    <div className="flex flex-wrap gap-2">
+      {items.map((reason) => (
+        <Badge key={`${reason.key}-${reason.label}`} variant={decisionReasonBadgeVariant(reason)}>
+          {reason.label}
+          {reason.delta != null ? ` ${formatSignedScoreDelta(reason.delta)}` : ''}
+        </Badge>
+      ))}
+    </div>
+  );
+};
+
+function sortResults(results: MomentumScreenerResult[]): MomentumScreenerResult[] {
   const sorted = [...results];
-  sorted.sort((a, b) => {
-    if (sortBy === 'risk_score') {
-      return a.riskScore - b.riskScore || b.rankScore - a.rankScore;
-    }
-
-    if (sortBy === 'buyability_score') {
-      return (b.buyabilityScore ?? -1) - (a.buyabilityScore ?? -1) || b.rankScore - a.rankScore;
-    }
-
-    if (sortBy === 'continuation_score') {
-      return b.continuationScore - a.continuationScore || b.rankScore - a.rankScore;
-    }
-
-    if (sortBy === 'extension_score') {
-      return b.extensionScore - a.extensionScore || b.rankScore - a.rankScore;
-    }
-
-    return b.rankScore - a.rankScore || b.finalScore - a.finalScore;
-  });
+  sorted.sort(
+    (a, b) =>
+      b.officialScore - a.officialScore ||
+      b.finalScore - a.finalScore ||
+      a.rank - b.rank,
+  );
 
   return sorted.map((item, index) => ({ ...item, rank: index + 1 }));
 }
@@ -568,15 +586,13 @@ function sortResults(results: MomentumScreenerResult[], sortBy: SortKey): Moment
 function buildCopyText(
   profile: MomentumProfile,
   tradeDate: string | undefined,
-  sortBy: SortKey,
   results: MomentumScreenerResult[],
 ): string {
-  const sortLabel = SORT_OPTIONS.find((item) => item.value === sortBy)?.label ?? sortBy;
   const header = [
-    '\u5f3a\u52bf\u7b5b\u9009\u7ed3\u679c',
-    `\u753b\u50cf\uff1a${profile === 'aggressive' ? 'Aggressive' : 'Standard'}`,
-    tradeDate ? `\u4ea4\u6613\u65e5\uff1a${tradeDate}` : null,
-    `\u6392\u5e8f\u65b9\u5f0f\uff1a${sortLabel}`,
+    '强势筛选结果',
+    `画像：${profile === 'aggressive' ? 'Aggressive' : 'Standard'}`,
+    tradeDate ? `交易日：${tradeDate}` : null,
+    `排序口径：${OFFICIAL_SCORE_LABEL}`,
   ].filter(Boolean);
 
   const lines = results.map((item) => {
@@ -584,7 +600,7 @@ function buildCopyText(
       `#${item.rank}`,
       `${item.name}(${item.tsCode})`,
       `\u6da8\u5e45 ${item.pctChg.toFixed(2)}%`,
-      `\u6392\u5e8f\u5206 ${item.rankScore.toFixed(1)}`,
+      `${OFFICIAL_SCORE_LABEL} ${item.officialScore.toFixed(1)}`,
       `\u5ef6\u7eed\u5206 ${item.continuationScore.toFixed(1)}`,
       `\u5f39\u6027\u5206 ${item.extensionScore.toFixed(1)}`,
       `\u98ce\u9669\u5206 ${item.riskScore.toFixed(1)}`,
@@ -632,7 +648,7 @@ function buildSingleResultText(
     `排名：#${item.rank}`,
     `股票：${item.name} (${item.tsCode})`,
     `涨幅：${item.pctChg.toFixed(2)}%`,
-    `排序分：${item.rankScore.toFixed(1)}`,
+    `官方总分：${item.officialScore.toFixed(1)}`,
     `延续分：${item.continuationScore.toFixed(1)}`,
     `弹性分：${item.extensionScore.toFixed(1)}`,
     `风险分：${item.riskScore.toFixed(1)}`,
@@ -641,7 +657,7 @@ function buildSingleResultText(
     item.entryRangeLow != null && item.entryRangeHigh != null
       ? `建议区间：${item.entryRangeLow.toFixed(2)} - ${item.entryRangeHigh.toFixed(2)}`
       : null,
-    `最终分：${item.finalScore.toFixed(1)}`,
+    `基础总分：${item.finalScore.toFixed(1)}`,
     `板块：${item.themes[0] ?? '--'}`,
     `地位：${translateLeaderLevel(item.leaderLevel)}`,
     `亮点：${item.topReasons.length > 0 ? item.topReasons.join('、') : '--'}`,
@@ -662,14 +678,14 @@ function buildSingleResultMarkdown(
     `- 画像：${profile === 'aggressive' ? 'Aggressive' : 'Standard'}`,
     `- 交易日：${tradeDate ?? '--'}`,
     `- 涨幅：${item.pctChg.toFixed(2)}%`,
-    `- 排序分：${item.rankScore.toFixed(1)}`,
+    `- 官方总分：${item.officialScore.toFixed(1)}`,
     `- 延续分：${item.continuationScore.toFixed(1)}`,
     `- 弹性分：${item.extensionScore.toFixed(1)}`,
     `- 风险分：${item.riskScore.toFixed(1)}`,
     `- 可买分：${item.buyabilityScore != null ? item.buyabilityScore.toFixed(1) : '--'}`,
     `- 机会标签：${item.opportunityTag ?? '--'}`,
     `- 建议区间：${item.entryRangeLow != null && item.entryRangeHigh != null ? `${item.entryRangeLow.toFixed(2)} - ${item.entryRangeHigh.toFixed(2)}` : '--'}`,
-    `- 最终分：${item.finalScore.toFixed(1)}`,
+    `- 基础总分：${item.finalScore.toFixed(1)}`,
     `- 板块：${item.themes[0] ?? '--'}`,
     `- 地位：${translateLeaderLevel(item.leaderLevel)}`,
     '',
@@ -688,25 +704,23 @@ function buildSingleResultMarkdown(
 function buildMarkdownText(
   profile: MomentumProfile,
   tradeDate: string | undefined,
-  sortBy: SortKey,
   results: MomentumScreenerResult[],
 ): string {
-  const sortLabel = SORT_OPTIONS.find((item) => item.value === sortBy)?.label ?? sortBy;
   const lines: string[] = [
     '# 强势筛选结果',
     '',
     `- 画像：${profile === 'aggressive' ? 'Aggressive' : 'Standard'}`,
     `- 交易日：${tradeDate ?? '--'}`,
-    `- 排序方式：${sortLabel}`,
+    `- 排序口径：${OFFICIAL_SCORE_LABEL}`,
     `- 结果数量：${results.length}`,
     '',
-    '| 排名 | 股票 | 涨幅 | 排序分 | 延续分 | 弹性分 | 风险分 | 可买分 | 板块 | 地位 |',
+    '| 排名 | 股票 | 涨幅 | 官方总分 | 延续分 | 弹性分 | 风险分 | 可买分 | 板块 | 地位 |',
     '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |',
   ];
 
   for (const item of results) {
     lines.push(
-      `| ${item.rank} | ${item.name} (${item.tsCode}) | ${item.pctChg.toFixed(2)}% | ${item.rankScore.toFixed(1)} | ${item.continuationScore.toFixed(1)} | ${item.extensionScore.toFixed(1)} | ${item.riskScore.toFixed(1)} | ${item.buyabilityScore != null ? item.buyabilityScore.toFixed(1) : '--'} | ${item.themes[0] ?? '--'} | ${translateLeaderLevel(item.leaderLevel)} |`,
+      `| ${item.rank} | ${item.name} (${item.tsCode}) | ${item.pctChg.toFixed(2)}% | ${item.officialScore.toFixed(1)} | ${item.continuationScore.toFixed(1)} | ${item.extensionScore.toFixed(1)} | ${item.riskScore.toFixed(1)} | ${item.buyabilityScore != null ? item.buyabilityScore.toFixed(1) : '--'} | ${item.themes[0] ?? '--'} | ${translateLeaderLevel(item.leaderLevel)} |`,
     );
   }
 
@@ -743,7 +757,8 @@ function buildCsvText(results: MomentumScreenerResult[]): string {
     'name',
     'ts_code',
     'pct_chg',
-    'rank_score',
+    'official_score',
+    'final_score',
     'continuation_score',
     'extension_score',
     'risk_score',
@@ -762,7 +777,8 @@ function buildCsvText(results: MomentumScreenerResult[]): string {
     item.name,
     item.tsCode,
     item.pctChg.toFixed(2),
-    item.rankScore.toFixed(1),
+    item.officialScore.toFixed(1),
+    item.finalScore.toFixed(1),
     item.continuationScore.toFixed(1),
     item.extensionScore.toFixed(1),
     item.riskScore.toFixed(1),
@@ -892,10 +908,10 @@ const AggressiveSupplementPanel: React.FC<{
                     </p>
                   </div>
                   <div className="text-right">
-                    <p className={`text-lg font-semibold ${scoreTone(item.rankScore)}`}>
-                      {item.rankScore.toFixed(1)}
+                    <p className={`text-lg font-semibold ${scoreTone(item.officialScore)}`}>
+                      {item.officialScore.toFixed(1)}
                     </p>
-                    <p className="mt-1 text-xs text-secondary-text">进攻排序分</p>
+                    <p className="mt-1 text-xs text-secondary-text">补充总分</p>
                   </div>
                 </div>
 
@@ -993,7 +1009,9 @@ const DecisionThemeCard: React.FC<{ theme: MomentumDecisionTheme }> = ({ theme }
             <Badge variant={buyPointBadgeVariant(item.buyPointLabel === '买点清晰' ? 'clear' : item.buyPointLabel === '等待触发' ? 'waiting' : 'unclear')}>
               {item.buyPointLabel}
             </Badge>
-            <p className="mt-1 text-xs text-secondary-text">排序分 {item.rankScore.toFixed(1)}</p>
+            <p className="mt-1 text-xs text-secondary-text">
+              官方总分 {formatOptionalScore(item.officialScore)}
+            </p>
           </div>
         </div>
       ))}
@@ -1007,7 +1025,8 @@ const PortfolioDecisionCard: React.FC<{ item: MomentumDecisionPortfolioSlot }> =
       <div>
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant={decisionSlotBadgeVariant(item.slot)}>{item.slotLabel}</Badge>
-          <Badge variant="default">#{item.rank}</Badge>
+          <Badge variant="default">现排 #{item.rank}</Badge>
+          <Badge variant="default">基准 #{item.baseRank}</Badge>
           <Badge variant={buyPointBadgeVariant(item.buyPointStatus)}>{item.buyPointLabel}</Badge>
         </div>
         <p className="mt-3 text-base font-semibold text-foreground">{item.name}</p>
@@ -1017,13 +1036,17 @@ const PortfolioDecisionCard: React.FC<{ item: MomentumDecisionPortfolioSlot }> =
       </div>
       <div className="text-right">
         <p className={`text-lg font-semibold ${scoreTone(item.score)}`}>{item.score.toFixed(1)}</p>
-        <p className="mt-1 text-xs text-secondary-text">组合优先级</p>
+        <p className="mt-1 text-xs text-secondary-text">槽位匹配度</p>
       </div>
     </div>
 
     <div className="mt-4 flex flex-wrap gap-2">
       <Badge variant={decisionActionBadgeVariant(item.suggestedAction)}>{item.suggestedActionLabel}</Badge>
-      <Badge variant="info">排序分 {item.rankScore.toFixed(1)}</Badge>
+      <Badge variant="info">官方总分 {item.officialScore.toFixed(1)}</Badge>
+      <Badge variant="default">基准总分 {item.baseRankScore.toFixed(1)}</Badge>
+      <Badge variant={item.decisionAdjustment != null && item.decisionAdjustment >= 0 ? 'success' : 'warning'}>
+        收口修正 {formatSignedScoreDelta(item.decisionAdjustment)}
+      </Badge>
       <Badge variant="warning">风险分 {item.riskScore.toFixed(1)}</Badge>
       {item.v13MainlineScore != null ? (
         <Badge variant="success">题材强度 {item.v13MainlineScore.toFixed(1)}</Badge>
@@ -1051,6 +1074,24 @@ const PortfolioDecisionCard: React.FC<{ item: MomentumDecisionPortfolioSlot }> =
         <span className="font-medium text-foreground">仓位理由：</span>
         {item.roleReason}
       </p>
+      {item.decisionAdjustmentReason ? (
+        <p>
+          <span className="font-medium text-foreground">收口说明：</span>
+          {item.decisionAdjustmentReason}
+        </p>
+      ) : null}
+      <div>
+        <p className="font-medium text-foreground">轻修正</p>
+        <div className="mt-2">
+          <DecisionReasonBadgeList items={item.softAdjustments} emptyText="当前槽位没有额外轻修正，直接沿用官方顺序。" />
+        </div>
+      </div>
+      <div>
+        <p className="font-medium text-foreground">硬阻断检查</p>
+        <div className="mt-2">
+          <DecisionReasonBadgeList items={item.hardBlockers} emptyText="当前槽位未命中硬阻断。" />
+        </div>
+      </div>
       <p>
         <span className="font-medium text-foreground">执行提示：</span>
         {item.executionPlan}
@@ -1087,12 +1128,50 @@ const ExcludedCandidateList: React.FC<{ items: MomentumDecisionExcludedCandidate
                 {item.tsCode} · {item.theme} · {item.role}
               </p>
             </div>
-            <Badge variant="default">{item.rankScore.toFixed(1)}</Badge>
+            <div className="text-right">
+              <Badge variant="default">{item.officialScore.toFixed(1)}</Badge>
+              <p className="mt-1 text-xs text-secondary-text">基准 #{item.baseRank}</p>
+            </div>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Badge variant="default">原因 {item.reason}</Badge>
+            <Badge variant={item.decisionAdjustment != null && item.decisionAdjustment >= 0 ? 'success' : 'warning'}>
+              收口修正 {formatSignedScoreDelta(item.decisionAdjustment)}
+            </Badge>
+            {item.hardBlockers.length > 0 ? (
+              <Badge variant="warning">命中硬阻断 {item.hardBlockers.length} 项</Badge>
+            ) : null}
           </div>
           <p className="mt-3 text-sm leading-6 text-secondary-text">
             <span className="font-medium text-foreground">主淘汰原因：</span>
             {item.reason}
           </p>
+          {item.reasonDetail ? (
+            <p className="mt-2 text-sm leading-6 text-secondary-text">
+              <span className="font-medium text-foreground">展开说明：</span>
+              {item.reasonDetail}
+            </p>
+          ) : null}
+          {item.decisionAdjustmentReason ? (
+            <p className="mt-2 text-sm leading-6 text-secondary-text">
+              <span className="font-medium text-foreground">收口比较：</span>
+              {item.decisionAdjustmentReason}
+            </p>
+          ) : null}
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <div>
+              <p className="text-xs font-medium text-foreground">硬阻断</p>
+              <div className="mt-2">
+                <DecisionReasonBadgeList items={item.hardBlockers} emptyText="未命中硬阻断。" />
+              </div>
+            </div>
+            <div>
+              <p className="text-xs font-medium text-foreground">轻修正</p>
+              <div className="mt-2">
+                <DecisionReasonBadgeList items={item.softAdjustments} emptyText="没有额外轻修正。" />
+              </div>
+            </div>
+          </div>
         </div>
       ))}
     </div>
@@ -1969,7 +2048,6 @@ const IntradaySignalPanel: React.FC<IntradaySignalPanelProps> = ({
 const MomentumScreenerPage: React.FC = () => {
   const persisted = useMemo(() => loadPersistedState(), []);
   const [form, setForm] = useState<FormState>(persisted.form);
-  const [sortBy, setSortBy] = useState<SortKey>(persisted.sortBy);
   const [response, setResponse] = useState<MomentumScreenerResponse | null>(null);
   const [aggressiveResponse, setAggressiveResponse] = useState<MomentumScreenerResponse | null>(null);
   const [decision, setDecision] = useState<MomentumSecondaryDecision | null>(null);
@@ -1999,8 +2077,8 @@ const MomentumScreenerPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    persistState(form, sortBy);
-  }, [form, sortBy]);
+    persistState(form);
+  }, [form]);
 
   useEffect(() => {
     activeScreeningRunIdRef.current = screeningRun?.runId ?? null;
@@ -2351,8 +2429,8 @@ const MomentumScreenerPage: React.FC = () => {
   }, [refreshScreeningRunList]);
 
   const sortedResults = useMemo(
-    () => (response ? sortResults(response.results, sortBy) : []),
-    [response, sortBy],
+    () => (response ? sortResults(response.results) : []),
+    [response],
   );
   const candidateDiagnosticByCode = useMemo(() => {
     const diagnostics = new Map<string, MomentumDecisionCandidateDiagnostic>();
@@ -2384,7 +2462,7 @@ const MomentumScreenerPage: React.FC = () => {
         (a, b) =>
           b.extensionScore - a.extensionScore ||
           (b.buyabilityScore ?? -1) - (a.buyabilityScore ?? -1) ||
-          b.rankScore - a.rankScore ||
+          b.officialScore - a.officialScore ||
           b.finalScore - a.finalScore,
       )
       .slice(0, 2)
@@ -2430,8 +2508,8 @@ const MomentumScreenerPage: React.FC = () => {
     setSelectedResult(matched ? { source: 'standard', item: matched } : null);
   }, [aggressiveHighlights, selectedResultSource, sortedResults, selectedResultTsCode]);
 
-  const averageRankScore = sortedResults.length
-    ? sortedResults.reduce((sum, item) => sum + item.rankScore, 0) / sortedResults.length
+  const averageOfficialScore = sortedResults.length
+    ? sortedResults.reduce((sum, item) => sum + item.officialScore, 0) / sortedResults.length
     : 0;
   const screeningRunProgressSummary = useMemo(
     () => (screeningRun ? buildScreeningRunProgressSummary(screeningRun) : null),
@@ -2533,7 +2611,7 @@ const MomentumScreenerPage: React.FC = () => {
       return;
     }
 
-    const text = buildCopyText('standard', response?.tradeDate, sortBy, sortedResults);
+    const text = buildCopyText('standard', response?.tradeDate, sortedResults);
     try {
       await navigator.clipboard.writeText(text);
       setCopyFeedback('\u5df2\u590d\u5236\u5f53\u524d\u7b5b\u9009\u7ed3\u679c');
@@ -2559,7 +2637,7 @@ const MomentumScreenerPage: React.FC = () => {
       return;
     }
 
-    const content = buildMarkdownText('standard', response?.tradeDate, sortBy, sortedResults);
+    const content = buildMarkdownText('standard', response?.tradeDate, sortedResults);
     const datePart = (response?.tradeDate ?? form.tradeDate ?? 'latest').replace(/-/g, '');
     const fileName = `momentum_screener_standard_${datePart}.md`;
     downloadTextFile(content, fileName, 'text/markdown;charset=utf-8');
@@ -2594,7 +2672,6 @@ const MomentumScreenerPage: React.FC = () => {
       await systemConfigApi.getConfig(false);
       const nextForm = buildFormFromSystemConfig();
       setForm(nextForm);
-      setSortBy(DEFAULT_SORT);
       await runScreening(nextForm);
       setCopyFeedback('已恢复系统默认参数');
     } catch (err) {
@@ -2707,7 +2784,6 @@ const MomentumScreenerPage: React.FC = () => {
                 disabled={isBusy}
                 onClick={() => {
                   setForm(DEFAULT_FORM);
-                  setSortBy(DEFAULT_SORT);
                   void runScreening(DEFAULT_FORM);
                 }}
               >
@@ -2917,14 +2993,14 @@ const MomentumScreenerPage: React.FC = () => {
             />
             <SummaryCard
               icon={BarChart3}
-              label="平均排序分"
-              value={response ? averageRankScore.toFixed(1) : '--'}
-              subtext="当前结果列表的 rank score 均值"
+              label="平均官方总分"
+              value={response ? averageOfficialScore.toFixed(1) : '--'}
+              subtext="当前结果列表的官方总分均值"
             />
             <SummaryCard
               icon={ShieldAlert}
-              label="最高排序分"
-              value={sortedResults[0] ? sortedResults[0].rankScore.toFixed(1) : '--'}
+              label="最高官方总分"
+              value={sortedResults[0] ? sortedResults[0].officialScore.toFixed(1) : '--'}
               subtext={sortedResults[0] ? `${sortedResults[0].name} 排名第 1` : '等待筛选结果'}
             />
             <SummaryCard
@@ -2976,15 +3052,6 @@ const MomentumScreenerPage: React.FC = () => {
                 <p className="mt-1 text-xs text-secondary-text">这里展示官方主路径结果；Aggressive 候选已经单独收进上方补充视图。</p>
               </div>
               <div className="flex items-end gap-2">
-                <div className="w-[180px]">
-                  <Select
-                    label="排序方式"
-                    id="momentum-screener-sort"
-                    value={sortBy}
-                    onChange={(value) => setSortBy(value as SortKey)}
-                    options={SORT_OPTIONS}
-                  />
-                </div>
                 <Button
                   data-testid="momentum-screener-copy-results"
                   variant="ghost"
@@ -3033,7 +3100,7 @@ const MomentumScreenerPage: React.FC = () => {
                       <th className="px-3 py-3">排名</th>
                       <th className="px-3 py-3">股票</th>
                       <th className="px-3 py-3">涨幅</th>
-                      <th className="px-3 py-3">排序分</th>
+                      <th className="px-3 py-3">官方总分</th>
                       <th className="px-3 py-3">延续分</th>
                       <th className="px-3 py-3">弹性分</th>
                       <th className="px-3 py-3">风险分</th>
@@ -3062,7 +3129,7 @@ const MomentumScreenerPage: React.FC = () => {
                             </div>
                           </td>
                           <td className="px-3 py-3 font-medium text-danger">+{item.pctChg.toFixed(2)}%</td>
-                          <td className={`px-3 py-3 font-semibold ${scoreTone(item.rankScore)}`}>{item.rankScore.toFixed(1)}</td>
+                          <td className={`px-3 py-3 font-semibold ${scoreTone(item.officialScore)}`}>{item.officialScore.toFixed(1)}</td>
                           <td className="px-3 py-3 text-foreground">{item.continuationScore.toFixed(1)}</td>
                           <td className="px-3 py-3 text-foreground">{item.extensionScore.toFixed(1)}</td>
                           <td className="px-3 py-3 text-warning">{item.riskScore.toFixed(1)}</td>
@@ -3161,8 +3228,8 @@ const MomentumScreenerPage: React.FC = () => {
               </Button>
             </div>
             <div className="grid gap-3 md:grid-cols-4">
-              <SummaryCard icon={Flame} label="最终总分" value={selectedResult.item.finalScore.toFixed(1)} />
-              <SummaryCard icon={TrendingUp} label="排序分" value={selectedResult.item.rankScore.toFixed(1)} />
+              <SummaryCard icon={Flame} label="官方总分" value={selectedResult.item.officialScore.toFixed(1)} />
+              <SummaryCard icon={TrendingUp} label="基础总分" value={selectedResult.item.finalScore.toFixed(1)} />
               <SummaryCard icon={Radar} label="延续分" value={selectedResult.item.continuationScore.toFixed(1)} />
               <SummaryCard icon={ShieldAlert} label="风险分" value={selectedResult.item.riskScore.toFixed(1)} />
             </div>

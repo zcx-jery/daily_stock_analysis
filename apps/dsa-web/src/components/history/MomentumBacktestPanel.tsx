@@ -1736,7 +1736,7 @@ export const MomentumBacktestPanel: React.FC = () => {
                         <th className="px-3 py-3">排名</th>
                         <th className="px-3 py-3">股票</th>
                         <th className="px-3 py-3">主线 / 角色</th>
-                        <th className="px-3 py-3">排序分</th>
+                        <th className="px-3 py-3">官方总分</th>
                         <th className="px-3 py-3">延续合格</th>
                         <th className="px-3 py-3">T+2 利润窗口</th>
                         <th className="px-3 py-3">T+2 回撤</th>
@@ -1751,7 +1751,9 @@ export const MomentumBacktestPanel: React.FC = () => {
                             <div className="text-xs text-muted-text">{item.tsCode}</div>
                           </td>
                           <td className="px-3 py-3 text-secondary-text">{item.theme ?? '--'} / {item.role ?? '--'}</td>
-                          <td className="px-3 py-3 text-secondary-text">{num(item.rankScore)}</td>
+                          <td className="px-3 py-3 text-secondary-text">
+                            {num(item.officialScore ?? item.rankScore)}
+                          </td>
                           <td className="px-3 py-3 text-secondary-text">{item.outcome?.settlementPass ? '是' : '否'}</td>
                           <td className="px-3 py-3 text-secondary-text">{pct(item.outcome?.t2ProfitWindowPct)}</td>
                           <td className="px-3 py-3 text-secondary-text">{pct(item.outcome?.t2MaxDrawdownPct)}</td>

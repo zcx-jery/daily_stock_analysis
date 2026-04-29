@@ -28,6 +28,7 @@ export interface MomentumScreenerResult {
   entryRangeHigh?: number | null;
   finalScore: number;
   rankScore: number;
+  officialScore: number;
   themes: string[];
   leaderLevel: string;
   topReasons: string[];
@@ -131,6 +132,7 @@ export interface MomentumDecisionThemeRepresentative {
   name: string;
   role: string;
   buyPointLabel: string;
+  officialScore?: number | null;
   rankScore: number;
   v13MainlineScore?: number | null;
 }
@@ -150,10 +152,18 @@ export interface MomentumDecisionTheme {
   representatives: MomentumDecisionThemeRepresentative[];
 }
 
+export interface MomentumDecisionReasonItem {
+  key: string;
+  label: string;
+  delta?: number | null;
+  detail?: string | null;
+}
+
 export interface MomentumDecisionPortfolioSlot {
   slot: MomentumDecisionSlot;
   slotLabel: string;
   rank: number;
+  baseRank: number;
   tsCode: string;
   name: string;
   theme: string;
@@ -170,10 +180,16 @@ export interface MomentumDecisionPortfolioSlot {
   v13ShadowSummary?: string | null;
   role: string;
   score: number;
+  officialScore: number;
+  baseRankScore: number;
   rankScore: number;
   riskScore: number;
   ruleBaseScore?: number | null;
   decisionScore?: number | null;
+  decisionAdjustment?: number | null;
+  decisionAdjustmentReason?: string | null;
+  hardBlockers: MomentumDecisionReasonItem[];
+  softAdjustments: MomentumDecisionReasonItem[];
   forwardAlphaScore?: number | null;
   t1DirectionRiskAdjustment?: number | null;
   buyPointStatus: MomentumBuyPointStatus;
@@ -192,16 +208,26 @@ export interface MomentumDecisionPortfolioSlot {
 
 export interface MomentumDecisionExcludedCandidate {
   rank: number;
+  baseRank: number;
   tsCode: string;
   name: string;
   theme: string;
   role: string;
+  reasonKey: string;
   reason: string;
+  reasonDetail?: string | null;
+  officialScore: number;
+  baseRankScore: number;
   rankScore: number;
+  decisionAdjustment?: number | null;
+  decisionAdjustmentReason?: string | null;
+  hardBlockers: MomentumDecisionReasonItem[];
+  softAdjustments: MomentumDecisionReasonItem[];
 }
 
 export interface MomentumDecisionCandidateDiagnostic {
   rank: number;
+  baseRank: number;
   tsCode: string;
   name: string;
   theme: string;
@@ -221,6 +247,8 @@ export interface MomentumDecisionCandidateDiagnostic {
   role: string;
   buyPointStatus: MomentumBuyPointStatus;
   buyPointLabel: string;
+  officialScore: number;
+  baseRankScore: number;
   rankScore: number;
   continuationScore: number;
   extensionScore: number;
@@ -228,6 +256,10 @@ export interface MomentumDecisionCandidateDiagnostic {
   buyabilityScore?: number | null;
   riskScore: number;
   ruleBaseScore: number;
+  decisionAdjustment?: number | null;
+  decisionAdjustmentReason?: string | null;
+  hardBlockers: MomentumDecisionReasonItem[];
+  softAdjustments: MomentumDecisionReasonItem[];
   explainAdjustmentScore: number;
   t1DirectionRiskAdjustment?: number | null;
   decisionScore: number;

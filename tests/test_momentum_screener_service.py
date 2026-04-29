@@ -317,11 +317,21 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
         self.assertEqual(result["results"][0]["themes"][0], "电力设备")
         self.assertIn("continuation_score", result["results"][0])
         self.assertIn("score_breakdown", result["results"][0])
+        self.assertIn("official_score", result["results"][0])
+        self.assertIn("_official_base_signal_score", result["results"][0])
+        self.assertIn("_official_v13_signal_score", result["results"][0])
+        self.assertIn("_official_risk_quality_score", result["results"][0])
         self.assertIsNotNone(result["results"][0]["entry_range_low"])
         self.assertIsNotNone(result["results"][0]["entry_range_high"])
         self.assertIsNotNone(result["results"][1]["entry_range_low"])
         self.assertIsNotNone(result["results"][1]["entry_range_high"])
-        self.assertGreater(result["results"][0]["rank_score"], result["results"][1]["rank_score"])
+        self.assertGreater(result["results"][0]["official_score"], result["results"][1]["official_score"])
+        self.assertGreaterEqual(result["results"][0]["_official_base_signal_score"], 0.0)
+        self.assertLessEqual(result["results"][0]["_official_base_signal_score"], 100.0)
+        self.assertGreaterEqual(result["results"][0]["_official_v13_signal_score"], 0.0)
+        self.assertLessEqual(result["results"][0]["_official_v13_signal_score"], 100.0)
+        self.assertGreaterEqual(result["results"][0]["_official_risk_quality_score"], 0.0)
+        self.assertLessEqual(result["results"][0]["_official_risk_quality_score"], 100.0)
         self.assertEqual(result["results"][0]["entry_range_low"], 10.89)
         self.assertEqual(result["results"][0]["entry_range_high"], 11.11)
         self.assertEqual(result["results"][1]["entry_range_low"], 8.56)
@@ -331,6 +341,132 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
         front_width = result["results"][1]["entry_range_high"] - result["results"][1]["entry_range_low"]
         self.assertLessEqual(round(leader_width, 4), round(11.0 * 0.02 + 0.01, 4))
         self.assertLessEqual(round(front_width, 4), round(8.65 * 0.03 + 0.01, 4))
+
+    def test_screen_logs_candidate_pool_timing_breakdown(self) -> None:
+        service = self._build_service()
+
+        with self.assertLogs("src.services.momentum_screener_service", level="INFO") as captured:
+            service.screen(top_n=2, profile="standard", truth_mode="full")
+
+        output = "\n".join(captured.output)
+        self.assertIn("event=prepare_candidate_scoring_rows", output)
+        self.assertIn("event=provisional_candidate_scoring", output)
+        self.assertIn("event=build_standard_v13_profile_map", output)
+        self.assertIn("event=official_candidate_scoring", output)
+
+    def test_cached_screening_response_backfills_official_score_and_rank(self) -> None:
+        service = self._build_service()
+
+        payload = {
+            "profile": "standard",
+            "truth_mode": "light",
+            "trade_date": "2026-04-10",
+            "candidate_count": 2,
+            "ranked_results": [
+                {"ts_code": "600002.SH", "name": "B", "rank_score": 65.2, "final_score": 70.0},
+                {"ts_code": "600001.SH", "name": "A", "rank_score": 72.8, "final_score": 68.0},
+            ],
+        }
+
+        result = service._build_screening_response_from_cached(
+            payload,
+            top_n=2,
+            requested_trade_date=None,
+            trade_date_note=None,
+        )
+
+        self.assertEqual(result["ranked_results"][0]["ts_code"], "600001.SH")
+        self.assertEqual(result["ranked_results"][0]["official_score"], 72.8)
+        self.assertEqual(result["ranked_results"][0]["rank"], 1)
+        self.assertEqual(result["ranked_results"][1]["rank"], 2)
+
+    def test_cached_screening_response_prefers_official_score_when_present(self) -> None:
+        service = self._build_service()
+
+        payload = {
+            "profile": "standard",
+            "truth_mode": "full",
+            "trade_date": "2026-04-10",
+            "candidate_count": 2,
+            "ranked_results": [
+                {
+                    "ts_code": "600002.SH",
+                    "name": "B",
+                    "rank_score": 79.0,
+                    "official_score": 71.5,
+                    "final_score": 70.0,
+                },
+                {
+                    "ts_code": "600001.SH",
+                    "name": "A",
+                    "rank_score": 73.0,
+                    "official_score": 83.2,
+                    "final_score": 68.0,
+                },
+            ],
+        }
+
+        result = service._build_screening_response_from_cached(
+            payload,
+            top_n=2,
+            requested_trade_date=None,
+            trade_date_note=None,
+        )
+
+        self.assertEqual(result["ranked_results"][0]["ts_code"], "600001.SH")
+        self.assertEqual(result["ranked_results"][0]["official_score"], 83.2)
+        self.assertEqual(result["ranked_results"][1]["ts_code"], "600002.SH")
+
+    def test_finalize_official_results_ignores_rank_score_when_official_score_present(self) -> None:
+        service = self._build_service()
+
+        finalized = service._finalize_official_results(
+            [
+                {
+                    "ts_code": "600002.SH",
+                    "name": "B",
+                    "official_score": 81.4,
+                    "rank_score": 95.0,
+                    "final_score": 66.0,
+                },
+                {
+                    "ts_code": "600001.SH",
+                    "name": "A",
+                    "official_score": 82.1,
+                    "rank_score": 70.0,
+                    "final_score": 65.0,
+                },
+            ]
+        )
+
+        self.assertEqual(finalized[0]["ts_code"], "600001.SH")
+        self.assertEqual(finalized[0]["official_score"], 82.1)
+        self.assertEqual(finalized[1]["ts_code"], "600002.SH")
+
+    def test_finalize_official_results_uses_final_score_as_tie_breaker_not_rank_score(self) -> None:
+        service = self._build_service()
+
+        finalized = service._finalize_official_results(
+            [
+                {
+                    "ts_code": "600002.SH",
+                    "name": "B",
+                    "official_score": 81.4,
+                    "rank_score": 95.0,
+                    "final_score": 68.0,
+                },
+                {
+                    "ts_code": "600001.SH",
+                    "name": "A",
+                    "official_score": 81.4,
+                    "rank_score": 70.0,
+                    "final_score": 72.0,
+                },
+            ]
+        )
+
+        self.assertEqual(finalized[0]["ts_code"], "600001.SH")
+        self.assertEqual(finalized[1]["ts_code"], "600002.SH")
 
     def test_standard_score_breakdown_uses_v13_weight_structure(self) -> None:
         service = self._build_service()
@@ -388,6 +524,8 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
             result = service.screen(top_n=2, profile="standard")
 
         self.assertEqual(result["results"][0]["ts_code"], "600002.SH")
+        self.assertGreater(result["results"][0]["official_score"], result["results"][0]["rank_score"])
+        self.assertGreater(result["results"][0]["_official_v13_signal_score"], 55.0)
         self.assertEqual(
             result["results"][0]["score_breakdown"]["sector_resonance"]["items"]["v13_theme_name"],
             "电池",
@@ -431,6 +569,7 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
             {
                 "ts_code": f"600{i:03d}.SH",
                 "name": f"测试{i:03d}",
+                "official_score": float(200 - i),
                 "rank_score": float(200 - i),
                 "final_score": float(200 - i),
             }
@@ -446,6 +585,62 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
         self.assertEqual(len(captured["ts_codes"]), 12)
         self.assertEqual(captured["ts_codes"][0], "600000.SH")
         self.assertEqual(captured["ts_codes"][-1], "600011.SH")
+
+    def test_standard_v13_profile_context_uses_all_candidates_in_full_truth_mode(self) -> None:
+        service = self._build_service()
+        for method_name in (
+            "get_stock_limit_prices",
+            "get_limit_list",
+            "get_dc_concepts",
+            "get_dc_members",
+            "get_dc_moneyflow_themes",
+            "get_kpl_list",
+        ):
+            setattr(service.fetcher, method_name, lambda *args, **kwargs: {})
+
+        captured: dict[str, list[str]] = {}
+
+        class _FakeV13Service:
+            def build_context(self, *, trade_date: str, ts_codes: list[str]) -> dict[str, object]:
+                captured["ts_codes"] = list(ts_codes)
+                return {
+                    "stock_theme_map": {},
+                    "theme_strength": {},
+                    "theme_members": {},
+                    "limit_events": {},
+                    "stock_moneyflow": {},
+                    "chip_snapshots": {},
+                    "kpl_items": [],
+                    "is_degraded": False,
+                    "degraded_reasons": [],
+                }
+
+            def build_mainline_radar(self, *, candidates, context, limit):  # type: ignore[no-untyped-def]
+                return []
+
+        service._v13_data_service = _FakeV13Service()  # type: ignore[assignment]
+
+        provisional_results = [
+            {
+                "ts_code": f"600{i:03d}.SH",
+                "name": f"娴嬭瘯{i:03d}",
+                "official_score": float(300 - i),
+                "rank_score": float(300 - i),
+                "final_score": float(300 - i),
+            }
+            for i in range(18)
+        ]
+
+        result = service._build_standard_v13_profile_map(
+            trade_date="2026-04-10",
+            provisional_results=provisional_results,
+            truth_mode="full",
+        )
+
+        self.assertEqual(result, {})
+        self.assertEqual(len(captured["ts_codes"]), 18)
+        self.assertEqual(captured["ts_codes"][0], "600000.SH")
+        self.assertEqual(captured["ts_codes"][-1], "600017.SH")
 
     def test_screen_prefers_current_trade_date_after_close_when_eod_snapshot_ready(self) -> None:
         fetcher = _FakeFetcher(current_time=datetime(2026, 4, 11, 15, 10, 0))

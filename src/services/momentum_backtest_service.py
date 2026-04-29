@@ -7,6 +7,7 @@ import threading
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 import logging
+import time
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from uuid import uuid4
 
@@ -17,6 +18,7 @@ from src.services.momentum_screener_service import (
     MOMENTUM_DEFAULT_TOP_N,
     MOMENTUM_ENTRY_BASELINE_VERSION,
     MOMENTUM_MARKET_SCOPE_VERSION,
+    MOMENTUM_TRUTH_MODE_FULL,
     MomentumScreenerService,
 )
 from src.services.momentum_secondary_decision_service import (
@@ -35,9 +37,10 @@ from src.storage import (
 
 logger = logging.getLogger(__name__)
 
-MOMENTUM_BACKTEST_ENGINE_VERSION = "v1"
+MOMENTUM_BACKTEST_ENGINE_VERSION = "v1_2_official_score"
 MOMENTUM_BACKTEST_OFFICIAL_PROFILE = "standard"
 MOMENTUM_BACKTEST_OFFICIAL_TOP_N = MOMENTUM_DEFAULT_TOP_N
+MOMENTUM_BACKTEST_SCREENING_TRUTH_MODE = MOMENTUM_TRUTH_MODE_FULL
 MOMENTUM_BACKTEST_STRATEGY_HEALTH_MODE_CACHED_ONLY = STRATEGY_HEALTH_MODE_CACHED_ONLY
 MOMENTUM_BACKTEST_STRATEGY_HEALTH_MODE_STRICT_FINAL = STRATEGY_HEALTH_MODE_STRICT_FINAL
 MOMENTUM_BACKTEST_STRATEGY_HEALTH_MODE_LABELS = {
@@ -428,6 +431,7 @@ class MomentumBacktestService:
             )
             for trade_dt in remaining_trade_dates:
                 current_trade_dt = trade_dt
+                trade_started_at = time.perf_counter()
                 self._raise_if_cancel_requested(run_id)
                 try:
                     trade_date = trade_dt.strftime("%Y-%m-%d")
@@ -436,6 +440,7 @@ class MomentumBacktestService:
                         trade_date=trade_date,
                         profile=profile,
                     )
+                    request_params["truth_mode"] = MOMENTUM_BACKTEST_SCREENING_TRUTH_MODE
                     candidate_pool_label_state = {"value": RUN_STAGE_LABELS["candidate_pool"]}
                     self._update_stage(
                         run_id,
@@ -449,15 +454,36 @@ class MomentumBacktestService:
                         trade_dt=trade_dt,
                         label_state=candidate_pool_label_state,
                     )
+                    screening_progress_callback, flush_screening_stage = self._build_screening_progress_callback(
+                        run_id=run_id,
+                        trade_dt=trade_dt,
+                        label_state=candidate_pool_label_state,
+                    )
+                    candidate_pool_started_at = time.perf_counter()
                     try:
                         screening = self.screener_service.screen(
                             top_n=top_n,
                             trade_date=trade_date,
                             profile=profile,
+                            truth_mode=MOMENTUM_BACKTEST_SCREENING_TRUTH_MODE,
+                            progress_callback=screening_progress_callback,
                         )
                     finally:
+                        flush_screening_stage()
                         stop_candidate_pool_heartbeat()
-                    screening["_request_params"] = request_params
+                    candidate_pool_elapsed = time.perf_counter() - candidate_pool_started_at
+                    self._log_stage_timing(
+                        run_id=run_id,
+                        trade_dt=trade_dt,
+                        stage_key="candidate_pool",
+                        elapsed_seconds=candidate_pool_elapsed,
+                        extra={
+                            "scope": "backtest_stage",
+                            "candidate_count": screening.get("candidate_count"),
+                            "ranked_result_count": len(screening.get("ranked_results") or []),
+                        },
+                    )
+                    screening["_request_params"] = dict(request_params)
 
                     self._raise_if_cancel_requested(run_id)
                     secondary_decision_label_state = {"value": RUN_STAGE_LABELS["secondary_decision"]}
@@ -473,6 +499,7 @@ class MomentumBacktestService:
                         trade_dt=trade_dt,
                         label_state=secondary_decision_label_state,
                     )
+                    secondary_decision_started_at = time.perf_counter()
                     try:
                         decision = self.decision_service.build_from_screening(
                             screening,
@@ -487,6 +514,18 @@ class MomentumBacktestService:
                         )
                     finally:
                         stop_secondary_decision_heartbeat()
+                    secondary_decision_elapsed = time.perf_counter() - secondary_decision_started_at
+                    self._log_stage_timing(
+                        run_id=run_id,
+                        trade_dt=trade_dt,
+                        stage_key="secondary_decision",
+                        elapsed_seconds=secondary_decision_elapsed,
+                        extra={
+                            "scope": "backtest_stage",
+                            "portfolio_count": len(decision.get("portfolio") or []),
+                            "excluded_count": len(decision.get("excluded_candidates") or []),
+                        },
+                    )
 
                     self._raise_if_cancel_requested(run_id)
                     outcome_validation_label_state = {"value": RUN_STAGE_LABELS["outcome_validation"]}
@@ -502,6 +541,7 @@ class MomentumBacktestService:
                         trade_dt=trade_dt,
                         label_state=outcome_validation_label_state,
                     )
+                    outcome_validation_started_at = time.perf_counter()
                     try:
                         artifacts = self._freeze_trade_date_artifacts(
                             trade_dt=trade_dt,
@@ -510,6 +550,20 @@ class MomentumBacktestService:
                         )
                     finally:
                         stop_outcome_validation_heartbeat()
+                    outcome_validation_elapsed = time.perf_counter() - outcome_validation_started_at
+                    self._log_stage_timing(
+                        run_id=run_id,
+                        trade_dt=trade_dt,
+                        stage_key="outcome_validation",
+                        elapsed_seconds=outcome_validation_elapsed,
+                        extra={
+                            "scope": "backtest_stage",
+                            "candidate_record_count": len(artifacts.candidate_records),
+                            "decision_record_count": len(artifacts.decision_records),
+                            "outcome_record_count": len(artifacts.outcome_records),
+                        },
+                    )
+                    persist_started_at = time.perf_counter()
                     artifacts.daily_summary.run_id = run_id
                     for record in artifacts.candidate_records:
                         record.run_id = run_id
@@ -533,6 +587,26 @@ class MomentumBacktestService:
                         trade_date=trade_dt,
                         records=artifacts.outcome_records,
                     )
+                    self._log_stage_timing(
+                        run_id=run_id,
+                        trade_dt=trade_dt,
+                        stage_key="result_persist",
+                        elapsed_seconds=time.perf_counter() - persist_started_at,
+                        extra={
+                            "scope": "backtest_stage",
+                        },
+                    )
+                    self._log_stage_timing(
+                        run_id=run_id,
+                        trade_dt=trade_dt,
+                        stage_key="trade_date_total",
+                        elapsed_seconds=time.perf_counter() - trade_started_at,
+                        extra={
+                            "scope": "backtest_trade_total",
+                            "processed_trade_dates": processed_count + 1,
+                            "failed_trade_dates": failed_count,
+                        },
+                    )
                     processed_count += 1
                 except Exception as exc:  # noqa: BLE001
                     failed_count += 1
@@ -550,7 +624,19 @@ class MomentumBacktestService:
                 stage_key="summary_build",
                 trade_dt=current_trade_dt,
             )
+            summary_build_started_at = time.perf_counter()
             summary = self._build_run_summary(run_id)
+            self._log_stage_timing(
+                run_id=run_id,
+                trade_dt=current_trade_dt,
+                stage_key="summary_build",
+                elapsed_seconds=time.perf_counter() - summary_build_started_at,
+                extra={
+                    "scope": "backtest_stage",
+                    "completed_trade_dates": processed_count,
+                    "failed_trade_dates": failed_count,
+                },
+            )
             status = "completed" if processed_count > 0 else "failed"
             self.repository.update_run(
                 run_id,
@@ -1053,6 +1139,94 @@ class MomentumBacktestService:
                 heartbeat_thread.join(timeout=1.0)
 
         return _stop
+
+    @staticmethod
+    def _log_stage_timing(
+        *,
+        run_id: str,
+        trade_dt: Optional[date],
+        stage_key: str,
+        elapsed_seconds: float,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        parts = [
+            f"run_id={run_id}",
+            f"trade_date={trade_dt.isoformat() if trade_dt else 'n/a'}",
+            f"stage={stage_key}",
+            f"elapsed_seconds={elapsed_seconds:.3f}",
+        ]
+        for key, value in (extra or {}).items():
+            parts.append(f"{key}={value}")
+        logger.info("Momentum backtest timing: %s", " ".join(parts))
+
+    def _build_screening_progress_callback(
+        self,
+        *,
+        run_id: str,
+        trade_dt: date,
+        label_state: Optional[Dict[str, Any]] = None,
+    ):
+        last_signature: Dict[str, Any] = {}
+        current_stage: Dict[str, Any] = {
+            "stage_key": None,
+            "stage_label": None,
+            "started_at": None,
+        }
+
+        def _flush_stage() -> None:
+            stage_key = current_stage.get("stage_key")
+            started_at = current_stage.get("started_at")
+            if not stage_key or started_at is None:
+                return
+            self._log_stage_timing(
+                run_id=run_id,
+                trade_dt=trade_dt,
+                stage_key=str(stage_key),
+                elapsed_seconds=time.perf_counter() - float(started_at),
+                extra={
+                    "stage_label": current_stage.get("stage_label") or RUN_STAGE_LABELS.get(str(stage_key), str(stage_key)),
+                    "scope": "candidate_pool_substage",
+                },
+            )
+
+        def _callback(progress: Dict[str, Any]) -> None:
+            if not isinstance(progress, dict):
+                return
+            stage_key = str(progress.get("stage_key") or "candidate_pool")
+            stage_label = str(progress.get("stage_label") or RUN_STAGE_LABELS.get(stage_key, stage_key))
+            signature = {
+                "stage_key": stage_key,
+                "stage_label": stage_label,
+                "progress_pct": round(float(progress.get("progress_pct") or 0.0), 2),
+                "processed_item_count": int(progress.get("processed_item_count") or 0),
+                "total_item_count": int(progress.get("total_item_count") or 0),
+            }
+            if signature == last_signature:
+                return
+            if current_stage.get("stage_key") != stage_key:
+                _flush_stage()
+                current_stage.update(
+                    {
+                        "stage_key": stage_key,
+                        "stage_label": stage_label,
+                        "started_at": time.perf_counter(),
+                    }
+                )
+            else:
+                current_stage["stage_label"] = stage_label
+            last_signature.clear()
+            last_signature.update(signature)
+            if isinstance(label_state, dict):
+                label_state["value"] = stage_label
+            self.repository.update_run(
+                run_id,
+                current_stage_key=stage_key,
+                current_stage_label=stage_label,
+                current_trade_date=trade_dt,
+                heartbeat_at=datetime.now(),
+            )
+
+        return _callback, _flush_stage
 
     def _build_secondary_decision_progress_callback(
         self,
@@ -2629,6 +2803,7 @@ class MomentumBacktestService:
             "theme": row.theme,
             "role": row.role,
             "market_segment": row.market_segment,
+            "official_score": MomentumBacktestService._to_float(payload_snapshot.get("official_score")),
             "rank_score": row.rank_score,
             "final_score": row.final_score,
             "continuation_score": row.continuation_score,
@@ -2648,6 +2823,7 @@ class MomentumBacktestService:
         row: MomentumBacktestDecisionRecord,
         outcome: Optional[MomentumBacktestOutcomeRecord],
     ) -> Dict[str, Any]:
+        payload_snapshot = MomentumBacktestService._load_json(row.decision_payload_json) or {}
         payload = {
             "slot": row.slot,
             "rank": row.rank,
@@ -2656,6 +2832,7 @@ class MomentumBacktestService:
             "theme": row.theme,
             "role": row.role,
             "decision_score": row.decision_score,
+            "official_score": MomentumBacktestService._to_float(payload_snapshot.get("official_score")),
             "rank_score": row.rank_score,
             "risk_score": row.risk_score,
             "buy_point_status": row.buy_point_status,

@@ -117,6 +117,7 @@ const standardResponse: MomentumScreenerResponse = {
       buyabilityScore: null,
       finalScore: 85,
       rankScore: 76,
+      officialScore: 84.6,
       themes: ['Power Equipment'],
       leaderLevel: 'leader',
       topReasons: ['Strength Confirmed'],
@@ -142,6 +143,7 @@ const standardResponse: MomentumScreenerResponse = {
       buyabilityScore: null,
       finalScore: 78,
       rankScore: 68,
+      officialScore: 74.2,
       themes: ['Power Equipment'],
       leaderLevel: 'front',
       topReasons: ['Sector Resonance'],
@@ -180,6 +182,7 @@ const aggressiveResponse: MomentumScreenerResponse = {
       entryRangeHigh: 10.66,
       finalScore: 92,
       rankScore: 82,
+      officialScore: 88.4,
       themes: ['Robotics'],
       leaderLevel: 'leader',
       topReasons: ['Buyable Setup', 'Volume Track'],
@@ -223,6 +226,7 @@ const mixedKeyResponse: MomentumScreenerResponse = {
       entryRangeHigh: 17.2,
       finalScore: 69.8,
       rankScore: 69.8,
+      officialScore: 71.2,
       themes: ['鐢靛姏璁惧'],
       leaderLevel: 'leader',
       topReasons: ['寮哄娍纭', '璧勯噾鎵挎帴'],
@@ -464,6 +468,7 @@ function buildDecisionResponse(screening: MomentumScreenerResponse): MomentumScr
             name: item.name,
             role: item.leaderLevel === 'leader' ? '龙头核心' : item.leaderLevel === 'front' ? '前排换手' : '观察备选',
             buyPointLabel: item.buyabilityScore != null && item.buyabilityScore >= 70 ? '买点清晰' : '等待触发',
+            officialScore: item.officialScore,
             rankScore: item.rankScore,
           })),
         },
@@ -472,13 +477,35 @@ function buildDecisionResponse(screening: MomentumScreenerResponse): MomentumScr
         slot: index === 0 ? 'main' : index === 1 ? 'secondary' : 'watch',
         slotLabel: index === 0 ? '主仓' : index === 1 ? '次仓' : '观察仓',
         rank: item.rank,
+        baseRank: item.rank,
         tsCode: item.tsCode,
         name: item.name,
         theme: item.themes[0] ?? '未分类',
         role: item.leaderLevel === 'leader' ? '龙头核心' : item.leaderLevel === 'front' ? '前排换手' : '观察备选',
         score: item.rankScore + 8 - index,
+        officialScore: item.officialScore,
+        baseRankScore: item.officialScore ?? item.rankScore,
         rankScore: item.rankScore,
         riskScore: item.riskScore,
+        decisionAdjustment: index === 0 ? 1.6 : index === 1 ? 0.8 : -0.4,
+        decisionAdjustmentReason:
+          index === 0
+            ? '主线顺风与计划买点抬升了主仓匹配度。'
+            : index === 1
+              ? '同主线互补结构让次仓更适合作为换手补位。'
+              : '观察仓保留弹性，但因执行位置靠后仅做轻度扣分。',
+        hardBlockers:
+          index === 2
+            ? [{ key: 'watch_only_slot', label: '当前更适合作观察仓', detail: '执行优先级落后于主仓与次仓。' }]
+            : [],
+        softAdjustments: [
+          { key: 'theme_tailwind', label: '主线顺风', delta: index === 2 ? 0.6 : 1.2 },
+          {
+            key: index === 2 ? 'role_back' : 'planned_buy_point',
+            label: index === 2 ? '后排跟随' : '计划买点',
+            delta: index === 2 ? -1.0 : 0.8,
+          },
+        ],
         buyPointStatus:
           item.buyabilityScore != null && item.buyabilityScore >= 70
             ? 'clear'
@@ -517,6 +544,7 @@ function buildDecisionResponse(screening: MomentumScreenerResponse): MomentumScr
       })),
       candidateDiagnostics: screening.results.map((item: MomentumScreenerResult, index: number) => ({
         rank: item.rank,
+        baseRank: item.rank,
         tsCode: item.tsCode,
         name: item.name,
         theme: index < 2 ? '电池' : item.themes[0] ?? '未分类',
@@ -546,6 +574,8 @@ function buildDecisionResponse(screening: MomentumScreenerResponse): MomentumScr
             : item.rankScore >= 70
               ? '等待触发'
               : '买点不清晰',
+        officialScore: item.officialScore,
+        baseRankScore: item.officialScore ?? item.rankScore,
         rankScore: item.rankScore,
         continuationScore: item.continuationScore,
         extensionScore: item.extensionScore,
@@ -553,6 +583,25 @@ function buildDecisionResponse(screening: MomentumScreenerResponse): MomentumScr
         buyabilityScore: item.buyabilityScore ?? null,
         riskScore: item.riskScore,
         ruleBaseScore: item.rankScore,
+        decisionAdjustment: index === 0 ? 1.6 : index === 1 ? 0.8 : -0.4,
+        decisionAdjustmentReason:
+          index === 0
+            ? '主线顺风与计划买点共同抬升执行优先级。'
+            : index === 1
+              ? '次仓承担补位职责，仅做轻度抬升。'
+              : '后排观察票因角色靠后做轻度降权。',
+        hardBlockers:
+          index >= 3
+            ? [{ key: 'mainline_rank_not_enough', label: '主线内名次不够', detail: '同主线里还有更高的官方总分。' }]
+            : [],
+        softAdjustments: [
+          { key: 'theme_tailwind', label: '主线顺风', delta: index === 2 ? 0.6 : 1.2 },
+          {
+            key: index === 2 ? 'role_back' : 'planned_buy_point',
+            label: index === 2 ? '后排跟随' : '计划买点',
+            delta: index === 2 ? -1.0 : 0.8,
+          },
+        ],
         explainAdjustmentScore: 0,
         t1DirectionRiskAdjustment: 0,
         decisionScore: item.rankScore + 8 - index,
@@ -564,12 +613,21 @@ function buildDecisionResponse(screening: MomentumScreenerResponse): MomentumScr
       })),
       excludedCandidates: screening.results.slice(3).map((item: MomentumScreenerResult) => ({
         rank: item.rank,
+        baseRank: item.rank,
         tsCode: item.tsCode,
         name: item.name,
         theme: item.themes[0] ?? '未分类',
         role: item.leaderLevel === 'leader' ? '龙头核心' : item.leaderLevel === 'front' ? '前排换手' : '观察备选',
+        reasonKey: 'mainline_rank_not_enough',
         reason: '主线内名次不够',
+        reasonDetail: '同一主线里已有更高的官方总分和更清晰的槽位位置。',
+        officialScore: item.officialScore,
+        baseRankScore: item.officialScore ?? item.rankScore,
         rankScore: item.rankScore,
+        decisionAdjustment: -1.2,
+        decisionAdjustmentReason: '加分来自主线顺风，扣分来自角色重复与槽位靠后。',
+        hardBlockers: [{ key: 'mainline_rank_not_enough', label: '主线内名次不够', detail: '主仓与次仓已被更强候选占据。' }],
+        softAdjustments: [{ key: 'role_back', label: '后排跟随', delta: -1.0 }],
       })),
       evidence: {
         themeValidation: [`${topThemeName} 主线评分 ${(screening.results[0]?.rankScore ?? 70).toFixed(1)}。`],
@@ -759,10 +817,6 @@ async function clickRunButton() {
   await waitFor(() => {
     expect(mockScreen).toHaveBeenCalled();
   });
-}
-
-function getSortSelect() {
-  return document.getElementById('momentum-screener-sort') as HTMLSelectElement;
 }
 
 function getResultRows() {
@@ -1090,19 +1144,16 @@ describe('MomentumScreenerPage', () => {
     });
   });
 
-  it('re-sorts the list when switching sort mode', async () => {
+  it('keeps the official list fixed to official score and hides the legacy sort selector', async () => {
     render(<MomentumScreenerPage />);
 
     await clickRunButton();
     await screen.findByTestId('momentum-screener-row-600001.SH');
 
     expect(within(getResultRows()[0]).getByText('Alpha Leader')).toBeInTheDocument();
-
-    fireEvent.change(getSortSelect(), { target: { value: 'risk_score' } });
-
-    await waitFor(() => {
-      expect(within(getResultRows()[0]).getByText('Low Risk Runner')).toBeInTheDocument();
-    });
+    expect(screen.queryByLabelText('排序方式')).not.toBeInTheDocument();
+    expect(screen.getByText('平均官方总分')).toBeInTheDocument();
+    expect(screen.getByText('最高官方总分')).toBeInTheDocument();
   });
 
   it('opens drawer only after clicking an official result row and allows closing it', async () => {
@@ -1301,10 +1352,77 @@ describe('MomentumScreenerPage', () => {
     expect(within(panel).getByText('明日行动清单')).toBeInTheDocument();
     expect(within(panel).getByText('开盘后 60 分钟内')).toBeInTheDocument();
     expect(within(panel).getAllByText('Alpha Leader').length).toBeGreaterThan(0);
+    expect(within(panel).getByText('基准 #1')).toBeInTheDocument();
+    expect(within(panel).getByText('收口修正 +1.6')).toBeInTheDocument();
+    expect(within(panel).getAllByText('收口说明：').length).toBeGreaterThan(0);
+    expect(within(panel).getAllByText('轻修正').length).toBeGreaterThan(0);
+    expect(within(panel).getAllByText('硬阻断检查').length).toBeGreaterThan(0);
     expect(within(panel).getByText('Standard 官方主引擎')).toBeInTheDocument();
     expect(screen.queryByTestId('momentum-screener-watchlist-summary')).not.toBeInTheDocument();
     expect(screen.getByText('Standard 官方筛选结果')).toBeInTheDocument();
     expect(screen.getByText('Aggressive 进攻补充视图')).toBeInTheDocument();
+  });
+
+  it('renders structured excluded candidate reasons as execution closure details', async () => {
+    const richerScreening: MomentumScreenerResponse = {
+      ...standardResponse,
+      candidateCount: 4,
+      results: [
+        ...standardResponse.results,
+        {
+          rank: 3,
+          tsCode: '600004.SH',
+          name: 'Third Watch',
+          marketSegment: 'main_board',
+          marketSegmentLabel: '主板',
+          pctChg: 7.5,
+          continuationScore: 70,
+          extensionScore: 60,
+          riskScore: 28,
+          buyabilityScore: 58,
+          finalScore: 72,
+          rankScore: 65,
+          officialScore: 69.2,
+          themes: ['Power Equipment'],
+          leaderLevel: 'mid',
+          topReasons: ['Watch Only'],
+          riskTags: [],
+          scoreBreakdown: {},
+        },
+        {
+          rank: 4,
+          tsCode: '600005.SH',
+          name: 'Excluded Tail',
+          marketSegment: 'main_board',
+          marketSegmentLabel: '主板',
+          pctChg: 6.8,
+          continuationScore: 66,
+          extensionScore: 55,
+          riskScore: 34,
+          buyabilityScore: 52,
+          finalScore: 68,
+          rankScore: 61,
+          officialScore: 64.4,
+          themes: ['Power Equipment'],
+          leaderLevel: 'back',
+          topReasons: ['Not Enough Rank'],
+          riskTags: [],
+          scoreBreakdown: {},
+        },
+      ],
+    };
+
+    mockGetRunResult.mockResolvedValueOnce(buildRunResultResponse(richerScreening));
+
+    render(<MomentumScreenerPage />);
+
+    await clickRunButton();
+    const panel = await screen.findByTestId('momentum-secondary-decision');
+
+    expect(within(panel).getAllByText('主线内名次不够').length).toBeGreaterThan(0);
+    expect(within(panel).getAllByText('展开说明：').length).toBeGreaterThan(0);
+    expect(within(panel).getByText('同一主线里已有更高的官方总分和更清晰的槽位位置。')).toBeInTheDocument();
+    expect(within(panel).getByText('收口修正 -1.2')).toBeInTheDocument();
   });
 
   it('shows a visible secondary decision refresh button and warming guidance', async () => {

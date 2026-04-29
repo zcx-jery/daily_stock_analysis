@@ -401,12 +401,20 @@ class MomentumScreenerAICommentaryService:
                     {
                         "slot": item.slot,
                         "slot_label": item.slot_label,
+                        "rank": item.rank,
+                        "base_rank": item.base_rank,
                         "ts_code": item.ts_code,
                         "name": item.name,
                         "theme": item.theme,
                         "role": item.role,
+                        "official_score": item.official_score,
+                        "base_rank_score": item.base_rank_score,
                         "buy_point_label": item.buy_point_label,
                         "suggested_action_label": item.suggested_action_label,
+                        "decision_adjustment": item.decision_adjustment,
+                        "decision_adjustment_reason": item.decision_adjustment_reason,
+                        "hard_blockers": self._serialize_reason_items(item.hard_blockers),
+                        "soft_adjustments": self._serialize_reason_items(item.soft_adjustments),
                         "primary_reason": item.primary_reason,
                         "execution_plan": item.execution_plan,
                     }
@@ -440,7 +448,8 @@ class MomentumScreenerAICommentaryService:
                     "ts_code": candidate["ts_code"],
                     "name": candidate["name"],
                     "pct_chg": candidate["pct_chg"],
-                    "rank_score": candidate["rank_score"],
+                    "official_score": candidate.get("official_score"),
+                    "base_final_score": candidate.get("final_score"),
                     "continuation_score": candidate["continuation_score"],
                     "extension_score": candidate["extension_score"],
                     "risk_score": candidate["risk_score"],
@@ -508,12 +517,20 @@ class MomentumScreenerAICommentaryService:
                 "excluded_candidates": [
                     {
                         "rank": item.rank,
+                        "base_rank": item.base_rank,
                         "ts_code": item.ts_code,
                         "name": item.name,
                         "theme": item.theme,
                         "role": item.role,
+                        "official_score": item.official_score,
+                        "base_rank_score": item.base_rank_score,
+                        "reason_key": item.reason_key,
                         "reason": item.reason,
-                        "rank_score": item.rank_score,
+                        "reason_detail": item.reason_detail,
+                        "decision_adjustment": item.decision_adjustment,
+                        "decision_adjustment_reason": item.decision_adjustment_reason,
+                        "hard_blockers": self._serialize_reason_items(item.hard_blockers),
+                        "soft_adjustments": self._serialize_reason_items(item.soft_adjustments),
                     }
                     for item in excluded_items
                 ],
@@ -566,8 +583,12 @@ class MomentumScreenerAICommentaryService:
             candidate = self._find_candidate(request)
             slot = self._find_portfolio_slot(request, candidate["ts_code"])
             if slot:
-                return f"{slot['slot_label']} · {slot['buy_point_label']} · {slot['suggested_action_label']}"
-            return f"候选池第 #{candidate['rank']} 名 · {candidate['leader_level']}"
+                return f"{slot['slot_label']} / {slot['buy_point_label']} / {slot['suggested_action_label']}"
+            official_score = candidate.get("official_score")
+            if official_score is not None:
+                return f"候选池第 #{candidate['rank']}，官方总分 {official_score:.1f}，{candidate['leader_level']}"
+            return f"候选池第 #{candidate['rank']}，{candidate['leader_level']}"
+
         if request.review_type == "decision" and request.decision:
             return request.decision.action.reason
         if request.review_type == "intraday":
@@ -664,6 +685,16 @@ class MomentumScreenerAICommentaryService:
             if item.ts_code == ts_code:
                 return item.model_dump()
         return None
+
+    @staticmethod
+    def _serialize_reason_items(items: List[Any]) -> List[Dict[str, Any]]:
+        serialized: List[Dict[str, Any]] = []
+        for item in items or []:
+            if hasattr(item, "model_dump"):
+                serialized.append(item.model_dump())
+            elif isinstance(item, dict):
+                serialized.append(dict(item))
+        return serialized
 
     @staticmethod
     def _review_type_label(review_type: str) -> str:

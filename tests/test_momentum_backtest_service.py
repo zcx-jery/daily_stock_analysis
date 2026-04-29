@@ -293,6 +293,8 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
         self.assertEqual(detail["trade_date"], "2026-04-10")
         self.assertTrue(detail["candidate_top10"])
         self.assertTrue(detail["decision_top3"])
+        self.assertIn("official_score", detail["candidate_top10"][0])
+        self.assertIn("official_score", detail["decision_top3"][0])
         self.assertIn("decision_diagnostics", detail["candidate_top10"][0])
         self.assertIn("forward_alpha_score", detail["candidate_top10"][0]["decision_diagnostics"])
         self.assertIn("gate_snapshot", detail["diagnosis"])
@@ -855,6 +857,55 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
         self.assertTrue(captured_modes)
         self.assertTrue(all(mode == "cached_only" for mode in captured_modes))
         self.assertTrue(all(wait is False for wait in captured_waits))
+
+    def test_backtest_replay_uses_full_truth_screening_mode(self) -> None:
+        captured_truth_modes: list[str | None] = []
+        captured_request_truth_modes: list[str | None] = []
+        original_screen = self.service.screener_service.screen
+        original_build_from_screening = self.service.decision_service.build_from_screening
+
+        def wrapped_screen(*args, **kwargs):
+            captured_truth_modes.append(kwargs.get("truth_mode"))
+            return original_screen(*args, **kwargs)
+
+        def wrapped_build_from_screening(screening, *args, **kwargs):
+            request_params = kwargs.get("request_params") or screening.get("_request_params") or {}
+            captured_request_truth_modes.append(request_params.get("truth_mode"))
+            return original_build_from_screening(screening, *args, **kwargs)
+
+        self.service.screener_service.screen = wrapped_screen  # type: ignore[method-assign]
+        self.service.decision_service.build_from_screening = wrapped_build_from_screening  # type: ignore[method-assign]
+
+        result = self.service.create_run(
+            start_trade_date="2026-04-08",
+            end_trade_date="2026-04-10",
+            profile="standard",
+            top_n=20,
+        )
+
+        official_truth_modes = [mode for mode in captured_truth_modes if mode is not None]
+        self.assertEqual(result["status"], "completed")
+        self.assertGreaterEqual(len(official_truth_modes), 3)
+        self.assertTrue(all(mode == "full" for mode in official_truth_modes))
+        self.assertGreaterEqual(len(captured_request_truth_modes), 3)
+        self.assertTrue(all(mode == "full" for mode in captured_request_truth_modes))
+
+    def test_backtest_replay_logs_stage_timing_breakdown(self) -> None:
+        with self.assertLogs("src.services.momentum_backtest_service", level="INFO") as captured:
+            result = self.service.create_run(
+                start_trade_date="2026-04-08",
+                end_trade_date="2026-04-10",
+                profile="standard",
+                top_n=20,
+            )
+
+        self.assertEqual(result["status"], "completed")
+        output = "\n".join(captured.output)
+        self.assertIn("scope=candidate_pool_substage", output)
+        self.assertIn("stage=candidate_pool", output)
+        self.assertIn("stage=secondary_decision", output)
+        self.assertIn("stage=outcome_validation", output)
+        self.assertIn("stage=trade_date_total", output)
 
     def test_backtest_replay_can_force_strict_final_strategy_health_mode(self) -> None:
         captured_modes: list[str | None] = []

@@ -91,6 +91,44 @@
 - 标准链路应为：
   - `全市场统一入口 -> 候选池 -> 全量评分排序 -> Standard 二次决策 -> 页面展示 Top30`
 
+### 5.0.1 二次决策收口层边界（2026-04-27 冻结）
+
+技术上，二次决策必须从“重排层”调整为“收口层”。
+
+明确分层如下：
+
+1. **主排序层**
+   - 输入：初筛后的全部候选股票
+   - 输出：正式 `rank / rank_score / final_score`
+   - 职责：回答“谁更强”
+
+2. **二次决策层**
+   - 输入：完整正式排序集
+   - 输出：`主仓 / 次仓 / 观察仓`、动作级别、执行提示、落选说明
+   - 职责：回答“今天怎么用这份排序”
+
+因此，二次决策层禁止：
+
+- 重建一套与主排序平行的正式排序分
+- 仅基于页面 `Top30` 或局部子集继续重排官方结果
+- 让角色、买点、解释因子大幅推翻正式主排序
+
+允许的修正只分两类：
+
+- `hard_blockers`：硬阻断，阻止某只股票进入主仓或正式执行
+- `soft_adjustments`：小幅修正，只影响仓位收口，不推翻谁更强
+
+推荐链路调整为：
+
+```text
+完整正式排序集
+-> 决策候选池裁剪（如 Top8/Top12）
+-> 硬阻断判断
+-> 槽位选择（主仓 / 次仓 / 观察仓）
+-> 动作闸门修正
+-> 执行与解释输出
+```
+
 ### 5.1 V1 官方入口基线
 
 后端必须把官方入口基线固化为服务端口径，前端只展示不允许普通用户修改：
@@ -157,12 +195,14 @@
 
 职责：
 
-- 从主线代表股中生成默认 `主仓 / 次仓 / 观察仓`
+- 从完整正式排序集里收口生成默认 `主仓 / 次仓 / 观察仓`
 
 规则重点：
 
-- `主仓` 优先取买点最清晰者
-- `前排换手` 可因买点更清晰而压过 `龙头核心`
+- `主仓` 默认取正式主排序中的第一优先票
+- 只有命中 `hard_blockers` 时，主仓候选才允许降级
+- `次仓` 与 `观察仓` 负责组合补强，不重新定义谁更强
+- `soft_adjustments` 只允许做小幅槽位修正
 - `观察仓` 用于主线确认，不用于凑数
 - 不足 `3` 只时允许留空
 
@@ -171,11 +211,30 @@
 - `portfolio_slots[]`
 - 每个 slot 包含：
   - `slot_type`: `primary / secondary / observe`
+  - `base_rank`
+  - `base_rank_score`
+  - `decision_adjustment`
+  - `decision_adjustment_reason`
   - `stock_code`
   - `theme_id`
   - `role_type`
   - `slot_reason`
   - `actionability_status`
+
+建议新增内部结构：
+
+- `decision_candidate_pool[]`
+  - 来自完整排序集的前排裁剪样本，建议 `Top8 ~ Top12`
+- `hard_blockers[]`
+  - 如 `buy_point_unclear / action_gate_blocked / duplicate_role_conflict / risk_redline`
+- `soft_adjustments[]`
+  - 如 `slot_fit_bonus / diversification_bonus / execution_clarity_bonus`
+
+约束：
+
+- `decision_adjustment` 不得重写正式 `base_rank_score`
+- 若某只股票从 `base_rank=1` 降级，必须携带明确 `hard_blocker_reason`
+- 解释字段必须能区分“强度不足落选”与“组合收口落选”
 
 ### 6.4 买点清晰判定模块
 

@@ -1,0 +1,152 @@
+from __future__ import annotations
+
+import sys
+import types
+from typing import Any
+
+if "litellm" not in sys.modules:
+    litellm_stub = types.ModuleType("litellm")
+    litellm_stub.Router = object
+    sys.modules["litellm"] = litellm_stub
+
+from src.services.momentum_screener_ai_commentary_service import MomentumScreenerAICommentaryService
+
+
+class FakeModel:
+    def __init__(self, **kwargs: Any) -> None:
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+    def model_dump(self) -> dict[str, Any]:
+        def convert(value: Any) -> Any:
+            if isinstance(value, FakeModel):
+                return value.model_dump()
+            if isinstance(value, list):
+                return [convert(item) for item in value]
+            return value
+
+        return {key: convert(value) for key, value in self.__dict__.items()}
+
+
+def _build_request(review_type: str):
+    blocker = FakeModel(key="buyability_block", label="买点不清晰", delta=None, detail="开盘后不适合直接接。")
+    adjustment = FakeModel(key="theme_tailwind", label="主线共振", delta=1.2, detail="题材强度高于候选池均值。")
+    result = FakeModel(
+        rank=1,
+        ts_code="600001.SH",
+        name="测试龙头",
+        market_segment="main_board",
+        market_segment_label="主板",
+        pct_chg=9.96,
+        continuation_score=82.0,
+        extension_score=88.0,
+        risk_score=6.5,
+        buyability_score=78.0,
+        opportunity_tag="主线核心",
+        entry_range_low=10.2,
+        entry_range_high=10.8,
+        final_score=74.1,
+        official_score=78.6,
+        rank_score=73.2,
+        themes=["电子"],
+        leader_level="龙头",
+        top_reasons=["主线共振"],
+        risk_tags=["高波动"],
+        score_breakdown={},
+    )
+    portfolio_item = FakeModel(
+        slot="main",
+        slot_label="主仓",
+        rank=1,
+        base_rank=1,
+        ts_code="600001.SH",
+        name="测试龙头",
+        theme="电子",
+        role="龙头",
+        official_score=78.6,
+        base_rank_score=78.6,
+        buy_point_label="计划明确",
+        suggested_action_label="等待触发",
+        decision_adjustment=1.2,
+        decision_adjustment_reason="题材强度和槽位匹配支持保留主仓。",
+        hard_blockers=[blocker],
+        soft_adjustments=[adjustment],
+        primary_reason="主线核心",
+        execution_plan="关注开盘承接后再判断。",
+    )
+    excluded_item = FakeModel(
+        rank=4,
+        base_rank=4,
+        ts_code="600004.SH",
+        name="跟风票",
+        theme="电子",
+        role="后排",
+        official_score=70.4,
+        base_rank_score=70.4,
+        reason_key="theme_rank_not_enough",
+        reason="主线内名次不够",
+        reason_detail="同一主线里已有更高的官方总分和更清晰的槽位位置。",
+        decision_adjustment=-1.2,
+        decision_adjustment_reason="主线内已有更优先的同题材标的。",
+        hard_blockers=[blocker],
+        soft_adjustments=[adjustment],
+    )
+    screening = FakeModel(
+        trade_date="2026-04-27",
+        profile="standard",
+        candidate_count=1,
+        requested_trade_date=None,
+        trade_date_note=None,
+        results=[result],
+    )
+    decision = FakeModel(
+        action=FakeModel(reason="今天可以跟踪主线。", label="可做", source_profile="standard"),
+        strategy_health=FakeModel(label="健康", reason="近端策略有效。", status="healthy", recommendation_cap="full", blockers=[]),
+        themes=[],
+        portfolio=[portfolio_item],
+        mainline_radar=[],
+        short_term_sentiment=None,
+        v13_data_status={"status": "ok"},
+        excluded_candidates=[excluded_item],
+        action_checklist=FakeModel(steps=[]),
+    )
+    return FakeModel(
+        review_type=review_type,
+        review_key="600001.SH",
+        screening=screening,
+        decision=decision,
+        intraday_signal=None,
+        snapshot_assist=None,
+    )
+
+
+def test_build_review_context_prefers_official_score_and_structured_reasons():
+    service = MomentumScreenerAICommentaryService(config=object(), tool_registry=object(), llm_adapter=object())
+    request = _build_request("candidate")
+
+    context = service._build_review_context(request)
+    candidate = context["target"]["candidate"]
+    portfolio = context["decision"]["portfolio"][0]
+
+    assert candidate["official_score"] == 78.6
+    assert "rank_score" not in candidate
+    assert portfolio["official_score"] == 78.6
+    assert portfolio["base_rank"] == 1
+    assert portfolio["decision_adjustment_reason"] == "题材强度和槽位匹配支持保留主仓。"
+    assert portfolio["hard_blockers"][0]["label"] == "买点不清晰"
+    assert service._build_rule_conclusion(request) == "主仓 / 计划明确 / 等待触发"
+
+
+def test_build_review_context_for_excluded_candidates_uses_structured_reason_fields():
+    service = MomentumScreenerAICommentaryService(config=object(), tool_registry=object(), llm_adapter=object())
+    request = _build_request("excluded")
+
+    context = service._build_review_context(request)
+    excluded = context["target"]["excluded_candidates"][0]
+
+    assert excluded["official_score"] == 70.4
+    assert excluded["reason_key"] == "theme_rank_not_enough"
+    assert excluded["reason_detail"] == "同一主线里已有更高的官方总分和更清晰的槽位位置。"
+    assert excluded["decision_adjustment_reason"] == "主线内已有更优先的同题材标的。"
+    assert excluded["hard_blockers"][0]["label"] == "买点不清晰"
+    assert "rank_score" not in excluded
