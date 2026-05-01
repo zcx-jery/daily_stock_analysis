@@ -228,13 +228,19 @@
 - `hard_blockers[]`
   - 如 `buy_point_unclear / action_gate_blocked / duplicate_role_conflict / risk_redline`
 - `soft_adjustments[]`
-  - 如 `slot_fit_bonus / diversification_bonus / execution_clarity_bonus`
+  - 如 `slot_fit_bonus / diversification_bonus / execution_clarity_bonus / t1_direction_risk_drag`
 
 约束：
 
 - `decision_adjustment` 不得重写正式 `base_rank_score`
 - 若某只股票从 `base_rank=1` 降级，必须携带明确 `hard_blocker_reason`
 - 解释字段必须能区分“强度不足落选”与“组合收口落选”
+- T 日已可见的重风险 `T+1` 承接信号不得只留在解释层；若会显著削弱次日执行清晰度，应进入 `soft_adjustments` 或 `hard_blockers`
+- 若当前主仓是高进攻但高风险的 `front`，且同主题已有 `leader + clear` 候选且正式排序未明显落后，允许主仓向更稳的主线锚点回摆
+- 若当前主仓是 `front + waiting`，且同主题 `leader + clear` 只在正式排序上小幅落后、但执行清晰度更高，可优先让清晰龙头承担主仓职责；若 `front` 的 forward alpha 明显更强，则继续保留高进攻主仓
+- 若默认组合里的次仓 / 观察仓存在更稳的 `leader + clear` 候选，且与高风险 `front` 的正式优先级差距不大，允许整组收口继续向低 `T+1` 风险方向倾斜
+- 若默认组合内已有跨主题但明显更稳的执行锚点，可在不重写正式排序的前提下，把主仓职责回摆给更适合作为组合锚点的标的
+- 观察仓不只承担“同主题补位”职责；若存在带 `V1.3` 主线标签、且正式优先级差距不大的候选，可允许其替代普通同主题观察位，用于补足主线确认
 
 ### 6.4 买点清晰判定模块
 
@@ -262,6 +268,13 @@
 - `front_turnover`
   - 优先锚定分时均价线附近
   - 最优买入区宽度 `<= 3%`
+
+补充约束：
+
+- `buyability_clear` 不仅看买入区宽度，也要同时检查 T 日已可见的 `T+1` 承接风险
+- 若出现 `upper_shadow / late_session_weakness / price_flow_divergence / blowoff_volume` 等重风险标签，或高延伸与高风险共振，默认不得继续判为 `clear`
+- `front_turnover` 的 `clear` 口径应严于 `dragon_leader`；当同主题 `leader` 已满足 `clear` 且承接更稳时，前排 `front` 不应仅凭进攻性继续占据默认主仓
+- 次仓与观察仓也应复用同一套 `T+1` 承接风险约束，避免高弹性但高风险的 `front` 仅因未占主仓就继续停留在默认 Top3 组合里
 
 ### 6.5 价格偏离判定模块
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import time
 import unittest
+from copy import deepcopy
 from pathlib import Path
 
 from src.config import Config
@@ -85,6 +86,8 @@ class _FakeTaskizedScreenerService:
 class _FakeTaskizedDecisionService:
     def __init__(self) -> None:
         self.calls = []
+        self.repair_calls = []
+        self.repair_override = None
 
     def build_from_screening(self, screening, **kwargs):
         self.calls.append({"screening": dict(screening), "kwargs": dict(kwargs)})
@@ -110,6 +113,13 @@ class _FakeTaskizedDecisionService:
     def _build_secondary_decision_progress_label(self, progress):
         status = progress.get("status") or "running"
         return f"生成二次决策 ({status})"
+
+    def repair_persisted_decision_payload(self, payload):
+        repaired = deepcopy(payload)
+        self.repair_calls.append(repaired)
+        if self.repair_override is not None:
+            return self.repair_override(repaired)
+        return repaired
 
 
 class MomentumScreeningRunServiceTestCase(unittest.TestCase):
@@ -161,6 +171,7 @@ class MomentumScreeningRunServiceTestCase(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["screening"]["profile"], "standard")
         self.assertEqual(result["decision"]["action"]["level"], "normal_go")
+        self.assertEqual(len(self.decision_service.repair_calls), 1)
 
     def test_create_run_async_reuses_completed_run_by_fingerprint(self) -> None:
         created = self.service.create_run_async(
@@ -204,6 +215,31 @@ class MomentumScreeningRunServiceTestCase(unittest.TestCase):
         terminal = self._wait_for_terminal_status(run_id)
         self.assertEqual(terminal["status"], "cancelled")
         self.assertEqual(terminal["current_stage_key"], "cancelled")
+
+    def test_get_result_repairs_persisted_decision_payload_before_returning(self) -> None:
+        self.decision_service.repair_override = lambda payload: {
+            **payload,
+            "portfolio": [
+                {
+                    **payload["portfolio"][0],
+                    "decision_adjustment_reason": "收口加分：主线确认",
+                }
+            ],
+        }
+
+        created = self.service.create_run_async(
+            trade_date="2026-04-10",
+            profile="standard",
+            truth_mode="full",
+        )
+        run_id = created["run"]["run_id"]
+        terminal = self._wait_for_terminal_status(run_id)
+        self.assertEqual(terminal["status"], "completed")
+
+        result = self.service.get_result(run_id)
+
+        self.assertEqual(result["decision"]["portfolio"][0]["decision_adjustment_reason"], "收口加分：主线确认")
+        self.assertEqual(len(self.decision_service.repair_calls), 1)
 
 
 if __name__ == "__main__":

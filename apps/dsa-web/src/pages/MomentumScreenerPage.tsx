@@ -104,6 +104,25 @@ const itemLabelMap: Record<string, string> = {
   turnover_golden_zone: '换手黄金区',
   consensus_limit: '缩量一致',
   healthy_turnover: '健康换手',
+  legacy_raw_score: '旧版原始分',
+  v13_raw_score: 'V1.3 原始分',
+  v13_board_resonance: 'V1.3 板块共振',
+  v13_flow_continuation: 'V1.3 资金延续',
+  v13_main_inflow_abs: 'V1.3 主力净流入额',
+  v13_main_inflow_ratio: 'V1.3 主力净流入占比',
+  v13_stock_flow_source_count: 'V1.3 资金来源数',
+  v13_theme_name: 'V1.3 题材名称',
+  v13_top_list: 'V1.3 龙虎榜加成',
+  v13_theme_strength_score: 'V1.3 题材强弱分',
+  v13_fund_support_score: 'V1.3 资金支撑分',
+  v13_limit_structure_score: 'V1.3 涨停结构分',
+  v13_buyability_score: 'V1.3 买点可行分',
+  v13_chip_risk_score: 'V1.3 筹码风险分',
+  v13_shadow_score: 'V1.3 题材观察分',
+  v13_shadow_summary: 'V1.3 题材观察说明',
+  v13_mainline_score: 'V1.3 主线强度分',
+  v13_mainline_level: 'V1.3 主线级别',
+  v13_mainline_level_label: 'V1.3 主线级别标签',
 };
 
 function normalizeMetricLookupKey(key: string): string {
@@ -118,6 +137,42 @@ function buildMetricLabelLookup(labelMap: Record<string, string>): Record<string
 
 const dimensionLabelLookup = buildMetricLabelLookup(dimensionLabelMap);
 const itemLabelLookup = buildMetricLabelLookup(itemLabelMap);
+
+const metricTokenLabelMap: Record<string, string> = {
+  v13: 'V1.3',
+  legacy: '旧版',
+  raw: '原始',
+  score: '分',
+  board: '板块',
+  resonance: '共振',
+  flow: '资金',
+  continuation: '延续',
+  main: '主力',
+  mainline: '主线',
+  inflow: '流入',
+  abs: '净额',
+  ratio: '占比',
+  stock: '个股',
+  source: '来源',
+  count: '数量',
+  theme: '题材',
+  name: '名称',
+  top: '龙虎',
+  list: '榜',
+  buyability: '买点可行',
+  chip: '筹码',
+  risk: '风险',
+  fund: '资金',
+  support: '支撑',
+  limit: '涨停',
+  structure: '结构',
+  level: '级别',
+  label: '标签',
+  strength: '强度',
+  shadow: '观察',
+  summary: '说明',
+  topList: '龙虎榜',
+};
 
 const riskTagLabelMap: Record<string, string> = {
   upper_shadow: '长上影/冲高回落',
@@ -194,12 +249,40 @@ function translateGateModuleKey(key: string): string {
   return gateModuleLabelMap[key] ?? key;
 }
 
+function splitMetricKeyTokens(key: string): string[] {
+  return key
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/[_\-\s]+/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function humanizeMetricKey(key: string): string {
+  const tokens = splitMetricKeyTokens(key);
+  if (tokens.length === 0) {
+    return key;
+  }
+
+  const translatedTokens = tokens.map((token) => {
+    const normalized = normalizeMetricLookupKey(token);
+    return metricTokenLabelMap[normalized] ?? token;
+  });
+
+  if (translatedTokens.every((token, index) => token === tokens[index])) {
+    return key;
+  }
+
+  return translatedTokens.join('');
+}
+
 function translateDimensionKey(key: string): string {
-  return dimensionLabelLookup[normalizeMetricLookupKey(key)] ?? key;
+  return dimensionLabelLookup[normalizeMetricLookupKey(key)] ?? humanizeMetricKey(key);
 }
 
 function translateItemKey(key: string): string {
-  return itemLabelLookup[normalizeMetricLookupKey(key)] ?? key;
+  return itemLabelLookup[normalizeMetricLookupKey(key)] ?? humanizeMetricKey(key);
 }
 
 function leaderBadgeVariant(level: string): 'success' | 'warning' | 'default' {
@@ -547,6 +630,57 @@ function formatOptionalScore(value?: number | null): string {
   return value.toFixed(1);
 }
 
+function getBreakdownScorePercent(
+  item: MomentumScreenerResult,
+  dimensionKey: string,
+): number | null {
+  const targetKey = normalizeMetricLookupKey(dimensionKey);
+  for (const [key, value] of Object.entries(item.scoreBreakdown)) {
+    if (normalizeMetricLookupKey(key) !== targetKey) {
+      continue;
+    }
+    if (value.maxScore <= 0 || Number.isNaN(value.score) || Number.isNaN(value.maxScore)) {
+      return null;
+    }
+    return (value.score / value.maxScore) * 100;
+  }
+  return null;
+}
+
+type BuyabilityDisplay = {
+  value: number | null;
+  sourceLabel: string;
+};
+
+function resolveBuyabilityDisplay(
+  item: MomentumScreenerResult,
+  diagnostic?: MomentumDecisionCandidateDiagnostic | null,
+): BuyabilityDisplay {
+  if (item.buyabilityScore != null && !Number.isNaN(item.buyabilityScore)) {
+    return { value: item.buyabilityScore, sourceLabel: '进攻可买分' };
+  }
+
+  if (diagnostic?.v13BuyabilityScore != null && !Number.isNaN(diagnostic.v13BuyabilityScore)) {
+    return { value: diagnostic.v13BuyabilityScore, sourceLabel: '题材买点可行' };
+  }
+
+  const breakdownPercent = getBreakdownScorePercent(item, 'buyability');
+  if (breakdownPercent != null) {
+    return { value: breakdownPercent, sourceLabel: '基础买点画像' };
+  }
+
+  return { value: null, sourceLabel: '暂无买点画像' };
+}
+
+function normalizeCapitalThemeNarrative(text?: string | null): string | null {
+  if (!text) {
+    return null;
+  }
+  return text
+    .replace(/V1\.?3影子分/g, 'V1.3 题材观察分')
+    .replace(/影子分/g, '题材观察分');
+}
+
 function formatSignedScoreDelta(value?: number | null): string {
   if (value == null || Number.isNaN(value) || Math.abs(value) < 0.05) {
     return '0.0';
@@ -614,6 +748,7 @@ function buildCopyText(
   ].filter(Boolean);
 
   const lines = results.map((item) => {
+    const buyabilityDisplay = resolveBuyabilityDisplay(item);
     const parts = [
       `#${item.rank}`,
       `${item.name}(${item.tsCode})`,
@@ -624,8 +759,8 @@ function buildCopyText(
       `\u98ce\u9669\u5206 ${item.riskScore.toFixed(1)}`,
     ];
 
-    if (item.buyabilityScore != null) {
-      parts.push(`\u53ef\u4e70\u5206 ${item.buyabilityScore.toFixed(1)}`);
+    if (buyabilityDisplay.value != null) {
+      parts.push(`\u53ef\u4e70\u5206 ${buyabilityDisplay.value.toFixed(1)}（${buyabilityDisplay.sourceLabel}）`);
     }
     if (item.opportunityTag) {
       parts.push(`机会 ${item.opportunityTag}`);
@@ -659,6 +794,7 @@ function buildSingleResultText(
   tradeDate: string | undefined,
   item: MomentumScreenerResult,
 ): string {
+  const buyabilityDisplay = resolveBuyabilityDisplay(item);
   const lines = [
     '强势筛选个股明细',
     `画像：${profile === 'aggressive' ? 'Aggressive' : 'Standard'}`,
@@ -670,7 +806,9 @@ function buildSingleResultText(
     `延续分：${item.continuationScore.toFixed(1)}`,
     `弹性分：${item.extensionScore.toFixed(1)}`,
     `风险分：${item.riskScore.toFixed(1)}`,
-    item.buyabilityScore != null ? `可买分：${item.buyabilityScore.toFixed(1)}` : null,
+    buyabilityDisplay.value != null
+      ? `可买分：${buyabilityDisplay.value.toFixed(1)}（${buyabilityDisplay.sourceLabel}）`
+      : null,
     item.opportunityTag ? `机会标签：${item.opportunityTag}` : null,
     item.entryRangeLow != null && item.entryRangeHigh != null
       ? `建议区间：${item.entryRangeLow.toFixed(2)} - ${item.entryRangeHigh.toFixed(2)}`
@@ -690,6 +828,7 @@ function buildSingleResultMarkdown(
   tradeDate: string | undefined,
   item: MomentumScreenerResult,
 ): string {
+  const buyabilityDisplay = resolveBuyabilityDisplay(item);
   const lines: string[] = [
     `# #${item.rank} ${item.name} (${item.tsCode})`,
     '',
@@ -700,7 +839,7 @@ function buildSingleResultMarkdown(
     `- 延续分：${item.continuationScore.toFixed(1)}`,
     `- 弹性分：${item.extensionScore.toFixed(1)}`,
     `- 风险分：${item.riskScore.toFixed(1)}`,
-    `- 可买分：${item.buyabilityScore != null ? item.buyabilityScore.toFixed(1) : '--'}`,
+    `- 可买分：${buyabilityDisplay.value != null ? `${buyabilityDisplay.value.toFixed(1)}（${buyabilityDisplay.sourceLabel}）` : '--'}`,
     `- 机会标签：${item.opportunityTag ?? '--'}`,
     `- 建议区间：${item.entryRangeLow != null && item.entryRangeHigh != null ? `${item.entryRangeLow.toFixed(2)} - ${item.entryRangeHigh.toFixed(2)}` : '--'}`,
     `- 基础总分：${item.finalScore.toFixed(1)}`,
@@ -737,8 +876,9 @@ function buildMarkdownText(
   ];
 
   for (const item of results) {
+    const buyabilityDisplay = resolveBuyabilityDisplay(item);
     lines.push(
-      `| ${item.rank} | ${item.name} (${item.tsCode}) | ${item.pctChg.toFixed(2)}% | ${item.officialScore.toFixed(1)} | ${item.continuationScore.toFixed(1)} | ${item.extensionScore.toFixed(1)} | ${item.riskScore.toFixed(1)} | ${item.buyabilityScore != null ? item.buyabilityScore.toFixed(1) : '--'} | ${item.themes[0] ?? '--'} | ${translateLeaderLevel(item.leaderLevel)} |`,
+      `| ${item.rank} | ${item.name} (${item.tsCode}) | ${item.pctChg.toFixed(2)}% | ${item.officialScore.toFixed(1)} | ${item.continuationScore.toFixed(1)} | ${item.extensionScore.toFixed(1)} | ${item.riskScore.toFixed(1)} | ${buyabilityDisplay.value != null ? buyabilityDisplay.value.toFixed(1) : '--'} | ${item.themes[0] ?? '--'} | ${translateLeaderLevel(item.leaderLevel)} |`,
     );
   }
 
@@ -800,7 +940,10 @@ function buildCsvText(results: MomentumScreenerResult[]): string {
     item.continuationScore.toFixed(1),
     item.extensionScore.toFixed(1),
     item.riskScore.toFixed(1),
-    item.buyabilityScore != null ? item.buyabilityScore.toFixed(1) : '',
+    (() => {
+      const buyabilityDisplay = resolveBuyabilityDisplay(item);
+      return buyabilityDisplay.value != null ? buyabilityDisplay.value.toFixed(1) : '';
+    })(),
     item.opportunityTag ?? '',
     item.entryRangeLow != null ? item.entryRangeLow.toFixed(2) : '',
     item.entryRangeHigh != null ? item.entryRangeHigh.toFixed(2) : '',
@@ -1070,15 +1213,15 @@ const PortfolioDecisionCard: React.FC<{ item: MomentumDecisionPortfolioSlot }> =
         <Badge variant="success">题材强度 {item.v13MainlineScore.toFixed(1)}</Badge>
       ) : null}
       {item.v13ShadowScore != null ? (
-        <Badge variant="info">V1.3影子分 {item.v13ShadowScore.toFixed(1)}</Badge>
+        <Badge variant="info">题材观察分 {item.v13ShadowScore.toFixed(1)}</Badge>
       ) : null}
       {item.opportunityTag ? <Badge variant="warning">{item.opportunityTag}</Badge> : null}
     </div>
 
     {item.v13ShadowScore != null ? (
       <p className="mt-3 text-xs leading-5 text-secondary-text">
-        题材 {item.v13ThemeStrengthScore?.toFixed(1) ?? '-'} / 资金 {item.v13FundSupportScore?.toFixed(1) ?? '-'} /
-        涨停结构 {item.v13LimitStructureScore?.toFixed(1) ?? '-'} / 买点 {item.v13BuyabilityScore?.toFixed(1) ?? '-'} /
+        题材强弱 {item.v13ThemeStrengthScore?.toFixed(1) ?? '-'} / 资金承接 {item.v13FundSupportScore?.toFixed(1) ?? '-'} /
+        涨停结构 {item.v13LimitStructureScore?.toFixed(1) ?? '-'} / 买点可行 {item.v13BuyabilityScore?.toFixed(1) ?? '-'} /
         筹码风险 {item.v13ChipRiskScore?.toFixed(1) ?? '-'}
       </p>
     ) : null}
@@ -2492,6 +2635,9 @@ const MomentumScreenerPage: React.FC = () => {
     selectedResultSource === 'standard' && selectedResultTsCode
       ? candidateDiagnosticByCode.get(selectedResultTsCode) ?? null
       : null;
+  const selectedResultShadowSummary = normalizeCapitalThemeNarrative(
+    selectedResultDiagnostic?.v13ShadowSummary,
+  );
 
   useEffect(() => {
     if (!selectedResultSource) {
@@ -3131,6 +3277,7 @@ const MomentumScreenerPage: React.FC = () => {
                   <tbody>
                     {sortedResults.map((item) => {
                       const diagnostic = candidateDiagnosticByCode.get(item.tsCode);
+                      const buyabilityDisplay = resolveBuyabilityDisplay(item, diagnostic);
                       const capitalTheme = diagnostic?.theme || item.themes[0] || '--';
                       return (
                         <tr
@@ -3151,21 +3298,28 @@ const MomentumScreenerPage: React.FC = () => {
                           <td className="px-3 py-3 text-foreground">{item.continuationScore.toFixed(1)}</td>
                           <td className="px-3 py-3 text-foreground">{item.extensionScore.toFixed(1)}</td>
                           <td className="px-3 py-3 text-warning">{item.riskScore.toFixed(1)}</td>
-                          <td className="px-3 py-3 text-cyan">{item.buyabilityScore != null ? item.buyabilityScore.toFixed(1) : '--'}</td>
+                          <td className="px-3 py-3">
+                            <div className="min-w-[92px]">
+                              <p className={`font-semibold ${buyabilityDisplay.value != null ? 'text-cyan' : 'text-secondary-text'}`}>
+                                {buyabilityDisplay.value != null ? buyabilityDisplay.value.toFixed(1) : '待补充'}
+                              </p>
+                              <p className="mt-1 text-xs text-secondary-text">{buyabilityDisplay.sourceLabel}</p>
+                            </div>
+                          </td>
                           <td className="px-3 py-3">
                             <div className="min-w-[140px]">
                               <p className="font-medium text-foreground">{capitalTheme}</p>
                               {diagnostic ? (
                                 <>
                                   <p className="mt-1 text-xs text-cyan">
-                                    影子分 {formatOptionalScore(diagnostic.v13ShadowScore)}
+                                    题材观察分 {formatOptionalScore(diagnostic.v13ShadowScore)}
                                   </p>
                                   <p className="mt-1 text-xs text-secondary-text">
-                                    资金 {formatOptionalScore(diagnostic.v13FundSupportScore)} · 涨停 {formatOptionalScore(diagnostic.v13LimitStructureScore)}
+                                    资金承接 {formatOptionalScore(diagnostic.v13FundSupportScore)} · 涨停结构 {formatOptionalScore(diagnostic.v13LimitStructureScore)}
                                   </p>
                                 </>
                               ) : (
-                                <p className="mt-1 text-xs text-secondary-text">原始分类</p>
+                                <p className="mt-1 text-xs text-secondary-text">沿用官方板块分类</p>
                               )}
                             </div>
                           </td>
@@ -3281,11 +3435,11 @@ const MomentumScreenerPage: React.FC = () => {
                       归入 <span className="font-medium text-foreground">{selectedResultDiagnostic.theme}</span>
                       ，用于解释这只票跟随哪条真实强势题材，不直接改写官方排序。
                     </p>
-                    {selectedResultDiagnostic.v13ShadowSummary ? (
-                      <p className="mt-2 text-xs leading-5 text-secondary-text">{selectedResultDiagnostic.v13ShadowSummary}</p>
+                    {selectedResultShadowSummary ? (
+                      <p className="mt-2 text-xs leading-5 text-secondary-text">{selectedResultShadowSummary}</p>
                     ) : null}
                   </div>
-                  <Badge variant="info">影子分 {formatOptionalScore(selectedResultDiagnostic.v13ShadowScore)}</Badge>
+                  <Badge variant="info">题材观察分 {formatOptionalScore(selectedResultDiagnostic.v13ShadowScore)}</Badge>
                 </div>
                 <div className="mt-4 grid gap-2 sm:grid-cols-2 md:grid-cols-5">
                   {[

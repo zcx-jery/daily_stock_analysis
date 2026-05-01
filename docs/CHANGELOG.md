@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [修复] 修复强势筛选二次决策返回文案里的 `????` 乱码：落选说明、收口比较、轻修正和硬阻断标签统一恢复为可读中文。
+- [改进] 强势筛选页优化 Standard 个股列表与详情抽屉的可读性：可买分新增 V1.3 买点与基础买点兜底，资金题材列改为“题材观察分 / 资金承接 / 涨停结构”等中文口径，详情维度拆解补齐 legacy/V1.3 英文键到中文字段的映射。
+- [改进] 强势筛选二次决策继续收紧主仓与观察仓收口：同主题 `front + waiting` 仅小幅领先时，可把主仓回摆给更清晰的 `leader + clear`；观察仓在优先级接近时可轻微偏向已带 `V1.3` 主线标签的候选。
+- [改进] 强势筛选二次决策把 `T+1` 承接风险约束从主仓扩展到次仓、观察仓和整组组合锚点回摆：高风险 `front` 在正式优先级差距不大时，会给更稳的 `leader + clear` 候选让位。
+- [改进] 强势筛选二次决策收紧主仓与买点收口：重风险 T+1 承接信号不再轻易判为 `clear buy point`，主仓优先级开始显式惩罚 severe T+1 风险，并在同主题 `clear leader` 承接更稳时优先让位。
 - [文档] 同步强势筛选二次决策 SPEC、产品原则和 V1.3 设计文档，统一“二次决策已退回收口层、原始排序 Top3 仅作为正式排序前排代理”的口径。
 - [文档] 更新强势筛选 V1 回测验收标准，明确 V1.3 下二次决策已退回收口层，相对基准检查不再表述为“二次决策必须创造增量价值”。
 - [改进] 强势筛选二次决策将 `theme_concentration_pass` 统一为“默认组合至少 2 只同主题”口径，避免 fresh/fallback 两条链路对同一组合给出不一致的机会质量和动作闸门结论。

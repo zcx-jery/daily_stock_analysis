@@ -242,10 +242,19 @@ const mixedKeyResponse: MomentumScreenerResponse = {
           score: 16,
           maxScore: 20,
           items: {
+            legacyRawScore: 14,
             MAININFLOWABS: 6,
             MAININFLOWRATIO: 6,
             PRICEFLOWALIGNMENT: 4,
             TOPLIST: 0,
+            v13BoardResonance: 4,
+            v13FlowContinuation: 2,
+            v13MainInflowAbs: 5,
+            v13MainInflowRatio: 4,
+            v13RawScore: 17,
+            v13StockFlowSourceCount: 2,
+            v13ThemeName: '锂电池',
+            v13TopList: 2,
           },
         },
         buyability: {
@@ -1147,6 +1156,20 @@ describe('MomentumScreenerPage', () => {
     expect(screen.getByText('最高官方总分')).toBeInTheDocument();
   });
 
+  it('fills standard buyability with readable fallback labels and rewrites capital theme metrics in Chinese', async () => {
+    render(<MomentumScreenerPage />);
+
+    await clickRunButton();
+
+    const row = await screen.findByTestId('momentum-screener-row-600001.SH');
+    expect(within(row).getAllByText('70.0').length).toBeGreaterThan(0);
+    expect(within(row).getByText('题材买点可行')).toBeInTheDocument();
+    expect(within(row).getByText('电池')).toBeInTheDocument();
+    expect(within(row).getByText('题材观察分 78.5')).toBeInTheDocument();
+    expect(within(row).getByText('资金承接 88.0 · 涨停结构 76.0')).toBeInTheDocument();
+    expect(within(row).queryByText('影子分 78.5')).not.toBeInTheDocument();
+  });
+
   it('opens drawer only after clicking an official result row and allows closing it', async () => {
     render(<MomentumScreenerPage />);
 
@@ -1162,6 +1185,7 @@ describe('MomentumScreenerPage', () => {
     expect(within(dialog).getByText('Standard 官方结果')).toBeInTheDocument();
     expect(within(dialog).getByText('资金题材归因')).toBeInTheDocument();
     expect(within(dialog).getByText('电池')).toBeInTheDocument();
+    expect(within(dialog).getByText('题材观察分 78.5')).toBeInTheDocument();
     expect(within(dialog).getByText('Strength Confirmed')).toBeInTheDocument();
 
     fireEvent.click(within(dialog).getByRole('button', { name: '关闭抽屉' }));
@@ -1241,9 +1265,27 @@ describe('MomentumScreenerPage', () => {
     expect(within(dialog).getByText('健康换手')).toBeInTheDocument();
     expect(within(dialog).getByText('板块强度')).toBeInTheDocument();
     expect(within(dialog).getByText('历史股性')).toBeInTheDocument();
+    expect(within(dialog).getByText('旧版原始分')).toBeInTheDocument();
+    expect(within(dialog).getByText('V1.3 板块共振')).toBeInTheDocument();
+    expect(within(dialog).getByText('V1.3 资金延续')).toBeInTheDocument();
+    expect(within(dialog).getByText('V1.3 主力净流入额')).toBeInTheDocument();
+    expect(within(dialog).getByText('V1.3 主力净流入占比')).toBeInTheDocument();
+    expect(within(dialog).getByText('V1.3 原始分')).toBeInTheDocument();
+    expect(within(dialog).getByText('V1.3 资金来源数')).toBeInTheDocument();
+    expect(within(dialog).getByText('V1.3 题材名称')).toBeInTheDocument();
+    expect(within(dialog).getByText('V1.3 龙虎榜加成')).toBeInTheDocument();
     expect(within(dialog).queryByText('strengthConfirmation')).not.toBeInTheDocument();
     expect(within(dialog).queryByText('SECTORRANK')).not.toBeInTheDocument();
     expect(within(dialog).queryByText('MAININFLOWABS')).not.toBeInTheDocument();
+    expect(within(dialog).queryByText('legacyRawScore')).not.toBeInTheDocument();
+    expect(within(dialog).queryByText('v13BoardResonance')).not.toBeInTheDocument();
+    expect(within(dialog).queryByText('v13FlowContinuation')).not.toBeInTheDocument();
+    expect(within(dialog).queryByText('v13MainInflowAbs')).not.toBeInTheDocument();
+    expect(within(dialog).queryByText('v13MainInflowRatio')).not.toBeInTheDocument();
+    expect(within(dialog).queryByText('v13RawScore')).not.toBeInTheDocument();
+    expect(within(dialog).queryByText('v13StockFlowSourceCount')).not.toBeInTheDocument();
+    expect(within(dialog).queryByText('v13ThemeName')).not.toBeInTheDocument();
+    expect(within(dialog).queryByText('v13TopList')).not.toBeInTheDocument();
   });
 
   it('exports the current result list as markdown', async () => {
@@ -1327,7 +1369,7 @@ describe('MomentumScreenerPage', () => {
     expect(within(panel).getByText('60日主线可信度')).toBeInTheDocument();
     expect(screen.getByText('资金主攻题材')).toBeInTheDocument();
     expect(screen.getByText('资金题材')).toBeInTheDocument();
-    expect(screen.getAllByText('影子分 78.5').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('题材观察分 78.5').length).toBeGreaterThan(0);
     expect(within(panel).getByText('资金题材雷达')).toBeInTheDocument();
     expect(within(panel).getByText('电池')).toBeInTheDocument();
     expect(within(panel).getByText('板块第 1')).toBeInTheDocument();

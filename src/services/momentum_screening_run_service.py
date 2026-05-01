@@ -232,6 +232,7 @@ class MomentumScreeningRunService:
         decision = self._load_json(run.decision_payload_json)
         if not isinstance(screening, dict) or not isinstance(decision, dict):
             raise ValueError("Screening run result payload is incomplete")
+        decision = self.decision_service.repair_persisted_decision_payload(decision)
 
         return {
             "run_id": run.run_id,

@@ -129,6 +129,8 @@ DIVERSIFICATION_PRIORITY_TOLERANCE = 2.0
 MAIN_SLOT_REBALANCE_PRIORITY_TOLERANCE = 2.5
 MAINLINE_CONFIRMATION_PRIORITY_TOLERANCE = 3.0
 SAME_THEME_CONFIRMATION_PRIORITY_TOLERANCE = 3.0
+WAITING_FRONT_CLEAR_LEADER_OFFICIAL_GAP_TOLERANCE = 1.2
+WAITING_FRONT_CLEAR_LEADER_FORWARD_ALPHA_ADVANTAGE_CAP = 7.5
 V13_CONTEXT_MAX_TS_CODES = 30
 DECISION_CANDIDATE_POOL_LIMIT = 12
 
@@ -1433,6 +1435,7 @@ class MomentumSecondaryDecisionService:
             selected.append(("watch", watch_candidate))
 
         selected = self._rebalance_same_theme_main_slot(selected, theme_score_map)
+        selected = self._rebalance_portfolio_anchor(selected, theme_score_map)
 
         return [
             self._build_portfolio_slot(slot, candidate, theme_score_map)
@@ -1469,11 +1472,11 @@ class MomentumSecondaryDecisionService:
             if theme_name not in selected_theme_names and theme_score_map.get(theme_name, 0.0) < 60:
                 reason_key = "non_mainline_weak"
                 reason = EXCLUDED_REASON_LABELS[reason_key]
-                reason_detail = "??????????????????????????????"
+                reason_detail = "当前题材不在默认主线内，且题材强度偏弱，因此本轮不优先收口。"
             elif candidate["_buy_point_status"] == "unclear":
                 reason_key = "buy_point_unclear"
                 reason = EXCLUDED_REASON_LABELS[reason_key]
-                reason_detail = "??????????????????????????"
+                reason_detail = "当前买点还没有收清晰，先放回观察池，等待更明确的触发。"
             elif hard_blockers:
                 reason_key = "hard_blocked"
                 reason = EXCLUDED_REASON_LABELS[reason_key]
@@ -1481,15 +1484,15 @@ class MomentumSecondaryDecisionService:
             elif (theme_name, role_label) in selected_roles:
                 reason_key = "role_duplicate"
                 reason = EXCLUDED_REASON_LABELS[reason_key]
-                reason_detail = "????????????????????????????"
+                reason_detail = "同主题同角色已有更优先候选入选，本票本轮作为重复角色落选。"
             elif theme_name == top_theme_name:
                 reason_key = "mainline_rank_not_enough"
                 reason = EXCLUDED_REASON_LABELS[reason_key]
-                reason_detail = "???????????????????????????????"
+                reason_detail = "虽然属于当日主线，但在主线内部的正式排序还不够靠前，暂未收入口袋组合。"
             else:
                 reason_key = "slot_capacity"
                 reason = EXCLUDED_REASON_LABELS[reason_key]
-                reason_detail = "????????????????????????????"
+                reason_detail = "当前组合槽位已经被更高优先级候选占用，本票保留观察但暂不入选。"
 
             excluded.append(
                 {
@@ -4599,6 +4602,7 @@ class MomentumSecondaryDecisionService:
         rank_score = _official_sort_score(item)
         continuation_score = _safe_float(item.get("continuation_score"))
         risk_score = _safe_float(item.get("risk_score"))
+        severe_t1_risk = self._has_severe_t1_direction_risk(item, buy_point_status="clear")
         has_entry_range = (
             item.get("entry_range_low") is not None
             and item.get("entry_range_high") is not None
@@ -4606,7 +4610,13 @@ class MomentumSecondaryDecisionService:
 
         if buyability is not None:
             buyability_score = _safe_float(buyability)
-            if buyability_score >= 72 and risk_score <= 35 and has_entry_range:
+            if (
+                buyability_score >= 72
+                and risk_score <= 35
+                and has_entry_range
+                and continuation_score >= 74
+                and not severe_t1_risk
+            ):
                 return "clear", BUY_POINT_LABELS["clear"]
             if buyability_score >= 60 and rank_score >= 65 and risk_score <= 55:
                 return "waiting", BUY_POINT_LABELS["waiting"]
@@ -4618,6 +4628,7 @@ class MomentumSecondaryDecisionService:
             and rank_score >= 70
             and risk_score <= 40
             and has_entry_range
+            and not severe_t1_risk
         ):
             return "clear", BUY_POINT_LABELS["clear"]
         if continuation_score >= 72 and rank_score >= 60 and risk_score <= 55:
@@ -4694,6 +4705,74 @@ class MomentumSecondaryDecisionService:
             adjustment -= 2.0
 
         return round(_clamp_float(adjustment, -12.0, 0.0), 2)
+
+    @staticmethod
+    def _has_severe_t1_direction_risk(
+        item: Dict[str, Any],
+        *,
+        buy_point_status: str = "",
+    ) -> bool:
+        risk_tags = {str(tag) for tag in item.get("risk_tags", []) if tag}
+        severe_tags = {
+            "late_session_weakness",
+            "price_flow_divergence",
+            "upper_shadow",
+            "blowoff_volume",
+        }
+        extension_score = _safe_float(item.get("extension_score"))
+        pct_chg = _safe_float(item.get("pct_chg"))
+        risk_score = _safe_float(item.get("risk_score"))
+        precomputed_adjustment = _safe_float(item.get("_t1_direction_risk_adjustment"))
+
+        if precomputed_adjustment <= -6.0:
+            return True
+        if severe_tags & risk_tags:
+            return True
+        if extension_score >= 95.0:
+            return True
+        if pct_chg >= 9.7 and extension_score >= 92.0 and (
+            "high_acceleration" in risk_tags or risk_score >= 32.0
+        ):
+            return True
+        if buy_point_status == "clear" and extension_score >= 92.0 and risk_score >= 35.0:
+            return True
+        return False
+
+    def _has_material_t1_stability_edge(
+        self,
+        candidate: Dict[str, Any],
+        reference: Dict[str, Any],
+        *,
+        min_gap: float = 2.5,
+    ) -> bool:
+        candidate_buy_point_status = _safe_str(
+            candidate.get("_buy_point_status"),
+            candidate.get("buy_point_status"),
+        )
+        reference_buy_point_status = _safe_str(
+            reference.get("_buy_point_status"),
+            reference.get("buy_point_status"),
+        )
+        candidate_adjustment = _safe_float(candidate.get("_t1_direction_risk_adjustment"))
+        reference_adjustment = _safe_float(reference.get("_t1_direction_risk_adjustment"))
+        candidate_severe = self._has_severe_t1_direction_risk(
+            candidate,
+            buy_point_status=candidate_buy_point_status,
+        )
+        reference_severe = self._has_severe_t1_direction_risk(
+            reference,
+            buy_point_status=reference_buy_point_status,
+        )
+
+        if candidate_severe:
+            return False
+        if reference_severe and self._has_planned_buy_point(candidate):
+            return candidate_adjustment >= reference_adjustment + 1.5
+        return self._has_planned_buy_point(candidate) and candidate_adjustment >= reference_adjustment + min_gap
+
+    @staticmethod
+    def _has_v13_mainline_confirmation(item: Dict[str, Any]) -> bool:
+        return bool(_safe_str(item.get("_v13_theme_id"))) or _safe_float(item.get("_v13_mainline_score")) >= 70.0
 
     @staticmethod
     def _forward_alpha_score(
@@ -4802,6 +4881,129 @@ class MomentumSecondaryDecisionService:
         return payload
 
     @staticmethod
+    def _reason_label_fallback(key: str) -> Optional[str]:
+        return {
+            "theme_tailwind": "主线题材加分",
+            "theme_drag": "题材偏弱",
+            "mainline_confirmed": "主线确认",
+            "mainline_questionable": "主线存疑",
+            "role_leader": "龙头核心优先",
+            "role_front": "前排换手优先",
+            "role_mid": "观察备选补位",
+            "role_back": "后排角色降权",
+            "planned_buy_point": "计划回踩低吸",
+            "waiting_buy_point": "继续等待触发",
+            "unclear_buy_point": "买点不清晰",
+            "risk_penalty": "风险偏高",
+            "main_role_leader": "龙头核心更适合主仓",
+            "main_role_front": "前排换手更适合主仓",
+            "main_role_mid": "观察备选不宜主仓",
+            "main_role_back": "后排角色不做主仓",
+            "main_clear_buy_point": "买点清晰",
+            "main_planned_buy_point": "回踩计划明确",
+            "main_waiting_buy_point": "买点仍待确认",
+            "main_unclear_buy_point": "买点不清晰",
+            "mainline_strength": "主线强度",
+            "theme_strength_boost": "题材强度加分",
+            "fund_support_boost": "资金承接加分",
+            "shadow_score_signal": "V1.3 题材观察分",
+            "forward_alpha_signal": "次日溢价预期",
+            "front_attack_window": "前排进攻窗口",
+            "front_continuation_bonus": "前排延续加分",
+            "watch_same_theme": "与主仓同主线",
+            "watch_front_role": "前排换手更值得观察",
+            "watch_leader_role": "龙头核心更值得观察",
+            "watch_planned_buy_point": "计划回踩低吸",
+            "watch_forward_alpha": "次日溢价预期",
+            "low_official_score": "官方总分偏低",
+            "weak_mainline": "主线强度不足",
+            "back_role_main": "后排角色不做主仓",
+            "unclear_buy_point_main": "主仓买点不清晰",
+            "high_risk_main": "主仓风险偏高",
+            "weak_secondary_score": "次仓强度不足",
+            "high_risk_secondary": "次仓风险过高且买点不清晰",
+            "back_role_secondary": "后排角色不做次仓",
+            "back_role_watch": "弱后排不留观察位",
+            "weak_watch_theme": "观察主题强度不足",
+        }.get(_safe_str(key))
+
+    @staticmethod
+    def _excluded_reason_detail_fallback(reason_key: str) -> Optional[str]:
+        return {
+            "non_mainline_weak": "当前题材不在默认主线内，且题材强度偏弱，因此本轮不优先收口。",
+            "buy_point_unclear": "当前买点还没有收清晰，先放回观察池，等待更明确的触发。",
+            "role_duplicate": "同主题同角色已有更优先候选入选，本票本轮作为重复角色落选。",
+            "mainline_rank_not_enough": "虽然属于当日主线，但在主线内部的正式排序还不够靠前，暂未收入口袋组合。",
+            "slot_capacity": "当前组合槽位已经被更高优先级候选占用，本票保留观察但暂不入选。",
+        }.get(_safe_str(reason_key))
+
+    @classmethod
+    def _normalize_reason_items(cls, items: Any) -> List[Dict[str, Any]]:
+        if not isinstance(items, list):
+            return []
+        normalized: List[Dict[str, Any]] = []
+        for raw_item in items:
+            if not isinstance(raw_item, dict):
+                continue
+            item = dict(raw_item)
+            fallback_label = cls._reason_label_fallback(_safe_str(item.get("key")))
+            label = _safe_str(item.get("label"))
+            if fallback_label and ("?" in label or not label):
+                item["label"] = fallback_label
+            normalized.append(item)
+        return normalized
+
+    def repair_persisted_decision_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(payload, dict):
+            return payload
+
+        normalized = deepcopy(payload)
+        for item in normalized.get("portfolio", []):
+            if isinstance(item, dict):
+                self._repair_decision_payload_item(item, include_blockers=False)
+        for item in normalized.get("candidate_diagnostics", []):
+            if isinstance(item, dict):
+                self._repair_decision_payload_item(
+                    item,
+                    include_blockers=not bool(_safe_str(item.get("selected_slot"))),
+                )
+        for item in normalized.get("excluded_candidates", []):
+            if isinstance(item, dict):
+                self._repair_excluded_candidate_payload(item)
+        return normalized
+
+    def _repair_decision_payload_item(
+        self,
+        item: Dict[str, Any],
+        *,
+        include_blockers: bool,
+    ) -> None:
+        soft_adjustments = self._normalize_reason_items(item.get("soft_adjustments"))
+        hard_blockers = self._normalize_reason_items(item.get("hard_blockers"))
+        item["soft_adjustments"] = soft_adjustments
+        item["hard_blockers"] = hard_blockers
+        item["decision_adjustment_reason"] = self._describe_adjustments(
+            soft_adjustments,
+            blockers=hard_blockers if include_blockers and hard_blockers else None,
+        )
+
+    def _repair_excluded_candidate_payload(self, item: Dict[str, Any]) -> None:
+        soft_adjustments = self._normalize_reason_items(item.get("soft_adjustments"))
+        hard_blockers = self._normalize_reason_items(item.get("hard_blockers"))
+        item["soft_adjustments"] = soft_adjustments
+        item["hard_blockers"] = hard_blockers
+        reason_key = _safe_str(item.get("reason_key"))
+        if reason_key in EXCLUDED_REASON_LABELS:
+            item["reason"] = EXCLUDED_REASON_LABELS[reason_key]
+        if reason_key == "hard_blocked" and hard_blockers:
+            item["reason_detail"] = self._describe_adjustments([], blockers=hard_blockers)
+        else:
+            fallback_detail = self._excluded_reason_detail_fallback(reason_key)
+            if fallback_detail:
+                item["reason_detail"] = fallback_detail
+        item["decision_adjustment_reason"] = self._describe_adjustments(soft_adjustments)
+
+    @staticmethod
     def _dedupe_reason_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         unique: List[Dict[str, Any]] = []
         seen: set[str] = set()
@@ -4826,17 +5028,17 @@ class MomentumSecondaryDecisionService:
         if blockers:
             blocker_labels = [str(item.get("label")) for item in blockers if item.get("label")]
             if blocker_labels:
-                return f"??????{'?'.join(blocker_labels[:2])}"
+                return f"命中硬阻断：{'、'.join(blocker_labels[:2])}"
 
         positive = [str(item.get("label")) for item in adjustments if _safe_float(item.get("delta")) > 0.05]
         negative = [str(item.get("label")) for item in adjustments if _safe_float(item.get("delta")) < -0.05]
         if positive and negative:
-            return f"????{'?'.join(positive[:2])}?????{'?'.join(negative[:2])}"
+            return f"收口加分：{'、'.join(positive[:2])}；收口减分：{'、'.join(negative[:2])}"
         if positive:
-            return f"????{'?'.join(positive[:2])}"
+            return f"收口加分：{'、'.join(positive[:2])}"
         if negative:
-            return f"????{'?'.join(negative[:2])}"
-        return "????????????????"
+            return f"收口减分：{'、'.join(negative[:2])}"
+        return "当前收口与官方排序基本一致"
 
     @staticmethod
     def _preferred_slot_for_candidate(candidate: Dict[str, Any]) -> str:
@@ -4857,26 +5059,47 @@ class MomentumSecondaryDecisionService:
         role_key = _safe_str(item.get("_role_key"))
         buy_point_status = _safe_str(item.get("_buy_point_status"), item.get("buy_point_status"))
         risk_score = _safe_float(item.get("risk_score"))
+        t1_direction_risk_adjustment = _safe_float(item.get("_t1_direction_risk_adjustment"))
+        severe_t1_risk = self._has_severe_t1_direction_risk(
+            item,
+            buy_point_status=buy_point_status,
+        )
+        role_adjustment_label = {
+            "leader": "龙头核心优先",
+            "front": "前排换手优先",
+            "mid": "观察备选补位",
+            "back": "后排角色降权",
+        }.get(role_key, f"{ROLE_LABELS.get(role_key, role_key)}调整")
         adjustments: List[Dict[str, Any]] = []
         if theme_score >= 80:
-            adjustments.append(self._reason_item("theme_tailwind", "??????", delta=1.0))
+            adjustments.append(self._reason_item("theme_tailwind", "主线题材加分", delta=1.0))
         elif theme_score < 60:
-            adjustments.append(self._reason_item("theme_drag", "????", delta=-1.0))
+            adjustments.append(self._reason_item("theme_drag", "题材偏弱", delta=-1.0))
         if v13_mainline_score >= 85:
-            adjustments.append(self._reason_item("mainline_confirmed", "????", delta=0.8))
+            adjustments.append(self._reason_item("mainline_confirmed", "主线确认", delta=0.8))
         elif 0 < v13_mainline_score < 70:
-            adjustments.append(self._reason_item("mainline_questionable", "??????", delta=-0.6))
+            adjustments.append(self._reason_item("mainline_questionable", "主线存疑", delta=-0.6))
         role_delta = {"leader": 0.6, "front": 1.0, "mid": 0.2, "back": -1.4}.get(role_key, 0.0)
         if role_delta != 0:
-            adjustments.append(self._reason_item(f"role_{role_key}", f"{ROLE_LABELS.get(role_key, role_key)}????", delta=role_delta))
+            adjustments.append(self._reason_item(f"role_{role_key}", role_adjustment_label, delta=role_delta))
         if self._has_planned_buy_point(item):
-            adjustments.append(self._reason_item("planned_buy_point", "???????", delta=0.8))
+            adjustments.append(self._reason_item("planned_buy_point", "计划回踩低吸", delta=0.8))
         elif buy_point_status == "waiting":
-            adjustments.append(self._reason_item("waiting_buy_point", "????????", delta=0.2))
+            adjustments.append(self._reason_item("waiting_buy_point", "继续等待触发", delta=0.2))
         elif buy_point_status == "unclear":
-            adjustments.append(self._reason_item("unclear_buy_point", "?????", delta=-1.8))
+            adjustments.append(self._reason_item("unclear_buy_point", "买点不清晰", delta=-1.8))
         if risk_score >= 70:
-            adjustments.append(self._reason_item("risk_penalty", "????", delta=-1.2))
+            adjustments.append(self._reason_item("risk_penalty", "风险偏高", delta=-1.2))
+        if t1_direction_risk_adjustment <= -6.0:
+            adjustments.append(self._reason_item("t1_direction_drag", "次日方向承接偏弱", delta=-1.2))
+        elif t1_direction_risk_adjustment <= -4.0:
+            adjustments.append(self._reason_item("t1_direction_drag", "次日方向承接偏弱", delta=-0.7))
+        elif t1_direction_risk_adjustment <= -2.5:
+            adjustments.append(self._reason_item("t1_direction_drag", "次日方向承接一般", delta=-0.3))
+        elif role_key == "leader" and buy_point_status == "clear":
+            adjustments.append(self._reason_item("t1_direction_resilience", "次日承接更稳", delta=0.3))
+        if role_key == "front" and severe_t1_risk:
+            adjustments.append(self._reason_item("front_t1_risk_drag", "前排次日承接偏激进", delta=-0.8))
         return adjustments
 
     def _main_slot_adjustment_items(
@@ -4893,31 +5116,59 @@ class MomentumSecondaryDecisionService:
         v13_theme_strength_score = _safe_float(item.get("_v13_theme_strength_score"))
         v13_fund_support_score = _safe_float(item.get("_v13_fund_support_score"))
         v13_shadow_score = _safe_float(item.get("_v13_shadow_score"))
+        t1_direction_risk_adjustment = _safe_float(item.get("_t1_direction_risk_adjustment"))
+        severe_t1_risk = self._has_severe_t1_direction_risk(
+            item,
+            buy_point_status=buy_point_status,
+        )
+        main_role_adjustment_label = {
+            "leader": "龙头核心更适合主仓",
+            "front": "前排换手更适合主仓",
+            "mid": "观察备选不宜主仓",
+            "back": "后排角色不做主仓",
+        }.get(role_key, f"{ROLE_LABELS.get(role_key, role_key)}主仓调整")
         adjustments: List[Dict[str, Any]] = []
         role_delta = {"leader": 0.8, "front": 1.4, "mid": -0.6, "back": -2.5}.get(role_key, 0.0)
         if role_delta != 0:
-            adjustments.append(self._reason_item(f"main_role_{role_key}", f"{ROLE_LABELS.get(role_key, role_key)}????", delta=role_delta))
+            adjustments.append(self._reason_item(f"main_role_{role_key}", main_role_adjustment_label, delta=role_delta))
         if buy_point_status == "clear":
-            adjustments.append(self._reason_item("main_clear_buy_point", "????", delta=1.4))
+            adjustments.append(self._reason_item("main_clear_buy_point", "买点清晰", delta=1.4))
         elif self._has_planned_buy_point(item):
-            adjustments.append(self._reason_item("main_planned_buy_point", "??????", delta=0.8))
+            adjustments.append(self._reason_item("main_planned_buy_point", "回踩计划明确", delta=0.8))
         elif buy_point_status == "waiting":
-            adjustments.append(self._reason_item("main_waiting_buy_point", "????", delta=-0.4))
+            adjustments.append(self._reason_item("main_waiting_buy_point", "买点仍待确认", delta=-0.4))
         else:
-            adjustments.append(self._reason_item("main_unclear_buy_point", "?????", delta=-2.2))
+            adjustments.append(self._reason_item("main_unclear_buy_point", "买点不清晰", delta=-2.2))
         if v13_mainline_score > 0:
-            adjustments.append(self._reason_item("mainline_strength", "????", delta=_clamp_float((v13_mainline_score - 70.0) * 0.20, -4.5, 4.5)))
+            adjustments.append(self._reason_item("mainline_strength", "主线强度", delta=_clamp_float((v13_mainline_score - 70.0) * 0.20, -4.5, 4.5)))
         if v13_theme_strength_score >= 82:
-            adjustments.append(self._reason_item("theme_strength_boost", "??????", delta=1.2))
+            adjustments.append(self._reason_item("theme_strength_boost", "题材强度加分", delta=1.2))
         if v13_fund_support_score >= 82:
-            adjustments.append(self._reason_item("fund_support_boost", "??????", delta=0.8))
+            adjustments.append(self._reason_item("fund_support_boost", "资金承接加分", delta=0.8))
         if v13_shadow_score > 0:
-            adjustments.append(self._reason_item("shadow_score_signal", "V1.3 ?????", delta=_clamp_float((v13_shadow_score - 68.0) * 0.08, -2.5, 2.5)))
-        adjustments.append(self._reason_item("forward_alpha_signal", "??????", delta=_clamp_float((forward_alpha_score - 80.0) * 0.18, -0.5, 2.4)))
-        if role_key == "front" and forward_alpha_score >= 82:
-            adjustments.append(self._reason_item("front_attack_window", "??????", delta=2.5))
-        if role_key == "front" and forward_alpha_score >= 82 and continuation_score >= 90 and extension_score >= 88:
-            adjustments.append(self._reason_item("front_continuation_bonus", "??????", delta=1.5))
+            adjustments.append(self._reason_item("shadow_score_signal", "V1.3 题材观察分", delta=_clamp_float((v13_shadow_score - 68.0) * 0.08, -2.5, 2.5)))
+        adjustments.append(self._reason_item("forward_alpha_signal", "次日溢价预期", delta=_clamp_float((forward_alpha_score - 80.0) * 0.18, -0.5, 2.4)))
+        if t1_direction_risk_adjustment <= -6.0:
+            adjustments.append(self._reason_item("main_t1_risk_drag", "次日方向承接存疑", delta=-3.8))
+        elif t1_direction_risk_adjustment <= -4.0:
+            adjustments.append(self._reason_item("main_t1_risk_drag", "次日方向承接偏弱", delta=-1.8))
+        elif t1_direction_risk_adjustment <= -2.5:
+            adjustments.append(self._reason_item("main_t1_risk_drag", "次日方向承接一般", delta=-0.9))
+        elif role_key == "leader" and buy_point_status == "clear":
+            adjustments.append(self._reason_item("leader_t1_resilience", "龙头承接更稳", delta=0.2))
+        if role_key == "front" and severe_t1_risk:
+            adjustments.append(self._reason_item("front_t1_risk_penalty", "前排次日承接偏激进", delta=-2.0))
+        if role_key == "front" and forward_alpha_score >= 82 and not severe_t1_risk and t1_direction_risk_adjustment >= -2.5:
+            adjustments.append(self._reason_item("front_attack_window", "前排进攻窗口", delta=2.5))
+        if (
+            role_key == "front"
+            and forward_alpha_score >= 82
+            and continuation_score >= 90
+            and extension_score >= 88
+            and not severe_t1_risk
+            and t1_direction_risk_adjustment >= -2.5
+        ):
+            adjustments.append(self._reason_item("front_continuation_bonus", "前排延续加分", delta=1.5))
         return adjustments
 
     def _watch_slot_adjustment_items(
@@ -4927,16 +5178,43 @@ class MomentumSecondaryDecisionService:
         main_theme: str,
     ) -> List[Dict[str, Any]]:
         role_key = _safe_str(item.get("_role_key"))
+        buy_point_status = _safe_str(item.get("_buy_point_status"), item.get("buy_point_status"))
+        v13_mainline_score = _safe_float(item.get("_v13_mainline_score"))
+        t1_direction_risk_adjustment = _safe_float(item.get("_t1_direction_risk_adjustment"))
+        severe_t1_risk = self._has_severe_t1_direction_risk(
+            item,
+            buy_point_status=buy_point_status,
+        )
         adjustments: List[Dict[str, Any]] = []
         if _safe_str(item.get("_theme")) == main_theme:
-            adjustments.append(self._reason_item("watch_same_theme", "??????????", delta=1.0))
+            adjustments.append(self._reason_item("watch_same_theme", "与主仓同主线", delta=1.0))
+        if v13_mainline_score >= 80:
+            adjustments.append(self._reason_item("watch_v13_mainline", "V1.3 主线确认", delta=1.1))
+        elif self._has_v13_mainline_confirmation(item):
+            adjustments.append(self._reason_item("watch_v13_mainline", "V1.3 主线跟踪", delta=0.6))
         if role_key == "front":
-            adjustments.append(self._reason_item("watch_front_role", "??????", delta=1.0))
+            adjustments.append(self._reason_item("watch_front_role", "前排换手更值得观察", delta=1.0))
         elif role_key == "leader":
-            adjustments.append(self._reason_item("watch_leader_role", "??????", delta=0.6))
-        if self._has_planned_buy_point(item):
-            adjustments.append(self._reason_item("watch_planned_buy_point", "???????", delta=0.8))
-        adjustments.append(self._reason_item("watch_forward_alpha", "???????", delta=_clamp_float((_safe_float(item.get("_forward_alpha_score")) - 82.0) * 0.08, -0.3, 1.4)))
+            adjustments.append(self._reason_item("watch_leader_role", "龙头核心更值得观察", delta=0.6))
+        if buy_point_status == "clear":
+            adjustments.append(self._reason_item("watch_clear_buy_point", "买点清晰", delta=0.6))
+        elif self._has_planned_buy_point(item):
+            adjustments.append(self._reason_item("watch_planned_buy_point", "计划回踩低吸", delta=0.8))
+        elif buy_point_status == "waiting":
+            adjustments.append(self._reason_item("watch_waiting_buy_point", "继续等待确认", delta=0.1))
+        else:
+            adjustments.append(self._reason_item("watch_unclear_buy_point", "买点偏模糊", delta=-0.8))
+        if t1_direction_risk_adjustment <= -6.0:
+            adjustments.append(self._reason_item("watch_t1_risk_drag", "次日方向承接偏弱", delta=-1.5))
+        elif t1_direction_risk_adjustment <= -4.0:
+            adjustments.append(self._reason_item("watch_t1_risk_drag", "次日方向承接偏弱", delta=-0.9))
+        elif t1_direction_risk_adjustment <= -2.5:
+            adjustments.append(self._reason_item("watch_t1_risk_drag", "次日方向承接一般", delta=-0.4))
+        elif role_key == "leader" and buy_point_status == "clear":
+            adjustments.append(self._reason_item("watch_t1_resilience", "龙头承接更稳", delta=0.4))
+        if role_key == "front" and severe_t1_risk:
+            adjustments.append(self._reason_item("watch_front_t1_risk", "前排次日承接偏激进", delta=-1.2))
+        adjustments.append(self._reason_item("watch_forward_alpha", "次日溢价预期", delta=_clamp_float((_safe_float(item.get("_forward_alpha_score")) - 82.0) * 0.08, -0.3, 1.4)))
         return adjustments
 
     def _collect_candidate_hard_blocker_items(
@@ -4965,27 +5243,27 @@ class MomentumSecondaryDecisionService:
 
         if slot == "main":
             if official_score < 60:
-                blockers.append(self._reason_item("low_official_score", "????????????"))
+                blockers.append(self._reason_item("low_official_score", "官方总分偏低"))
             if theme_score < 58 and v13_mainline_score < 75:
-                blockers.append(self._reason_item("weak_mainline", "??????????????"))
+                blockers.append(self._reason_item("weak_mainline", "主线强度不足"))
             if role_key == "back":
-                blockers.append(self._reason_item("back_role_main", "???????????"))
+                blockers.append(self._reason_item("back_role_main", "后排角色不做主仓"))
             if buy_point_status == "unclear" and not self._has_planned_buy_point(item):
-                blockers.append(self._reason_item("unclear_buy_point_main", "????????????"))
+                blockers.append(self._reason_item("unclear_buy_point_main", "主仓买点不清晰"))
             if risk_score >= 78:
-                blockers.append(self._reason_item("high_risk_main", "???????????"))
+                blockers.append(self._reason_item("high_risk_main", "主仓风险偏高"))
         elif slot == "secondary":
             if official_score < 55 and theme_score < 60:
-                blockers.append(self._reason_item("weak_secondary_score", "???????????"))
+                blockers.append(self._reason_item("weak_secondary_score", "次仓强度不足"))
             if risk_score >= 82 and buy_point_status == "unclear":
-                blockers.append(self._reason_item("high_risk_secondary", "????????????????"))
+                blockers.append(self._reason_item("high_risk_secondary", "次仓风险过高且买点不清晰"))
             if role_key == "back" and theme_score < 62:
-                blockers.append(self._reason_item("back_role_secondary", "???????????"))
+                blockers.append(self._reason_item("back_role_secondary", "后排角色不做次仓"))
         else:
             if official_score < 50 and role_key == "back":
-                blockers.append(self._reason_item("back_role_watch", "????????????"))
+                blockers.append(self._reason_item("back_role_watch", "弱后排不留观察位"))
             if theme_score < 55 and role_key not in {"leader", "front"}:
-                blockers.append(self._reason_item("weak_watch_theme", "???????????"))
+                blockers.append(self._reason_item("weak_watch_theme", "观察主题强度不足"))
         return blockers
 
     def _slot_hard_blockers(
@@ -5060,6 +5338,12 @@ class MomentumSecondaryDecisionService:
             best_candidate.get("_buy_point_status"),
             best_candidate.get("buy_point_status"),
         )
+        main_official_score = _official_sort_score(main_candidate)
+        best_official_score = _official_sort_score(best_candidate)
+        main_forward_alpha_score = _safe_float(main_candidate.get("_forward_alpha_score"), 50.0)
+        best_forward_alpha_score = _safe_float(best_candidate.get("_forward_alpha_score"), 50.0)
+        main_t1_direction_risk_adjustment = _safe_float(main_candidate.get("_t1_direction_risk_adjustment"))
+        best_t1_direction_risk_adjustment = _safe_float(best_candidate.get("_t1_direction_risk_adjustment"))
         should_swap = (
             (
                 main_role_key in {"mid", "back"}
@@ -5086,6 +5370,27 @@ class MomentumSecondaryDecisionService:
                 and best_priority >= main_priority - MAIN_SLOT_REBALANCE_PRIORITY_TOLERANCE
                 and _safe_float(main_candidate.get("_forward_alpha_score"), 50.0)
                 <= _safe_float(best_candidate.get("_forward_alpha_score"), 50.0) + 2.0
+            )
+            or (
+                main_role_key == "front"
+                and main_buy_point_status == "waiting"
+                and best_role_key == "leader"
+                and best_buy_point_status == "clear"
+                and best_priority >= main_priority - SAME_THEME_CONFIRMATION_PRIORITY_TOLERANCE
+                and 0.0
+                <= main_official_score - best_official_score
+                <= WAITING_FRONT_CLEAR_LEADER_OFFICIAL_GAP_TOLERANCE
+                and main_forward_alpha_score
+                <= best_forward_alpha_score + WAITING_FRONT_CLEAR_LEADER_FORWARD_ALPHA_ADVANTAGE_CAP
+                and best_t1_direction_risk_adjustment >= main_t1_direction_risk_adjustment
+            )
+            or (
+                main_role_key == "front"
+                and main_buy_point_status == "clear"
+                and best_role_key == "leader"
+                and best_buy_point_status == "clear"
+                and best_priority >= main_priority - MAIN_SLOT_REBALANCE_PRIORITY_TOLERANCE
+                and best_t1_direction_risk_adjustment >= main_t1_direction_risk_adjustment + 2.5
             )
         )
         if not should_swap:
@@ -5161,6 +5466,28 @@ class MomentumSecondaryDecisionService:
             ):
                 return best_same_theme_confirmation
 
+        safer_remaining = [
+            item
+            for item in eligible_remaining
+            if (
+                item["ts_code"] != best_remaining["ts_code"]
+                and self._has_material_t1_stability_edge(item, best_remaining)
+            )
+        ]
+        if safer_remaining:
+            best_safer_remaining = max(
+                safer_remaining,
+                key=lambda item: self._portfolio_priority(item, theme_score_map),
+            )
+            best_safer_score = self._portfolio_priority(best_safer_remaining, theme_score_map)
+            safer_tolerance = (
+                SAME_THEME_CONFIRMATION_PRIORITY_TOLERANCE
+                if best_safer_remaining["_theme"] == best_remaining["_theme"]
+                else DIVERSIFICATION_PRIORITY_TOLERANCE
+            )
+            if best_safer_score >= best_remaining_score - safer_tolerance:
+                return best_safer_remaining
+
         theme_names = [theme["name"] for theme in themes]
         diversify_theme = (
             len(themes) >= 2
@@ -5217,8 +5544,13 @@ class MomentumSecondaryDecisionService:
         mainline_watch = [
             item
             for item in eligible_remaining
-            if item["_theme"] in selected_themes
-            and (item["_role_key"] == "leader" or item["_buy_point_status"] != "unclear")
+            if (
+                (
+                    item["_theme"] in selected_themes
+                    and (item["_role_key"] == "leader" or item["_buy_point_status"] != "unclear")
+                )
+                or self._has_v13_mainline_confirmation(item)
+            )
         ]
         pool = mainline_watch or eligible_remaining
         main_theme = selected_themes[0] if selected_themes else ""
@@ -5241,14 +5573,133 @@ class MomentumSecondaryDecisionService:
                     mainline_confirmation_candidates,
                     key=lambda item: self._watch_slot_priority(item, theme_score_map, main_theme=main_theme),
                 )
+                best_mainline_confirmation_priority = self._watch_slot_priority(
+                    best_mainline_confirmation,
+                    theme_score_map,
+                    main_theme=main_theme,
+                )
+                candidate_priority = self._watch_slot_priority(
+                    candidate,
+                    theme_score_map,
+                    main_theme=main_theme,
+                )
                 if (
-                    self._watch_slot_priority(best_mainline_confirmation, theme_score_map, main_theme=main_theme)
-                    >= self._watch_slot_priority(candidate, theme_score_map, main_theme=main_theme)
-                    - MAINLINE_CONFIRMATION_PRIORITY_TOLERANCE
+                    self._has_v13_mainline_confirmation(candidate)
+                    and not self._has_v13_mainline_confirmation(best_mainline_confirmation)
                 ):
+                    if best_mainline_confirmation_priority >= candidate_priority + 0.5:
+                        candidate = best_mainline_confirmation
+                elif best_mainline_confirmation_priority >= candidate_priority - MAINLINE_CONFIRMATION_PRIORITY_TOLERANCE:
                     candidate = best_mainline_confirmation
 
+        safer_pool = [
+            item
+            for item in pool
+            if item["ts_code"] != candidate["ts_code"] and self._has_material_t1_stability_edge(item, candidate)
+        ]
+        if safer_pool:
+            best_safer_candidate = max(
+                safer_pool,
+                key=lambda item: self._watch_slot_priority(item, theme_score_map, main_theme=main_theme),
+            )
+            best_safer_priority = self._watch_slot_priority(
+                best_safer_candidate,
+                theme_score_map,
+                main_theme=main_theme,
+            )
+            candidate_priority = self._watch_slot_priority(
+                candidate,
+                theme_score_map,
+                main_theme=main_theme,
+            )
+            safer_tolerance = (
+                MAINLINE_CONFIRMATION_PRIORITY_TOLERANCE
+                if main_theme and best_safer_candidate["_theme"] == main_theme
+                else DIVERSIFICATION_PRIORITY_TOLERANCE
+            )
+            if best_safer_priority >= candidate_priority - safer_tolerance:
+                candidate = best_safer_candidate
+
         return candidate
+
+    def _rebalance_portfolio_anchor(
+        self,
+        selected: List[Tuple[str, Dict[str, Any]]],
+        theme_score_map: Dict[str, float],
+    ) -> List[Tuple[str, Dict[str, Any]]]:
+        if len(selected) < 2:
+            return selected
+
+        main_slot_index = next((index for index, (slot, _) in enumerate(selected) if slot == "main"), None)
+        if main_slot_index is None:
+            return selected
+
+        main_slot, main_candidate = selected[main_slot_index]
+        anchor_candidates = [
+            (index, slot, candidate)
+            for index, (slot, candidate) in enumerate(selected)
+            if (
+                slot != "main"
+                and _safe_str(candidate.get("_role_key")) in {"leader", "front"}
+                and self._has_planned_buy_point(candidate)
+            )
+        ]
+        if not anchor_candidates:
+            return selected
+
+        main_priority = self._main_slot_priority(main_candidate, theme_score_map)
+        best_index, best_slot, best_candidate = max(
+            anchor_candidates,
+            key=lambda item: self._main_slot_priority(item[2], theme_score_map),
+        )
+        best_priority = self._main_slot_priority(best_candidate, theme_score_map)
+        main_buy_point_status = _safe_str(
+            main_candidate.get("_buy_point_status"),
+            main_candidate.get("buy_point_status"),
+        )
+        best_buy_point_status = _safe_str(
+            best_candidate.get("_buy_point_status"),
+            best_candidate.get("buy_point_status"),
+        )
+        main_forward_alpha_score = _safe_float(main_candidate.get("_forward_alpha_score"), 50.0)
+        best_forward_alpha_score = _safe_float(best_candidate.get("_forward_alpha_score"), 50.0)
+        main_severe_t1_risk = self._has_severe_t1_direction_risk(
+            main_candidate,
+            buy_point_status=main_buy_point_status,
+        )
+        should_swap = (
+            best_priority >= main_priority + MAIN_SLOT_REBALANCE_PRIORITY_TOLERANCE
+            or (
+                main_buy_point_status != "clear"
+                and best_buy_point_status == "clear"
+                and best_priority >= main_priority - MAIN_SLOT_REBALANCE_PRIORITY_TOLERANCE
+                and (
+                    _safe_str(main_candidate.get("_role_key")) != "front"
+                    or main_forward_alpha_score <= best_forward_alpha_score + 2.0
+                    or self._has_material_t1_stability_edge(
+                        best_candidate,
+                        main_candidate,
+                        min_gap=1.5,
+                    )
+                )
+            )
+            or (
+                main_severe_t1_risk
+                and self._has_material_t1_stability_edge(
+                    best_candidate,
+                    main_candidate,
+                    min_gap=1.5,
+                )
+                and best_priority >= main_priority - MAIN_SLOT_REBALANCE_PRIORITY_TOLERANCE
+            )
+        )
+        if not should_swap:
+            return selected
+
+        rebalanced = list(selected)
+        rebalanced[main_slot_index] = (main_slot, best_candidate)
+        rebalanced[best_index] = (best_slot, main_candidate)
+        return rebalanced
 
     def _build_portfolio_slot(
         self,
