@@ -111,21 +111,30 @@ def get_momentum_backtest_service(request: Request) -> MomentumBacktestService:
     """Get app-lifecycle shared MomentumBacktestService instance."""
     service = getattr(request.app.state, "momentum_backtest_service", None)
     if service is None:
-        screener_service = getattr(request.app.state, "momentum_screener_service", None)
-        if screener_service is None:
-            screener_service = MomentumScreenerService()
-            request.app.state.momentum_screener_service = screener_service
-        # Backtest needs a dedicated secondary-decision service so its
-        # synchronous historical validation mode does not leak into the
-        # interactive screener page's shared async/warming instance.
-        decision_service = MomentumSecondaryDecisionService(
-            screener_service=screener_service,
-            strategy_health_async=False,
-        )
-        service = MomentumBacktestService(
-            screener_service=screener_service,
-            decision_service=decision_service,
-        )
+        try:
+            screener_service = getattr(request.app.state, "momentum_screener_service", None)
+            if screener_service is None:
+                screener_service = MomentumScreenerService()
+                request.app.state.momentum_screener_service = screener_service
+            # Backtest needs a dedicated secondary-decision service so its
+            # synchronous historical validation mode does not leak into the
+            # interactive screener page's shared async/warming instance.
+            decision_service = MomentumSecondaryDecisionService(
+                screener_service=screener_service,
+                strategy_health_async=False,
+            )
+            service = MomentumBacktestService(
+                screener_service=screener_service,
+                decision_service=decision_service,
+            )
+        except RuntimeError as exc:
+            if "TUSHARE_TOKEN" not in str(exc):
+                raise
+            # Historical backtest records are repository-backed and should stay
+            # readable even when the current process cannot execute new Tushare
+            # work. Creating a read-only service keeps list/detail/diagnosis
+            # pages available while create/run still fails fast on execution.
+            service = MomentumBacktestService(start_worker=False)
         request.app.state.momentum_backtest_service = service
     return service
 

@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [修复] 回测任务 API 在 Tushare 未配置或不可用时仍可读取历史 run、明细和诊断；仅新建/执行回测时要求数据源可用。
+- [修复] 回测 T+1/T+2 结果验证遇到单只股票后续日线缺失或临时抓取失败时降级为样本不足，不再拖垮整个交易日回放。
+- [改进] 强势筛选 V1.3 二次决策接入日线封板强度诊断：基于 `limit_list_d.first_time / fd_amount / amount / open_times` 输出封板质量、买点可参与性和收口修正，一字板仅作为强度确认但会提示“强封但难参与”。
+- [文档] 敲定强势筛选 V1.3 日线封板强度诊断实施方案：基于 `limit_list_d.first_time / fd_amount / amount / open_times` 派生封板质量，同步 SPEC、PRD、产品设计、主技术设计和开发任务清单，并明确一字板强度高但不自动提升买入可行性。
 - [修复] 修复强势筛选二次决策返回文案里的 `????` 乱码：落选说明、收口比较、轻修正和硬阻断标签统一恢复为可读中文。
 - [改进] 强势筛选页优化 Standard 个股列表与详情抽屉的可读性：可买分新增 V1.3 买点与基础买点兜底，资金题材列改为“题材观察分 / 资金承接 / 涨停结构”等中文口径，详情维度拆解补齐 legacy/V1.3 英文键到中文字段的映射。
 - [改进] 强势筛选二次决策继续收紧主仓与观察仓收口：同主题 `front + waiting` 仅小幅领先时，可把主仓回摆给更清晰的 `leader + clear`；观察仓在优先级接近时可轻微偏向已带 `V1.3` 主线标签的候选。

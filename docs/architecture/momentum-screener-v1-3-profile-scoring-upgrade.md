@@ -246,6 +246,34 @@ Aggressive 可比 Standard 更明显地调整权重：
 - 多次炸板但最终弱封，不能只因为涨停接近度高而给满分。
 - 一字板强度高但可参与性低，应在买入可行性里被约束。
 
+#### 5.4.1.1 日线封板强度诊断
+
+在当前 V1.3 边界内，不接入分钟线；封板强度只使用 `limit_list_d` 和日线行情可见字段进行诊断。
+
+建议派生字段：
+
+- `first_seal_time`: 来自 `limit_list_d.first_time`
+- `seal_amount_ratio`: `limit_list_d.fd_amount / limit_list_d.amount`
+- `open_times`: 来自 `limit_list_d.open_times`
+- `sealing_strength_score`: `0 ~ 100`
+- `sealing_strength_level`: `strong / medium / weak`
+- `is_one_word_like`: 由 `open == low == close`、极低换手或 `kpl_list` 一字状态辅助判断
+
+建议评分口径：
+
+| 子项 | 口径 | 处理 |
+| --- | --- | --- |
+| 首封时间 | `<= 10:00:00` / `10:00 ~ 11:00` / `11:00 ~ 14:00` / `> 14:00` | 由高到低给分，尾盘封板不应被判为高质量封板 |
+| 封单强度 | `seal_amount_ratio = fd_amount / amount` | 封单比越高越强，但必须 capped，避免异常封单拉爆分数 |
+| 开板稳定性 | `open_times` | `0 ~ 1` 次加分，`>= 3` 次明显扣分 |
+| 一字难参与 | `is_one_word_like` | 强度可高，但买入可行性不得因此上调 |
+
+使用边界：
+
+- `sealing_strength_score` 可进入 `强势确认质量` 和二次决策解释层。
+- 一字板或极端缩量板只能说明“强封确认”，不能说明“次日好买”。
+- 封板强度不得单独覆盖 `buyability_score`、`risk_score` 或总闸门结论。
+
 #### 5.4.2 买入可行性 18
 
 | 子项 | 分值 | 数据来源 |
@@ -298,6 +326,7 @@ Aggressive 可比 Standard 更明显地调整权重：
 | `moneyflow_ind_dc` 缺失 | 板块资金强度低置信度 | 板块共振降权 |
 | `dc_member` 缺失 | 股票到真实板块映射降级 | 题材地位只做辅助 |
 | `kpl_list` 缺失 | 不影响基础评分 | 买入可行性低置信度 |
+| `limit_list_d` 缺失 | 封板强度低置信度，不硬扣分 | 强势确认与买入可行性低置信度 |
 | `moneyflow_ths / moneyflow_dc` 缺失 | 回退 `moneyflow` | 资金承接低置信度 |
 | `cyq_perf / cyq_chips` 缺失 | 筹码风险不扣分，只提示缺失 | 买入可行性和风险修正低置信度 |
 

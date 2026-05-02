@@ -312,7 +312,7 @@ flowchart TD
 | 东方财富板块行情 | `get_dc_index(trade_date)` / `get_dc_daily(trade_date)` | `ts_code / name / pct_change / up_num / down_num / amount / leading_stock` | 缺失时板块宽度和涨跌证据降级 |
 | 开盘啦涨停题材 | `get_kpl_list(trade_date, tag=None)` | `ts_code / name / lu_desc / theme / status / limit_order / turnover_rate` | 缺失时涨停原因语义降级 |
 | 涨跌停价 | `get_stock_limit_prices(trade_date)` | `ts_code / trade_date / up_limit / down_limit` | 缺失时追高边界降级 |
-| 涨停 / 炸板 | `get_limit_list(trade_date)` | `ts_code / name / pct_chg / close / limit / status / open_times / first_time / last_time` | 缺失时短线情绪降级 |
+| 涨停 / 炸板 | `get_limit_list(trade_date)` | `ts_code / name / pct_chg / close / limit / status / open_times / first_time / last_time / fd_amount / amount` | 缺失时短线情绪与封板强度诊断降级 |
 | 题材成分 | `get_ths_members(ts_code=None, theme_code=None)` | `ts_code / con_code / name / ths_code / ths_name` | 缺失时主线识别降级为旧行业口径 |
 | 热榜 | `get_ths_hot(trade_date)` | `ts_code / name / rank / hot / concept` | 缺失时热度分置中性 |
 | 实时快照 | 复用 `get_realtime_quote(stock_code)` | `price / open / high / low / pre_close / time / source` | 缺失时盘中快照辅助隐藏或显示不可用 |
@@ -694,6 +694,27 @@ V1.3 仍从完整排序集收口，不从页面当前 TopN 截断结果收口。
 ```
 
 不满足质量时继续允许输出 `1-2` 只，不强凑 `3` 只。
+
+#### 6.4.1 日线封板强度诊断
+
+在没有分钟线权限的前提下，V1.3 使用 `limit_list_d` 的 T 日可见涨停事件字段，补充封板质量诊断。该诊断只服务于二次决策收口，不新增分钟级正式买点，不改写官方主排序。
+
+建议派生字段：
+
+- `first_seal_time`：来自 `limit_list_d.first_time`
+- `seal_amount_ratio`：`limit_list_d.fd_amount / limit_list_d.amount`
+- `open_times`：来自 `limit_list_d.open_times`
+- `sealing_strength_score`：`0 ~ 100`
+- `sealing_strength_level`：`strong / medium / weak`
+- `is_one_word_like`：由 `daily.open / low / close`、极低换手或 `kpl_list` 一字状态辅助判断
+- `execution_participation_note`：例如 `强封但难参与`
+
+收口规则：
+
+- 早封、封单强、开板少、非一字难参与结构，可作为 `execution_clarity_bonus` 或 `soft_adjustments` 的正向证据。
+- 尾盘封板、多次开板或封单比过低，应降低买点清晰度，必要时把 `clear` 降为 `waiting / unclear`。
+- 一字板只增强“强度确认”，不得自动提升“买入可行性”，也不得单独触发最优执行状态。
+- `limit_list_d` 或封单字段缺失时只降低置信度，不硬扣分、不硬阻断。
 
 ### 6.5 盘中快照辅助
 

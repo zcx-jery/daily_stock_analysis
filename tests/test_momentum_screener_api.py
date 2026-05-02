@@ -1474,6 +1474,28 @@ def test_backtest_dependency_does_not_override_interactive_secondary_decision_se
     assert len(created_decision_services) == 2
 
 
+def test_backtest_dependency_falls_back_to_read_only_when_tushare_is_unavailable():
+    created_backtest_kwargs = []
+
+    class _FakeBacktestService:
+        def __init__(self, **kwargs):
+            created_backtest_kwargs.append(kwargs)
+
+    request = types.SimpleNamespace(app=types.SimpleNamespace(state=types.SimpleNamespace()))
+
+    with (
+        patch(
+            "api.deps.MomentumScreenerService",
+            side_effect=RuntimeError("Tushare 数据源不可用，请检查 TUSHARE_TOKEN 配置"),
+        ),
+        patch("api.deps.MomentumBacktestService", _FakeBacktestService),
+    ):
+        service = get_momentum_backtest_service(request)
+
+    assert service is getattr(request.app.state, "momentum_backtest_service")
+    assert created_backtest_kwargs == [{"start_worker": False}]
+
+
 def test_momentum_intraday_signal_endpoint_returns_response(client):
     fake_result = {
         "screening": _build_fake_screening_result(profile="aggressive"),

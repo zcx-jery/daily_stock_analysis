@@ -799,12 +799,11 @@ class MomentumSecondaryDecisionService:
         context: Dict[str, Any],
         mainline_radar: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
-        if not candidates or not context or not mainline_radar:
+        if not candidates or not context:
             return candidates
 
         stock_theme_map = context.get("stock_theme_map") or {}
-        if not any(stock_theme_map.get(_safe_str(candidate.get("ts_code"))) for candidate in candidates):
-            return candidates
+        has_theme_mapping = any(stock_theme_map.get(_safe_str(candidate.get("ts_code"))) for candidate in candidates)
 
         radar_by_id = {
             _safe_str(item.get("theme_id")): item
@@ -820,21 +819,24 @@ class MomentumSecondaryDecisionService:
         for candidate in candidates:
             updated = dict(candidate)
             ts_code = _safe_str(updated.get("ts_code"))
+            self._attach_v13_sealing_strength_signal(updated, context=context)
+            self._refresh_candidate_buy_point_fields(updated)
             theme_rows = stock_theme_map.get(ts_code) or []
             best_radar: Optional[Dict[str, Any]] = None
             best_theme_id = ""
             best_theme_name = ""
 
-            for row in theme_rows:
-                theme_id = _safe_str(row.get("theme_code") or row.get("ths_code"))
-                theme_name = _safe_str(row.get("theme_name") or row.get("ths_name") or theme_id)
-                radar = radar_by_id.get(theme_id) or radar_by_name.get(theme_name)
-                if radar is None:
-                    continue
-                if best_radar is None or _safe_float(radar.get("score")) > _safe_float(best_radar.get("score")):
-                    best_radar = radar
-                    best_theme_id = theme_id
-                    best_theme_name = theme_name or _safe_str(radar.get("theme_name"))
+            if has_theme_mapping and mainline_radar:
+                for row in theme_rows:
+                    theme_id = _safe_str(row.get("theme_code") or row.get("ths_code"))
+                    theme_name = _safe_str(row.get("theme_name") or row.get("ths_name") or theme_id)
+                    radar = radar_by_id.get(theme_id) or radar_by_name.get(theme_name)
+                    if radar is None:
+                        continue
+                    if best_radar is None or _safe_float(radar.get("score")) > _safe_float(best_radar.get("score")):
+                        best_radar = radar
+                        best_theme_id = theme_id
+                        best_theme_name = theme_name or _safe_str(radar.get("theme_name"))
 
             if best_radar is not None:
                 theme_name = _safe_str(best_radar.get("theme_name"), best_theme_name)
@@ -849,6 +851,7 @@ class MomentumSecondaryDecisionService:
                 if theme_name and theme_name not in themes:
                     updated["themes"] = [theme_name, *themes]
                 self._attach_v13_shadow_scores(updated, context=context, radar=best_radar)
+            self._refresh_candidate_buy_point_fields(updated)
             enhanced.append(updated)
         return enhanced
 
@@ -862,6 +865,7 @@ class MomentumSecondaryDecisionService:
         theme_strength_score = round(_safe_float(radar.get("score"), 50.0), 2)
         stock_flow_signal = self._v13_stock_flow_shadow_signal(candidate, context, radar)
         chip_signal = self._v13_chip_shadow_signal(candidate, context, radar)
+        sealing_signal = self._attach_v13_sealing_strength_signal(candidate, context=context)
         fund_support_score = round(
             self._v13_fund_support_score(radar, stock_flow_signal=stock_flow_signal),
             2,
@@ -893,7 +897,8 @@ class MomentumSecondaryDecisionService:
         candidate["_v13_shadow_summary"] = (
             f"V1.3影子分 {shadow_score:.1f}：题材 {theme_strength_score:.1f}、"
             f"资金 {fund_support_score:.1f}、涨停结构 {limit_structure_score:.1f}、"
-            f"买点 {buyability_score:.1f}；{self._describe_v13_chip_shadow_signal(chip_signal)}。"
+            f"买点 {buyability_score:.1f}；{self._describe_v13_chip_shadow_signal(chip_signal)}；"
+            f"{self._describe_v13_sealing_strength_signal(sealing_signal)}。"
         )
 
     @staticmethod
@@ -997,6 +1002,263 @@ class MomentumSecondaryDecisionService:
         elif risk_score <= 35:
             note = "，结构相对健康"
         return f"筹码风险 {risk_score:.1f}（{level}{note}）"
+
+    @classmethod
+    def _attach_v13_sealing_strength_signal(
+        cls,
+        candidate: Dict[str, Any],
+        *,
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        signal = cls._v13_sealing_strength_signal(candidate, context)
+        candidate["_v13_sealing_strength_signal"] = signal
+        candidate["_v13_sealing_strength_score"] = (
+            round(_safe_float(signal.get("score")), 2)
+            if signal.get("score") is not None
+            else None
+        )
+        candidate["_v13_sealing_strength_level"] = signal.get("level")
+        candidate["_v13_sealing_strength_level_label"] = signal.get("level_label")
+        return signal
+
+    @classmethod
+    def _v13_sealing_strength_signal(
+        cls,
+        candidate: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        event = cls._select_v13_limit_event(candidate, context)
+        if not event:
+            return {
+                "available": False,
+                "score": None,
+                "level": "unknown",
+                "level_label": "封板数据不足",
+                "summary": "limit_list_d 未返回当日封板事件，二次决策按中性处理。",
+                "confidence": "low",
+            }
+
+        limit_flag = _safe_str(event.get("limit")).upper()
+        first_time = _safe_str(event.get("first_time")).strip()
+        first_minutes = cls._parse_limit_time_minutes(first_time)
+        time_score = cls._sealing_time_score(first_minutes)
+        fd_amount = _safe_float(event.get("fd_amount"))
+        amount = _safe_float(event.get("amount"))
+        seal_amount_ratio = fd_amount / amount if fd_amount > 0 and amount > 0 else None
+        amount_score = cls._sealing_amount_score(seal_amount_ratio)
+        raw_open_times = event.get("open_times")
+        open_times = int(_safe_float(raw_open_times)) if raw_open_times not in (None, "") else None
+        open_score = cls._sealing_open_score(open_times)
+
+        score = (
+            (time_score if time_score is not None else 50.0) * 0.55
+            + (amount_score if amount_score is not None else 50.0) * 0.25
+            + (open_score if open_score is not None else 50.0) * 0.20
+        )
+        if limit_flag == "Z":
+            score = min(score, 40.0)
+        elif limit_flag == "D":
+            score = min(score, 20.0)
+        score = round(_clamp_float(score), 2)
+
+        late_seal = first_minutes is not None and first_minutes > 14 * 60
+        multi_open = open_times is not None and open_times >= 3
+        low_seal_ratio = seal_amount_ratio is not None and seal_amount_ratio < 0.05
+        broken_limit = limit_flag == "Z"
+        is_one_word_like = cls._is_one_word_like(candidate, event)
+
+        if score >= 80:
+            level = "strong"
+            level_label = "强封"
+        elif score >= 60:
+            level = "medium"
+            level_label = "常规封板"
+        else:
+            level = "weak"
+            level_label = "弱封/待确认"
+
+        degraded_reasons: List[str] = []
+        if time_score is None:
+            degraded_reasons.append("missing_first_seal_time")
+        if amount_score is None:
+            degraded_reasons.append("missing_seal_amount_ratio")
+
+        notes: List[str] = []
+        if first_minutes is not None:
+            if first_minutes < 10 * 60:
+                notes.append("早盘封板")
+            elif late_seal:
+                notes.append("尾盘封板")
+        if multi_open:
+            notes.append("多次开板")
+        if low_seal_ratio:
+            notes.append("封单偏弱")
+        if broken_limit:
+            notes.append("炸板风险")
+        if is_one_word_like:
+            notes.append("一字板/极端缩量")
+
+        if is_one_word_like:
+            execution_bias = "hard_to_participate"
+            participation_note = "强封但难参与"
+        elif late_seal or multi_open or low_seal_ratio or broken_limit or level == "weak":
+            execution_bias = "caution"
+            participation_note = "封板质量偏弱，买点需等待确认"
+        elif level == "strong":
+            execution_bias = "support"
+            participation_note = "早封强封，可作为强度确认"
+        else:
+            execution_bias = "neutral"
+            participation_note = "封板质量中性"
+
+        return {
+            "available": True,
+            "score": score,
+            "level": level,
+            "level_label": level_label,
+            "limit": limit_flag or None,
+            "first_seal_time": first_time or None,
+            "first_seal_time_score": round(time_score, 2) if time_score is not None else None,
+            "fd_amount": fd_amount if fd_amount > 0 else None,
+            "amount": amount if amount > 0 else None,
+            "seal_amount_ratio": round(seal_amount_ratio, 4) if seal_amount_ratio is not None else None,
+            "seal_amount_score": round(amount_score, 2) if amount_score is not None else None,
+            "open_times": open_times,
+            "open_times_score": round(open_score, 2) if open_score is not None else None,
+            "is_one_word_like": is_one_word_like,
+            "execution_bias": execution_bias,
+            "execution_participation_note": participation_note,
+            "downgrade_buy_point": bool(is_one_word_like or late_seal or multi_open or low_seal_ratio or broken_limit),
+            "degraded_reasons": degraded_reasons,
+            "summary": "、".join(notes) if notes else participation_note,
+            "confidence": "medium" if degraded_reasons else "high",
+        }
+
+    @staticmethod
+    def _select_v13_limit_event(
+        candidate: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        limit_events = context.get("limit_events") or {}
+        events = limit_events.get(_safe_str(candidate.get("ts_code"))) or []
+        if not isinstance(events, list):
+            return None
+        normalized = [event for event in events if isinstance(event, dict)]
+        if not normalized:
+            return None
+
+        def event_priority(event: Dict[str, Any]) -> Tuple[int, float, float]:
+            limit_flag = _safe_str(event.get("limit")).upper()
+            limit_priority = {"U": 3, "Z": 2, "D": 1}.get(limit_flag, 0)
+            return (
+                limit_priority,
+                _safe_float(event.get("limit_times")),
+                _safe_float(event.get("fd_amount")),
+            )
+
+        return max(normalized, key=event_priority)
+
+    @staticmethod
+    def _parse_limit_time_minutes(value: Any) -> Optional[int]:
+        text = _safe_str(value).strip()
+        if not text:
+            return None
+        digits = "".join(char for char in text if char.isdigit())
+        if len(digits) >= 6:
+            hour = int(digits[:2])
+            minute = int(digits[2:4])
+        elif len(digits) == 4:
+            hour = int(digits[:2])
+            minute = int(digits[2:4])
+        else:
+            return None
+        if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+            return None
+        return hour * 60 + minute
+
+    @staticmethod
+    def _sealing_time_score(first_minutes: Optional[int]) -> Optional[float]:
+        if first_minutes is None:
+            return None
+        if first_minutes < 10 * 60:
+            return 100.0
+        if first_minutes <= 11 * 60 + 30:
+            return 75.0
+        if first_minutes <= 14 * 60:
+            return 55.0
+        return 30.0
+
+    @staticmethod
+    def _sealing_amount_score(seal_amount_ratio: Optional[float]) -> Optional[float]:
+        if seal_amount_ratio is None:
+            return None
+        if seal_amount_ratio >= 0.20:
+            return 100.0
+        if seal_amount_ratio >= 0.10:
+            return 80.0
+        if seal_amount_ratio >= 0.05:
+            return 60.0
+        if seal_amount_ratio > 0:
+            return 35.0
+        return None
+
+    @staticmethod
+    def _sealing_open_score(open_times: Optional[int]) -> Optional[float]:
+        if open_times is None:
+            return None
+        if open_times <= 0:
+            return 100.0
+        if open_times == 1:
+            return 80.0
+        if open_times == 2:
+            return 60.0
+        return 30.0
+
+    @staticmethod
+    def _is_one_word_like(candidate: Dict[str, Any], event: Dict[str, Any]) -> bool:
+        open_price = _safe_float(candidate.get("open"))
+        low_price = _safe_float(candidate.get("low"))
+        close_price = _safe_float(candidate.get("close"), _safe_float(event.get("close")))
+        if open_price <= 0 or low_price <= 0 or close_price <= 0:
+            return False
+        tolerance = max(0.01, close_price * 0.0002)
+        return abs(open_price - low_price) <= tolerance and abs(low_price - close_price) <= tolerance
+
+    @staticmethod
+    def _describe_v13_sealing_strength_signal(signal: Dict[str, Any]) -> str:
+        if not signal.get("available"):
+            return "封板质量缺少日线事件，按中性解释"
+        score = _safe_float(signal.get("score"))
+        label = _safe_str(signal.get("level_label"), "封板质量")
+        note = _safe_str(signal.get("execution_participation_note"))
+        first_time = _safe_str(signal.get("first_seal_time"))
+        time_part = f"，首次封板 {first_time}" if first_time else ""
+        return f"封板质量 {score:.1f}（{label}{time_part}，{note}）"
+
+    @staticmethod
+    def _public_v13_sealing_strength_signal(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        signal = item.get("_v13_sealing_strength_signal")
+        if not isinstance(signal, dict) or not signal.get("available"):
+            return None
+        return {
+            "score": signal.get("score"),
+            "level": signal.get("level"),
+            "level_label": signal.get("level_label"),
+            "first_seal_time": signal.get("first_seal_time"),
+            "first_seal_time_score": signal.get("first_seal_time_score"),
+            "seal_amount_ratio": signal.get("seal_amount_ratio"),
+            "seal_amount_score": signal.get("seal_amount_score"),
+            "fd_amount": signal.get("fd_amount"),
+            "amount": signal.get("amount"),
+            "open_times": signal.get("open_times"),
+            "open_times_score": signal.get("open_times_score"),
+            "is_one_word_like": bool(signal.get("is_one_word_like")),
+            "execution_bias": signal.get("execution_bias"),
+            "execution_participation_note": signal.get("execution_participation_note"),
+            "summary": signal.get("summary"),
+            "confidence": signal.get("confidence"),
+            "degraded_reasons": list(signal.get("degraded_reasons") or []),
+        }
 
     @staticmethod
     def _v13_fund_support_score(
@@ -1291,7 +1553,6 @@ class MomentumSecondaryDecisionService:
         theme = item.get("themes", ["未分类"])[0] if item.get("themes") else "未分类"
         role_key = _normalize_leader_level(item.get("leader_level"))
         role_label = ROLE_LABELS[role_key]
-        buy_point_status, buy_point_label = self._classify_buy_point(item, role_key)
         primary_reason = next(iter(item.get("top_reasons", [])), "综合强度更优")
         extension_signal_score = self._extension_signal_score(item)
         official_score = _official_sort_score(item)
@@ -1301,13 +1562,6 @@ class MomentumSecondaryDecisionService:
             + _safe_float(item.get("buyability_score"), extension_signal_score) * 0.10
             - _safe_float(item.get("risk_score")) * 0.05
         )
-        explain_adjustment_score = (
-            ROLE_TIEBREAKER_PRIORITY[role_key]
-            + BUY_POINT_TIEBREAKER_PRIORITY[buy_point_status]
-        )
-        t1_direction_risk_adjustment = self._t1_direction_risk_adjustment(item, buy_point_status)
-        decision_score = rule_base_score + explain_adjustment_score + t1_direction_risk_adjustment
-        forward_alpha_score = self._forward_alpha_score(item, role_key, buy_point_status)
 
         enriched = dict(item)
         enriched.update(
@@ -1315,18 +1569,39 @@ class MomentumSecondaryDecisionService:
                 "_theme": theme,
                 "_role_key": role_key,
                 "_role_label": role_label,
-                "_buy_point_status": buy_point_status,
-                "_buy_point_label": buy_point_label,
                 "_official_score": round(official_score, 2),
                 "_rule_base_score": round(rule_base_score, 2),
-                "_explain_adjustment_score": round(explain_adjustment_score, 2),
-                "_t1_direction_risk_adjustment": round(t1_direction_risk_adjustment, 2),
-                "_decision_score": round(decision_score, 2),
-                "_forward_alpha_score": round(forward_alpha_score, 2),
                 "_primary_reason": primary_reason,
             }
         )
+        self._refresh_candidate_buy_point_fields(enriched)
         return enriched
+
+    def _refresh_candidate_buy_point_fields(self, item: Dict[str, Any]) -> None:
+        role_key = _safe_str(item.get("_role_key")) or _normalize_leader_level(item.get("leader_level"))
+        role_label = ROLE_LABELS.get(role_key, ROLE_LABELS["back"])
+        item["_role_key"] = role_key
+        item["_role_label"] = role_label
+
+        buy_point_status, buy_point_label = self._classify_buy_point(item, role_key)
+        explain_adjustment_score = (
+            ROLE_TIEBREAKER_PRIORITY.get(role_key, 0.0)
+            + BUY_POINT_TIEBREAKER_PRIORITY[buy_point_status]
+        )
+        t1_direction_risk_adjustment = self._t1_direction_risk_adjustment(item, buy_point_status)
+        decision_score = (
+            _safe_float(item.get("_rule_base_score"))
+            + explain_adjustment_score
+            + t1_direction_risk_adjustment
+        )
+        forward_alpha_score = self._forward_alpha_score(item, role_key, buy_point_status)
+
+        item["_buy_point_status"] = buy_point_status
+        item["_buy_point_label"] = buy_point_label
+        item["_explain_adjustment_score"] = round(explain_adjustment_score, 2)
+        item["_t1_direction_risk_adjustment"] = round(t1_direction_risk_adjustment, 2)
+        item["_decision_score"] = round(decision_score, 2)
+        item["_forward_alpha_score"] = round(forward_alpha_score, 2)
 
     def _build_theme_summaries(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
@@ -1507,6 +1782,14 @@ class MomentumSecondaryDecisionService:
                     "reason_detail": reason_detail,
                     "official_score": official_score,
                     "base_rank_score": official_score,
+                    "v13_sealing_strength": self._public_v13_sealing_strength_signal(candidate),
+                    "v13_sealing_strength_score": (
+                        round(_safe_float(candidate.get("_v13_sealing_strength_score")), 1)
+                        if candidate.get("_v13_sealing_strength_score") is not None
+                        else None
+                    ),
+                    "v13_sealing_strength_level": candidate.get("_v13_sealing_strength_level"),
+                    "v13_sealing_strength_level_label": candidate.get("_v13_sealing_strength_level_label"),
                     "decision_adjustment": decision_adjustment,
                     "decision_adjustment_reason": self._describe_adjustments(soft_adjustments),
                     "hard_blockers": hard_blockers,
@@ -1572,6 +1855,14 @@ class MomentumSecondaryDecisionService:
                         if candidate.get("_v13_limit_structure_score") is not None
                         else None
                     ),
+                    "v13_sealing_strength": self._public_v13_sealing_strength_signal(candidate),
+                    "v13_sealing_strength_score": (
+                        round(_safe_float(candidate.get("_v13_sealing_strength_score")), 2)
+                        if candidate.get("_v13_sealing_strength_score") is not None
+                        else None
+                    ),
+                    "v13_sealing_strength_level": candidate.get("_v13_sealing_strength_level"),
+                    "v13_sealing_strength_level_label": candidate.get("_v13_sealing_strength_level_label"),
                     "v13_buyability_score": (
                         round(_safe_float(candidate.get("_v13_buyability_score")), 2)
                         if candidate.get("_v13_buyability_score") is not None
@@ -4617,10 +4908,10 @@ class MomentumSecondaryDecisionService:
                 and continuation_score >= 74
                 and not severe_t1_risk
             ):
-                return "clear", BUY_POINT_LABELS["clear"]
+                return self._adjust_buy_point_by_sealing_signal("clear", item)
             if buyability_score >= 60 and rank_score >= 65 and risk_score <= 55:
-                return "waiting", BUY_POINT_LABELS["waiting"]
-            return "unclear", BUY_POINT_LABELS["unclear"]
+                return self._adjust_buy_point_by_sealing_signal("waiting", item)
+            return self._adjust_buy_point_by_sealing_signal("unclear", item)
 
         if (
             role_key == "leader"
@@ -4630,10 +4921,25 @@ class MomentumSecondaryDecisionService:
             and has_entry_range
             and not severe_t1_risk
         ):
-            return "clear", BUY_POINT_LABELS["clear"]
+            return self._adjust_buy_point_by_sealing_signal("clear", item)
         if continuation_score >= 72 and rank_score >= 60 and risk_score <= 55:
+            return self._adjust_buy_point_by_sealing_signal("waiting", item)
+        return self._adjust_buy_point_by_sealing_signal("unclear", item)
+
+    @staticmethod
+    def _adjust_buy_point_by_sealing_signal(status: str, item: Dict[str, Any]) -> Tuple[str, str]:
+        signal = item.get("_v13_sealing_strength_signal")
+        if not isinstance(signal, dict) or not signal.get("available"):
+            return status, BUY_POINT_LABELS[status]
+        if status == "clear" and signal.get("downgrade_buy_point"):
             return "waiting", BUY_POINT_LABELS["waiting"]
-        return "unclear", BUY_POINT_LABELS["unclear"]
+        if (
+            status == "waiting"
+            and _safe_str(signal.get("execution_bias")) == "caution"
+            and _safe_str(signal.get("level")) == "weak"
+        ):
+            return "unclear", BUY_POINT_LABELS["unclear"]
+        return status, BUY_POINT_LABELS[status]
 
     @staticmethod
     def _extension_signal_score(item: Dict[str, Any]) -> float:
@@ -4887,6 +5193,9 @@ class MomentumSecondaryDecisionService:
             "theme_drag": "题材偏弱",
             "mainline_confirmed": "主线确认",
             "mainline_questionable": "主线存疑",
+            "seal_strength_support": "早封强封",
+            "seal_quality_drag": "封板质量偏弱",
+            "seal_participation_drag": "强封但难参与",
             "role_leader": "龙头核心优先",
             "role_front": "前排换手优先",
             "role_mid": "观察备选补位",
@@ -5019,6 +5328,42 @@ class MomentumSecondaryDecisionService:
     def _sum_adjustment_deltas(items: List[Dict[str, Any]]) -> float:
         return float(sum(_safe_float(item.get("delta")) for item in items))
 
+    def _sealing_strength_adjustment_item(
+        self,
+        item: Dict[str, Any],
+        *,
+        support_delta: float,
+        drag_delta: float,
+        participation_delta: float,
+    ) -> Optional[Dict[str, Any]]:
+        signal = item.get("_v13_sealing_strength_signal")
+        if not isinstance(signal, dict) or not signal.get("available"):
+            return None
+
+        detail = _safe_str(signal.get("summary")) or _safe_str(signal.get("execution_participation_note"))
+        if signal.get("is_one_word_like"):
+            return self._reason_item(
+                "seal_participation_drag",
+                "强封但难参与",
+                delta=participation_delta,
+                detail=detail,
+            )
+        if _safe_str(signal.get("execution_bias")) == "caution" or _safe_str(signal.get("level")) == "weak":
+            return self._reason_item(
+                "seal_quality_drag",
+                "封板质量偏弱",
+                delta=drag_delta,
+                detail=detail,
+            )
+        if _safe_str(signal.get("level")) == "strong":
+            return self._reason_item(
+                "seal_strength_support",
+                "早封强封",
+                delta=support_delta,
+                detail=detail,
+            )
+        return None
+
     @staticmethod
     def _describe_adjustments(
         adjustments: List[Dict[str, Any]],
@@ -5079,6 +5424,14 @@ class MomentumSecondaryDecisionService:
             adjustments.append(self._reason_item("mainline_confirmed", "主线确认", delta=0.8))
         elif 0 < v13_mainline_score < 70:
             adjustments.append(self._reason_item("mainline_questionable", "主线存疑", delta=-0.6))
+        sealing_adjustment = self._sealing_strength_adjustment_item(
+            item,
+            support_delta=0.4,
+            drag_delta=-0.8,
+            participation_delta=-0.6,
+        )
+        if sealing_adjustment:
+            adjustments.append(sealing_adjustment)
         role_delta = {"leader": 0.6, "front": 1.0, "mid": 0.2, "back": -1.4}.get(role_key, 0.0)
         if role_delta != 0:
             adjustments.append(self._reason_item(f"role_{role_key}", role_adjustment_label, delta=role_delta))
@@ -5147,6 +5500,14 @@ class MomentumSecondaryDecisionService:
             adjustments.append(self._reason_item("fund_support_boost", "资金承接加分", delta=0.8))
         if v13_shadow_score > 0:
             adjustments.append(self._reason_item("shadow_score_signal", "V1.3 题材观察分", delta=_clamp_float((v13_shadow_score - 68.0) * 0.08, -2.5, 2.5)))
+        sealing_adjustment = self._sealing_strength_adjustment_item(
+            item,
+            support_delta=0.7,
+            drag_delta=-1.2,
+            participation_delta=-0.9,
+        )
+        if sealing_adjustment:
+            adjustments.append(sealing_adjustment)
         adjustments.append(self._reason_item("forward_alpha_signal", "次日溢价预期", delta=_clamp_float((forward_alpha_score - 80.0) * 0.18, -0.5, 2.4)))
         if t1_direction_risk_adjustment <= -6.0:
             adjustments.append(self._reason_item("main_t1_risk_drag", "次日方向承接存疑", delta=-3.8))
@@ -5192,6 +5553,14 @@ class MomentumSecondaryDecisionService:
             adjustments.append(self._reason_item("watch_v13_mainline", "V1.3 主线确认", delta=1.1))
         elif self._has_v13_mainline_confirmation(item):
             adjustments.append(self._reason_item("watch_v13_mainline", "V1.3 主线跟踪", delta=0.6))
+        sealing_adjustment = self._sealing_strength_adjustment_item(
+            item,
+            support_delta=0.4,
+            drag_delta=-0.5,
+            participation_delta=-0.4,
+        )
+        if sealing_adjustment:
+            adjustments.append(sealing_adjustment)
         if role_key == "front":
             adjustments.append(self._reason_item("watch_front_role", "前排换手更值得观察", delta=1.0))
         elif role_key == "leader":
@@ -5754,6 +6123,14 @@ class MomentumSecondaryDecisionService:
                 if candidate.get("_v13_limit_structure_score") is not None
                 else None
             ),
+            "v13_sealing_strength": self._public_v13_sealing_strength_signal(candidate),
+            "v13_sealing_strength_score": (
+                round(_safe_float(candidate.get("_v13_sealing_strength_score")), 1)
+                if candidate.get("_v13_sealing_strength_score") is not None
+                else None
+            ),
+            "v13_sealing_strength_level": candidate.get("_v13_sealing_strength_level"),
+            "v13_sealing_strength_level_label": candidate.get("_v13_sealing_strength_level_label"),
             "v13_buyability_score": (
                 round(_safe_float(candidate.get("_v13_buyability_score")), 1)
                 if candidate.get("_v13_buyability_score") is not None

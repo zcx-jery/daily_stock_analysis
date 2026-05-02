@@ -80,12 +80,26 @@ class _FakeGateScreenerService:
 
 
 class _FakeV13DecisionDataService:
-    def __init__(self):
+    def __init__(self, *, limit_events=None):
         self.last_ts_codes: list[str] = []
+        self.limit_events = limit_events
 
     def build_context(self, *, trade_date: str, ts_codes: list[str]):
         del trade_date
         self.last_ts_codes = list(ts_codes)
+        limit_events = self.limit_events
+        if limit_events is None:
+            limit_events = {
+                "600301.SH": [
+                    {
+                        "ts_code": "600301.SH",
+                        "limit": "U",
+                        "limit_times": 1,
+                        "open_times": 0,
+                        "fd_amount": 300000000,
+                    }
+                ]
+            }
         return {
             "trade_date": "2026-04-10",
             "data_as_of": "2026-04-10T15:00:00Z",
@@ -98,17 +112,7 @@ class _FakeV13DecisionDataService:
                 "ths_hot": "ok",
                 "moneyflow_ind_dc": "ok",
             },
-            "limit_events": {
-                "600301.SH": [
-                    {
-                        "ts_code": "600301.SH",
-                        "limit": "U",
-                        "limit_times": 1,
-                        "open_times": 0,
-                        "fd_amount": 300000000,
-                    }
-                ]
-            },
+            "limit_events": limit_events,
             "stock_theme_map": {
                 "600301.SH": [
                     {
@@ -460,6 +464,35 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
             "entry_range_low": entry_range_low,
             "entry_range_high": entry_range_high,
             "risk_tags": risk_tags or [],
+        }
+
+    @staticmethod
+    def _v13_single_candidate_screening(**overrides) -> dict:
+        candidate = {
+            "rank": 1,
+            "ts_code": "600301.SH",
+            "name": "主线封板票",
+            "pct_chg": 10.0,
+            "continuation_score": 88.0,
+            "extension_score": 82.0,
+            "risk_score": 18.0,
+            "buyability_score": 78.0,
+            "entry_range_low": 10.1,
+            "entry_range_high": 10.4,
+            "final_score": 88.0,
+            "rank_score": 84.0,
+            "themes": ["旧机器人"],
+            "leader_level": "leader",
+            "top_reasons": ["主线证据更强"],
+            "risk_tags": [],
+            "score_breakdown": {},
+        }
+        candidate.update(overrides)
+        return {
+            "profile": "standard",
+            "trade_date": "2026-04-10",
+            "candidate_count": 1,
+            "results": [candidate],
         }
 
     def test_build_from_screening_returns_action_themes_and_portfolio(self) -> None:
@@ -838,6 +871,103 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         self.assertTrue(diagnostic["decision_adjustment_reason"])
         self.assertIsInstance(diagnostic["soft_adjustments"], list)
         self.assertNotIn("rank_score", diagnostic)
+
+    def test_build_from_screening_surfaces_v13_sealing_strength_signal(self) -> None:
+        v13_data_service = _FakeV13DecisionDataService(
+            limit_events={
+                "600301.SH": [
+                    {
+                        "ts_code": "600301.SH",
+                        "limit": "U",
+                        "limit_times": 1,
+                        "open_times": 0,
+                        "amount": 1000000000,
+                        "fd_amount": 260000000,
+                        "first_time": "09:45:00",
+                    }
+                ]
+            }
+        )
+        service = MomentumSecondaryDecisionService(
+            screener_service=None,
+            v13_data_service=v13_data_service,
+        )
+
+        result = service.build_from_screening(self._v13_single_candidate_screening())
+
+        main = result["portfolio"][0]
+        diagnostic = result["candidate_diagnostics"][0]
+        self.assertEqual(main["buy_point_status"], "clear")
+        self.assertEqual(main["v13_sealing_strength_level"], "strong")
+        self.assertEqual(main["v13_sealing_strength"]["first_seal_time"], "09:45:00")
+        self.assertGreaterEqual(main["v13_sealing_strength_score"], 90.0)
+        self.assertIn("早封强封", [item["label"] for item in main["soft_adjustments"]])
+        self.assertEqual(diagnostic["v13_sealing_strength"]["execution_bias"], "support")
+
+    def test_build_from_screening_downgrades_clear_buy_point_on_weak_late_seal(self) -> None:
+        v13_data_service = _FakeV13DecisionDataService(
+            limit_events={
+                "600301.SH": [
+                    {
+                        "ts_code": "600301.SH",
+                        "limit": "U",
+                        "limit_times": 1,
+                        "open_times": 4,
+                        "amount": 1000000000,
+                        "fd_amount": 20000000,
+                        "first_time": "14:20:00",
+                    }
+                ]
+            }
+        )
+        service = MomentumSecondaryDecisionService(
+            screener_service=None,
+            v13_data_service=v13_data_service,
+        )
+
+        result = service.build_from_screening(self._v13_single_candidate_screening())
+
+        main = result["portfolio"][0]
+        self.assertEqual(main["buy_point_status"], "waiting")
+        self.assertNotEqual(main["suggested_action"], "ready")
+        self.assertEqual(main["v13_sealing_strength"]["execution_bias"], "caution")
+        self.assertLess(main["v13_sealing_strength_score"], 60.0)
+        self.assertIn("封板质量偏弱", [item["label"] for item in main["soft_adjustments"]])
+
+    def test_build_from_screening_treats_one_word_board_as_hard_to_participate(self) -> None:
+        v13_data_service = _FakeV13DecisionDataService(
+            limit_events={
+                "600301.SH": [
+                    {
+                        "ts_code": "600301.SH",
+                        "limit": "U",
+                        "limit_times": 1,
+                        "open_times": 0,
+                        "amount": 1000000000,
+                        "fd_amount": 300000000,
+                        "first_time": "09:30:00",
+                        "close": 10.0,
+                    }
+                ]
+            }
+        )
+        service = MomentumSecondaryDecisionService(
+            screener_service=None,
+            v13_data_service=v13_data_service,
+        )
+
+        result = service.build_from_screening(
+            self._v13_single_candidate_screening(open=10.0, low=10.0, close=10.0)
+        )
+
+        main = result["portfolio"][0]
+        self.assertEqual(main["v13_sealing_strength_level"], "strong")
+        self.assertTrue(main["v13_sealing_strength"]["is_one_word_like"])
+        self.assertEqual(main["v13_sealing_strength"]["execution_participation_note"], "强封但难参与")
+        self.assertEqual(main["buy_point_status"], "waiting")
+        labels = [item["label"] for item in main["soft_adjustments"]]
+        self.assertIn("强封但难参与", labels)
+        self.assertNotIn("早封强封", labels)
 
     def test_build_from_screening_limits_v13_context_codes_for_full_ranked_pool(self) -> None:
         v13_data_service = _FakeV13DecisionDataService()

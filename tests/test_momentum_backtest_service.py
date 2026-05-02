@@ -146,6 +146,27 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
 
         self.service._freeze_trade_date_artifacts = delayed  # type: ignore[method-assign]
 
+    def test_missing_forward_bars_do_not_fail_outcome_record(self) -> None:
+        def fail_history(*args, **kwargs):
+            raise RuntimeError("temporary data source failure")
+
+        with patch.object(self.fetcher, "get_daily_data", side_effect=fail_history):
+            record = self.service._build_outcome_record(
+                trade_dt=pd.Timestamp("2026-04-10").date(),
+                item={
+                    "ts_code": "600001.SH",
+                    "name": "测试龙头",
+                    "entry_range_low": 10.0,
+                    "entry_range_high": 10.5,
+                },
+                view_scope="candidate_top10",
+                slot=None,
+            )
+
+        self.assertFalse(record.buy_triggered)
+        self.assertEqual(record.real_strength_label, "insufficient")
+        self.assertIsNone(record.t1_trade_date)
+
     def _build_daily_summary_fixture(self) -> MomentumBacktestDailySummary:
         trade_date = pd.Timestamp("2026-04-10").date()
         return MomentumBacktestDailySummary(

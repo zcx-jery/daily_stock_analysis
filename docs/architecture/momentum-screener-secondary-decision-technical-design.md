@@ -276,6 +276,51 @@
 - `front_turnover` 的 `clear` 口径应严于 `dragon_leader`；当同主题 `leader` 已满足 `clear` 且承接更稳时，前排 `front` 不应仅凭进攻性继续占据默认主仓
 - 次仓与观察仓也应复用同一套 `T+1` 承接风险约束，避免高弹性但高风险的 `front` 仅因未占主仓就继续停留在默认 Top3 组合里
 
+#### 6.4.1 日线封板强度诊断
+
+职责：
+
+- 在没有分钟线权限的前提下，复用 `limit_list_d` 的日线涨停事件字段，诊断 T 日封板质量
+- 为买点清晰度、轻修正、风险提示和落选解释提供证据
+- 只作为二次决策收口层输入，不新增分钟级正式买点，不改写官方主排序
+
+数据来源：
+
+- `limit_list_d.first_time`：首次封板时间
+- `limit_list_d.fd_amount`：封单金额
+- `limit_list_d.amount`：成交额，用于派生 `seal_amount_ratio = fd_amount / amount`
+- `limit_list_d.open_times`：开板次数
+- `daily.open / low / close`：辅助识别一字或极端缩量难参与结构
+
+建议字段：
+
+- `first_seal_time`
+- `seal_amount_ratio`
+- `open_times`
+- `sealing_strength_score`
+- `sealing_strength_level`: `strong / medium / weak`
+- `is_one_word_like`
+- `execution_participation_note`
+
+评分建议：
+
+- 首封时间：`first_time <= 10:00:00` 记高分，`10:00:00 ~ 11:00:00` 记中高分，`11:00:00 ~ 14:00:00` 记中分，`14:00:00` 后只记低分
+- 封单强度：`seal_amount_ratio` 越高，封板强度越高，但必须设置上限，避免单日异常封单把整体判断拉爆
+- 开板稳定性：`open_times == 0` 加分，`open_times >= 3` 明显扣分
+- 最终 `sealing_strength_score` 统一压到 `0 ~ 100`
+
+收口规则：
+
+- `sealing_strength_score >= 75`、`open_times <= 1` 且不是一字难参与结构时，可作为 `execution_clarity_bonus` 或 `soft_adjustments` 的正向证据
+- `first_seal_time > 14:00:00`、`open_times >= 3` 或 `seal_amount_ratio < 0.05` 时，应降低买点清晰度，必要时把 `clear` 降为 `waiting / unclear`
+- 一字板或极端缩量板只代表强度确认，不代表次日可参与性；不得因为 `open == low == close` 就把候选升级为最优执行状态
+- 一字板应输出 `强封但难参与` 类解释，可作为主线确认或观察锚点，不得单独触发 `hard_blocker` 或强行进入主仓
+
+降级原则：
+
+- `limit_list_d` 缺失时，不得硬扣分或硬阻断，只能标记 `sealing_strength_unavailable` 并降低解释置信度
+- `fd_amount / amount` 任一字段缺失时，允许只用 `first_time + open_times` 生成低置信度诊断
+
 ### 6.5 价格偏离判定模块
 
 职责：

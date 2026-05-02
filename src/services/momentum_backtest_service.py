@@ -124,25 +124,56 @@ class MomentumBacktestService:
         screener_service: Optional[MomentumScreenerService] = None,
         decision_service: Optional[MomentumSecondaryDecisionService] = None,
         repository: Optional[MomentumBacktestRepository] = None,
+        *,
+        start_worker: bool = True,
     ) -> None:
-        self.screener_service = screener_service or MomentumScreenerService()
-        self.decision_service = decision_service or MomentumSecondaryDecisionService(
-            screener_service=self.screener_service,
-        )
+        self.screener_service = screener_service
+        self.decision_service = decision_service
         self.repository = repository or MomentumBacktestRepository()
         self.stage_heartbeat_interval_seconds = 5.0
         self._run_lock = threading.Lock()
         self._shutdown_event = threading.Event()
         self._worker_wake_event = threading.Event()
+        self._worker_thread: Optional[threading.Thread] = None
+        self._running_runs_recovered = False
+        if start_worker:
+            self._ensure_execution_services()
+            self._recover_running_runs_to_queue_once()
+            self._start_worker_thread()
+
+    def _ensure_execution_services(
+        self,
+    ) -> Tuple[MomentumScreenerService, MomentumSecondaryDecisionService]:
+        """Initialize Tushare-backed services only when execution really needs them."""
+        if self.screener_service is None and self.decision_service is not None:
+            maybe_screener = getattr(self.decision_service, "screener_service", None)
+            if maybe_screener is not None:
+                self.screener_service = maybe_screener
+        if self.screener_service is None:
+            self.screener_service = MomentumScreenerService()
+        if self.decision_service is None:
+            self.decision_service = MomentumSecondaryDecisionService(
+                screener_service=self.screener_service,
+            )
+        return self.screener_service, self.decision_service
+
+    def _start_worker_thread(self) -> None:
+        if self._worker_thread is not None and self._worker_thread.is_alive():
+            return
         self._worker_thread = threading.Thread(
             target=self._worker_loop,
             name="momentum-backtest-queue",
             daemon=True,
         )
+        self._worker_thread.start()
+
+    def _recover_running_runs_to_queue_once(self) -> None:
+        if self._running_runs_recovered:
+            return
         requeued_count = self.repository.reset_running_runs_to_queued()
+        self._running_runs_recovered = True
         if requeued_count:
             logger.info("Recovered %s running backtest run(s) back into the queue", requeued_count)
-        self._worker_thread.start()
 
     def create_run(
         self,
@@ -153,6 +184,8 @@ class MomentumBacktestService:
         top_n: int = MOMENTUM_BACKTEST_OFFICIAL_TOP_N,
         strict_strategy_health: bool = False,
     ) -> Dict[str, Any]:
+        self._ensure_execution_services()
+        self._recover_running_runs_to_queue_once()
         profile = MOMENTUM_BACKTEST_OFFICIAL_PROFILE
         top_n = MOMENTUM_BACKTEST_OFFICIAL_TOP_N
         strategy_health_mode = self._normalize_strategy_health_mode(strict_strategy_health)
@@ -194,6 +227,8 @@ class MomentumBacktestService:
         top_n: int = MOMENTUM_BACKTEST_OFFICIAL_TOP_N,
         strict_strategy_health: bool = False,
     ) -> Dict[str, Any]:
+        self._ensure_execution_services()
+        self._recover_running_runs_to_queue_once()
         profile = MOMENTUM_BACKTEST_OFFICIAL_PROFILE
         top_n = MOMENTUM_BACKTEST_OFFICIAL_TOP_N
         strategy_health_mode = self._normalize_strategy_health_mode(strict_strategy_health)
@@ -206,6 +241,7 @@ class MomentumBacktestService:
             allow_reuse=True,
             prefer_running=True,
         )
+        self._start_worker_thread()
         self._worker_wake_event.set()
         serialized = self._serialize_run(run)
         return {
@@ -347,6 +383,7 @@ class MomentumBacktestService:
                 self._worker_wake_event.clear()
                 continue
             try:
+                self._ensure_execution_services()
                 trade_dates = self._list_trade_dates(run.start_trade_date, run.end_trade_date)
                 if not trade_dates:
                     self.repository.update_run(
@@ -373,7 +410,7 @@ class MomentumBacktestService:
     def close(self, *, timeout: float = 5.0) -> None:
         self._shutdown_event.set()
         self._worker_wake_event.set()
-        if self._worker_thread.is_alive():
+        if self._worker_thread is not None and self._worker_thread.is_alive():
             self._worker_thread.join(timeout=timeout)
 
     def _promote_next_queued_run(self) -> Optional[MomentumBacktestRun]:
@@ -402,6 +439,7 @@ class MomentumBacktestService:
         top_n: int,
         strategy_health_mode: str,
     ) -> None:
+        screener_service, decision_service = self._ensure_execution_services()
         existing_run = self.repository.get_run(run_id)
         if existing_run is None:
             raise ValueError(f"Backtest run not found: {run_id}")
@@ -443,7 +481,7 @@ class MomentumBacktestService:
                 self._raise_if_cancel_requested(run_id)
                 try:
                     trade_date = trade_dt.strftime("%Y-%m-%d")
-                    request_params = self.decision_service._build_request_params(  # type: ignore[attr-defined]
+                    request_params = decision_service._build_request_params(  # type: ignore[attr-defined]
                         top_n=top_n,
                         trade_date=trade_date,
                         profile=profile,
@@ -469,7 +507,7 @@ class MomentumBacktestService:
                     )
                     candidate_pool_started_at = time.perf_counter()
                     try:
-                        screening = self.screener_service.screen(
+                        screening = screener_service.screen(
                             top_n=top_n,
                             trade_date=trade_date,
                             profile=profile,
@@ -509,7 +547,7 @@ class MomentumBacktestService:
                     )
                     secondary_decision_started_at = time.perf_counter()
                     try:
-                        decision = self.decision_service.build_from_screening(
+                        decision = decision_service.build_from_screening(
                             screening,
                             request_params=request_params,
                             wait_for_strategy_health=self._should_wait_for_strategy_health(strategy_health_mode),
@@ -3611,7 +3649,7 @@ class MomentumBacktestService:
         return order.get(severity, 0)
 
     def _list_trade_dates(self, start_dt: date, end_dt: date) -> List[date]:
-        fetcher = self.screener_service.fetcher
+        fetcher = self._ensure_execution_services()[0].fetcher
         parsed: List[date] = []
 
         trade_dates_loader = getattr(fetcher, "_get_trade_dates", None)
@@ -3683,14 +3721,23 @@ class MomentumBacktestService:
         return sorted(set(parsed))
 
     def _load_forward_bars(self, ts_code: str, trade_dt: date, days: int = 2) -> List[Dict[str, Any]]:
-        fetcher = self.screener_service.fetcher
+        fetcher = self._ensure_execution_services()[0].fetcher
         end_dt = trade_dt + timedelta(days=10)
-        history = fetcher.get_daily_data(
-            ts_code,
-            start_date=trade_dt.strftime("%Y-%m-%d"),
-            end_date=end_dt.strftime("%Y-%m-%d"),
-            days=20,
-        )
+        try:
+            history = fetcher.get_daily_data(
+                ts_code,
+                start_date=trade_dt.strftime("%Y-%m-%d"),
+                end_date=end_dt.strftime("%Y-%m-%d"),
+                days=20,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Momentum backtest missing forward bars for %s after %s; marking outcome as insufficient: %s",
+                ts_code,
+                trade_dt.isoformat(),
+                exc,
+            )
+            return []
         if history is None or history.empty:
             return []
 

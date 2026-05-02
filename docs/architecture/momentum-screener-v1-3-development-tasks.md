@@ -547,6 +547,13 @@
 4. 调整观察仓优先级。
 5. 保持不足 `3` 只时不强凑。
 6. 保持 `Aggressive` 不参与官方组合。
+7. 接入日线封板强度诊断：
+   - 从 V1.3 上下文读取 `limit_list_d.first_time / fd_amount / amount / open_times`。
+   - 派生 `first_seal_time / seal_amount_ratio / sealing_strength_score / sealing_strength_level / is_one_word_like`。
+   - 早封、封单强、开板少且非一字难参与结构时，只作为 `soft_adjustments` 或 `execution_clarity_bonus`。
+   - 尾盘封板、多次开板或封单比过低时，降低买点清晰度，必要时把 `clear` 降为 `waiting / unclear`。
+   - 一字板只作为强度确认与观察锚点，不得自动提升买入可行性或强行进入主仓。
+   - `limit_list_d` 缺失时只标记低置信度，不硬扣分、不硬阻断。
 
 测试任务：
 
@@ -555,11 +562,16 @@
 3. 非主线高分股被落选。
 4. 同主线角色重复时正确淘汰。
 5. 修改页面展示数量不影响官方 Top3。
+6. 早封、封单强、开板少且非一字候选获得执行清晰度轻加分。
+7. 尾盘封板或多次开板候选不能继续保持 `clear` 买点。
+8. 一字板候选封板强度可高，但买入可行性不被自动抬高。
+9. `limit_list_d` 缺失时只降置信度，不触发硬阻断。
 
 验收：
 
 - 官方 Top3 有明确主线、角色和仓位理由。
 - 落选说明能说明非主线、角色重复、买点不清晰等主因。
+- 封板强度诊断能解释早封、尾盘封板、多次开板、一字难参与等差异，且不越界成为分钟级买点判断。
 
 ## 11. M6：API / Schema / TypeScript 类型
 
