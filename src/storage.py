@@ -937,10 +937,14 @@ class DatabaseManager:
     def reset_instance(cls) -> None:
         """重置单例（用于测试）"""
         if cls._instance is not None:
-            if hasattr(cls._instance, '_engine') and cls._instance._engine is not None:
-                cls._instance._engine.dispose()
+            cls._instance.close()
             cls._instance._initialized = False
             cls._instance = None
+
+    def close(self) -> None:
+        """Close pooled database connections held by this manager."""
+        if hasattr(self, '_engine') and self._engine is not None:
+            self._engine.dispose()
 
     @classmethod
     def _cleanup_engine(cls, engine) -> None:

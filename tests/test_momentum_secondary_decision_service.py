@@ -456,6 +456,42 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         self.assertTrue(any(item["key"] == "risk_stack_veto" for item in blockers))
         self.assertTrue(service._slot_hard_blockers("secondary", candidate, {"机器人": 92.0}))
 
+    def test_space_leader_bypasses_mainline_risk_stack_factor(self) -> None:
+        service = MomentumSecondaryDecisionService(strategy_health_async=False)
+        candidate = self._selected_candidate_fixture(
+            ts_code="600301.SH",
+            name="空间龙样本",
+            theme="机器人",
+            role_key="leader",
+            buy_point_status="clear",
+            decision_score=92.0,
+            forward_alpha_score=88.0,
+            official_score=92.0,
+            risk_score=18.0,
+            v13_mainline_score=40.0,
+        )
+        candidate.update(
+            {
+                "_theme_pool_count": 1,
+                "_v13_ladder_position": {
+                    "available": True,
+                    "board_count": 5,
+                    "market_height": 5,
+                    "is_space_leader": True,
+                    "label": "空间龙头",
+                },
+                "_v13_space_leader": True,
+            }
+        )
+
+        risk_stack = service._risk_stack_check(candidate)
+
+        self.assertFalse(risk_stack["veto"])
+        self.assertEqual(risk_stack["factor_count"], 0)
+        mainline_factor = next(item for item in risk_stack["factors"] if item["key"] == "mainline_risk")
+        self.assertFalse(mainline_factor["triggered"])
+        self.assertIn("R4 豁免", mainline_factor["evidence"])
+
     def test_adaptive_gate_strict_mainline_threshold_blocks_isolated_candidates(self) -> None:
         service = MomentumSecondaryDecisionService(
             strategy_health_async=False,
@@ -954,11 +990,19 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
                     {
                         "ts_code": "600301.SH",
                         "limit": "U",
-                        "limit_times": 1,
+                        "limit_times": 2,
                         "open_times": 0,
                         "amount": 1000000000,
                         "fd_amount": 260000000,
                         "first_time": "09:45:00",
+                    }
+                ],
+                "600999.SH": [
+                    {
+                        "ts_code": "600999.SH",
+                        "limit": "U",
+                        "limit_times": 5,
+                        "open_times": 0,
                     }
                 ]
             }
@@ -977,6 +1021,9 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         self.assertEqual(main["v13_sealing_strength"]["first_seal_time"], "09:45:00")
         self.assertGreaterEqual(main["v13_sealing_strength_score"], 90.0)
         self.assertIn("早封强封", [item["label"] for item in main["soft_adjustments"]])
+        self.assertEqual(main["v13_ladder_position"]["board_count"], 2)
+        self.assertEqual(main["v13_ladder_position"]["market_height"], 5)
+        self.assertFalse(main["v13_ladder_position"]["is_space_leader"])
         self.assertEqual(diagnostic["v13_sealing_strength"]["execution_bias"], "support")
 
     def test_build_from_screening_downgrades_clear_buy_point_on_weak_late_seal(self) -> None:

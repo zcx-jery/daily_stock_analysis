@@ -207,7 +207,7 @@ risk_score = (risk_penalty_abs / 20) * 100
 - `R1 Position Risk`：`close > 1.2 * MA20`，代表价格已经显著高于 20 日均线，次日承接更依赖情绪继续加速。
 - `R2 Sealing Risk`：`first_seal_time > 14:00:00` 或 `first_seal_time != last_seal_time`，代表尾盘封板或日内开板回封，封板稳定性存疑。
 - `R3 Divergence Risk`：价格处于 20 日新高，且 `buy_elg_amount < 0`，代表创新高时超大单并未同步承接。
-- `R4 Mainline Risk`：同主题 / 同主线在当日候选池中的数量 `< 2`，代表缺少板块共振，单票独涨的次日溢价更不稳定。
+- `R4 Mainline Risk`：同主题 / 同主线在当日候选池中的数量 `< 2`，代表缺少板块共振，单票独涨的次日溢价更不稳定；若 `limit_list_d.limit_times` 显示该股为当前市场 `Space Leader / 空间龙头`（最高连板且至少 2 板），则 R4 豁免，因为最高板本身可以创造主线。
 
 收口规则：
 

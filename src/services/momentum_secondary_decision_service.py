@@ -976,6 +976,7 @@ class MomentumSecondaryDecisionService:
             updated = dict(candidate)
             ts_code = _safe_str(updated.get("ts_code"))
             self._attach_v13_sealing_strength_signal(updated, context=context)
+            self._attach_v13_ladder_position_signal(updated, context=context)
             self._refresh_candidate_buy_point_fields(updated)
             theme_rows = stock_theme_map.get(ts_code) or []
             best_radar: Optional[Dict[str, Any]] = None
@@ -1419,6 +1420,91 @@ class MomentumSecondaryDecisionService:
             "confidence": signal.get("confidence"),
             "degraded_reasons": list(signal.get("degraded_reasons") or []),
         }
+
+    @classmethod
+    def _attach_v13_ladder_position_signal(
+        cls,
+        candidate: Dict[str, Any],
+        *,
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        signal = cls._v13_ladder_position_signal(candidate, context)
+        candidate["_v13_ladder_position"] = signal
+        candidate["_v13_board_count"] = signal.get("board_count")
+        candidate["_v13_market_height"] = signal.get("market_height")
+        candidate["_v13_space_leader"] = bool(signal.get("is_space_leader"))
+        return signal
+
+    @classmethod
+    def _v13_ladder_position_signal(
+        cls,
+        candidate: Dict[str, Any],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        event = cls._select_v13_limit_event(candidate, context)
+        limit_events = context.get("limit_events") or {}
+        all_events = [
+            row
+            for rows in limit_events.values()
+            for row in (rows if isinstance(rows, list) else [])
+            if isinstance(row, dict)
+        ]
+        limit_up_events = [
+            row
+            for row in all_events
+            if _safe_str(row.get("limit")).upper() in {"", "U"}
+        ]
+        market_height = max(
+            [int(_safe_float(row.get("limit_times"))) for row in limit_up_events] or [0]
+        )
+        if not event:
+            return {
+                "available": False,
+                "board_count": None,
+                "market_height": market_height or None,
+                "is_space_leader": False,
+                "same_height_count": 0,
+                "gap_to_leader": None,
+                "label": "梯队数据不足",
+                "summary": "limit_list_d 未返回该股涨停梯队事件，按普通主线约束处理。",
+            }
+
+        board_count = int(_safe_float(event.get("limit_times")))
+        same_height_count = sum(
+            1
+            for row in limit_up_events
+            if int(_safe_float(row.get("limit_times"))) == board_count and board_count > 0
+        )
+        gap_to_leader = max(market_height - board_count, 0) if market_height > 0 and board_count > 0 else None
+        is_space_leader = board_count >= 2 and market_height > 0 and board_count == market_height
+        if is_space_leader:
+            label = "空间龙头"
+            summary = f"当前 {board_count} 连板，与市场最高板持平；空间龙可豁免无主线 R4。"
+        elif board_count > 0 and market_height > 0:
+            label = f"{board_count} 连板梯队"
+            summary = f"当前 {board_count} 连板，市场最高 {market_height} 板，距离空间高度 {gap_to_leader} 板。"
+        else:
+            label = "非连板梯队"
+            summary = "该股未形成明确连板梯队，仍需依赖题材共振确认。"
+
+        return {
+            "available": True,
+            "board_count": board_count,
+            "market_height": market_height,
+            "is_space_leader": is_space_leader,
+            "same_height_count": same_height_count,
+            "gap_to_leader": gap_to_leader,
+            "label": label,
+            "summary": summary,
+            "source": "limit_list_d.limit_times",
+        }
+
+    @staticmethod
+    def _public_v13_ladder_position(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        signal = item.get("_v13_ladder_position")
+        if not isinstance(signal, dict) or not signal.get("available"):
+            return None
+        return dict(signal)
 
     @staticmethod
     def _v13_fund_support_score(
@@ -1947,6 +2033,7 @@ class MomentumSecondaryDecisionService:
                     "official_score": official_score,
                     "base_rank_score": official_score,
                     "v13_sealing_strength": self._public_v13_sealing_strength_signal(candidate),
+                    "v13_ladder_position": self._public_v13_ladder_position(candidate),
                     "v13_sealing_strength_score": (
                         round(_safe_float(candidate.get("_v13_sealing_strength_score")), 1)
                         if candidate.get("_v13_sealing_strength_score") is not None
@@ -2036,6 +2123,7 @@ class MomentumSecondaryDecisionService:
                         else None
                     ),
                     "v13_sealing_strength": self._public_v13_sealing_strength_signal(candidate),
+                    "v13_ladder_position": self._public_v13_ladder_position(candidate),
                     "v13_sealing_strength_score": (
                         round(_safe_float(candidate.get("_v13_sealing_strength_score")), 2)
                         if candidate.get("_v13_sealing_strength_score") is not None
@@ -5868,7 +5956,17 @@ class MomentumSecondaryDecisionService:
                 "candidate_count",
             ),
         )
-        mainline_risk = mainline_count is not None and mainline_count < 2
+        ladder_position = item.get("_v13_ladder_position")
+        if not isinstance(ladder_position, dict):
+            ladder_position = {}
+        is_space_leader = bool(item.get("_v13_space_leader") or ladder_position.get("is_space_leader"))
+        mainline_risk = mainline_count is not None and mainline_count < 2 and not is_space_leader
+        mainline_evidence = (
+            f"space_leader board_count={ladder_position.get('board_count')}, "
+            f"market_height={ladder_position.get('market_height')}，R4 豁免"
+            if is_space_leader
+            else (f"pool_count={mainline_count}" if mainline_count is not None else "缺少主线池计数")
+        )
 
         factors = [
             self._risk_factor_item(
@@ -5901,7 +5999,7 @@ class MomentumSecondaryDecisionService:
                 key="mainline_risk",
                 label="主线风险",
                 triggered=mainline_risk,
-                evidence=f"pool_count={mainline_count}" if mainline_count is not None else "缺少主线池计数",
+                evidence=mainline_evidence,
             ),
         ]
         triggered_factors = [factor for factor in factors if factor["triggered"]]
@@ -6471,6 +6569,7 @@ class MomentumSecondaryDecisionService:
                 else None
             ),
             "v13_sealing_strength": self._public_v13_sealing_strength_signal(candidate),
+            "v13_ladder_position": self._public_v13_ladder_position(candidate),
             "v13_sealing_strength_score": (
                 round(_safe_float(candidate.get("_v13_sealing_strength_score")), 1)
                 if candidate.get("_v13_sealing_strength_score") is not None

@@ -97,7 +97,7 @@ V1.3 起，官方回测采用双层验收：`弱延续合格率` 只作为方向
 | `T+1 可买性` | `T+1` 不是 `open == high == low == close` 的一字不可买结构 | 排除看对但买不到的样本 |
 | `T+1 风险过滤` | `T+1 open >= T0 close * 0.99` | 过滤深低开和滑点损失难覆盖的样本 |
 | `T+1 方向确认` | `T+1 close > T+1 open` | 次日仍有资金向上推进 |
-| `T+2 利润缓冲` | `T+2 high >= T+1 close * 1.025` | 至少给出 `2.5%` 的后续兑现空间 |
+| `T+2 滑点退出缓冲` | `(T+2 high + T+2 close) / 2 >= T+1 close * 1.02` | 用滑点调整退出价过滤瞬时冲高，至少给出 `2%` 的可成交兑现空间 |
 | `可交易合格` | 四个条件同时满足 | 本次选股具备实盘可执行意义 |
 
 对应字段：
@@ -108,7 +108,7 @@ V1.3 起，官方回测采用双层验收：`弱延续合格率` 只作为方向
 | `weak_continuity_pass` | 是否满足弱延续辅助规则 |
 | `weak_continuity_pass_rate_pct` | 弱延续合格率 |
 | `settlement_rule` | 当前主验收规则，固定为 `v13_tradable_success_v1` |
-| `tradable_success_rule` | 可交易合格主规则 |
+| `tradable_success_rule` | 可交易合格主规则，当前为 `t1_buyable_no_one_word_open_ge_t0_close_0_99_t1_close_gt_open_t2_adjusted_exit_ge_t1_close_1_02` |
 | `tradable_success_pass` / `settlement_pass` | 是否满足可交易合格主规则 |
 | `tradable_success_rate_pct` / `settlement_pass_rate_pct` | 可交易合格率 |
 
@@ -156,7 +156,7 @@ Stage 2 起，这一门槛正式用于证伪 V1.3 过滤层是否真的创造价
 
 | 对比项 | 通过标准 | 验收含义 |
 | --- | --- | --- |
-| V1.3 Alpha vs Pool | 官方 Top3 可交易合格率不得低于全候选池基准；若低于全池，输出 `LOGIC FAILURE: Screener is destroying Pool Alpha` | 判断筛选器是否破坏池子 Alpha |
+| V1.3 Alpha vs Pool | 官方 Top3 可交易合格率至少高于全候选池基准 `15` 个百分点；若低于全池，输出 `LOGIC FAILURE: Screener is destroying Pool Alpha`；若高于全池但不足 `15pct`，输出 `ALPHA_EROSION_DETECTED: Refine Secondary Decision Weights` | 判断筛选器是否创造足够的池子 Alpha |
 | Selection Efficiency | 官方 Top3 可交易合格率不得长期低于 Raw Momentum Top3；若长期为负，复核主线、画像、封板强度和总闸门参数 | 判断 V1.3 过滤层是否真正提高选择效率 |
 | 相对候选池 Top10 | 官方 Top3 合格率高于 Top10，或利润窗口更高且回撤不明显恶化 | 判断整条官方链路是否有效提炼候选池机会 |
 | 相对主仓基准 | 主仓合格率不得长期低于官方 Top3 均值超过 `5` 个百分点 | 判断主仓锚点是否稳定承担组合核心职责 |
@@ -200,6 +200,8 @@ Stage 2 起，这一门槛正式用于证伪 V1.3 过滤层是否真的创造价
 | 失败交易日 | 失败交易日不超过 `2` 个 |
 | outcome 回填 | 官方 Top3、全候选池、Raw Momentum Top3 和候选池 Top10 的 T+1/T+2 outcome 基本完整 |
 | 版本冻结 | 报告必须记录 `engine_version`、`entry_baseline_version`、`market_scope_version`、`strategy_health_mode` |
+
+单只候选股历史日线、画像或 Tushare 请求临时超时，不应直接判定整日失败；候选评分阶段必须跳过该股票、记录 warning，并继续处理当天剩余候选。若单日被跳过候选过多导致候选池或 outcome 不完整，再在数据完整性诊断中标注该交易日为低置信样本。
 
 数据完整性不达标时，本次结果不能用于策略可用性判断，只能用于排障。
 

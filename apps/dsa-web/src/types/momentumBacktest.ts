@@ -377,6 +377,8 @@ export interface MomentumBacktestOutcomeItem {
   t1LowPrice?: number | null;
   t1ClosePrice?: number | null;
   t2HighPrice?: number | null;
+  t2ClosePrice?: number | null;
+  t2SlippageAdjustedExitPrice?: number | null;
   t1DirectionPass?: boolean | null;
   t2ContinuationPass?: boolean | null;
   weakContinuityPass?: boolean | null;

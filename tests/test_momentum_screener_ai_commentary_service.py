@@ -208,3 +208,4 @@ def test_system_prompt_requires_logic_audit_sections_and_risk_stack_context():
     assert "risk_stack" in prompt
     assert "mainline_intensity" in prompt
     assert "T+1 Open >= T0 Close * 0.99" in prompt
+    assert "Reduce Position" in prompt

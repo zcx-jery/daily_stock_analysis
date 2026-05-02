@@ -143,7 +143,7 @@
 
 - 先解释 `Core Logic`：为什么该标的能成为主线/强度候选，重点引用主线共振、角色、官方分和 Mainline Intensity。
 - 再执行 `Risk Audit`：逐只指出 Risk Stack 触发项，并额外扮演 Devil's Advocate，至少找出一个背离、瑕疵或未确认项。
-- 最后给出 `Execution Guard`：把 V1.3 可交易合同前置到 T 日晚间说明中，尤其是 `T+1 Open >= T0 Close * 0.99`，若失败则只能放弃或仅观察。
+- 最后给出 `Execution Guard`：把 V1.3 可交易合同前置到 T 日晚间说明中，尤其是 `T+1 Open >= T0 Close * 0.99`，若失败则只能放弃或仅观察；若 T+1 未突破开盘后 30 分钟高点，必须提示 `Reduce Position / 降仓`。
 
 ### 13.2 输入上下文
 
@@ -152,7 +152,7 @@ AI 摘要必须优先使用后端结构化上下文，不允许只凭自然语�
 - `risk_stack / risk_stack_count / risk_stack_veto`：说明高位、封板、背离、无主线等风险是否叠加。
 - `mainline_intensity_count / mainline_intensity_multiplier / mainline_intensity_bonus`：说明板块/题材共振如何影响官方排序。
 - `adaptive_gate`：说明是否因最近总闸门防守成功率过高而进入弱市动态收口。
-- `execution_guard`：说明 T+1 不深低开、收阳与 T+2 利润缓冲的执行边界。
+- `execution_guard`：说明 T+1 不深低开、收阳、首 30 分钟高点突破与 T+2 滑点调整利润缓冲的执行边界。
 
 ### 13.3 验收标准
 

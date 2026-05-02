@@ -717,7 +717,7 @@ def generate_screener_session_id(review_type: str, object_id: str, trade_date: s
 
 - `[Core Logic]`：复述规则层结论，并解释主线、强度、角色与 `Mainline_Intensity`。
 - `[Risk Audit]`：列出 `Risk_Stack_Check` 已触发因子，并对每只默认 Top3 执行一次 Devil's Advocate 审计。
-- `[Execution Guard]`：落到 V1.3 可交易合同，尤其是 `T+1 Open >= T0 Close * 0.99`；不满足时只能放弃或仅观察。
+- `[Execution Guard]`：落到 V1.3 可交易合同，尤其是 `T+1 Open >= T0 Close * 0.99`；不满足时只能放弃或仅观察；若 T+1 未突破首 30 分钟高点，必须输出 `Reduce Position / 降仓` 提醒。
 - `[External Check]`：工具调用只作为外部验证，不能覆盖规则层结论。
 
 ### 11.2 Context Injection

@@ -1063,6 +1063,23 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
         self.assertEqual(result["results"][0]["ts_code"], "600001.SH")
         self.assertEqual(result["results"][0]["themes"][0], "旧行业A")
 
+    def test_screen_skips_candidate_when_history_load_fails(self) -> None:
+        service = self._build_service()
+        original_load_history = service._load_history
+
+        def _load_history_with_one_timeout(stock_code: str, trade_date: str, days: int = 80) -> pd.DataFrame:
+            if str(stock_code).startswith("600002"):
+                raise TimeoutError("single stock history timeout")
+            return original_load_history(stock_code, trade_date, days=days)
+
+        with patch.object(service, "_load_history", side_effect=_load_history_with_one_timeout):
+            with self.assertLogs("src.services.momentum_screener_service", level="WARNING") as captured:
+                result = service.screen(top_n=2, profile="standard")
+
+        self.assertEqual(result["candidate_count"], 2)
+        self.assertEqual([item["ts_code"] for item in result["ranked_results"]], ["600001.SH"])
+        self.assertTrue(any("跳过历史数据加载失败的候选股" in line for line in captured.output))
+
 
     def test_history_cache_reuses_disk_snapshot_across_service_instances(self) -> None:
         fetcher = _FakeFetcher()

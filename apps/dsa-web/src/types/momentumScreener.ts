@@ -203,6 +203,7 @@ export interface MomentumDecisionIntelligenceFields {
   adaptiveMainlineCount?: number | null;
   adaptiveMainlineMinCount?: number | null;
   adaptiveMainlinePass?: boolean | null;
+  v13LadderPosition?: Record<string, unknown> | null;
 }
 
 export interface MomentumDecisionPortfolioSlot extends MomentumDecisionIntelligenceFields {
@@ -220,6 +221,7 @@ export interface MomentumDecisionPortfolioSlot extends MomentumDecisionIntellige
   v13ThemeStrengthScore?: number | null;
   v13FundSupportScore?: number | null;
   v13LimitStructureScore?: number | null;
+  v13LadderPosition?: Record<string, unknown> | null;
   v13BuyabilityScore?: number | null;
   v13ChipRiskScore?: number | null;
   v13ShadowScore?: number | null;
@@ -282,6 +284,7 @@ export interface MomentumDecisionCandidateDiagnostic extends MomentumDecisionInt
   v13ThemeStrengthScore?: number | null;
   v13FundSupportScore?: number | null;
   v13LimitStructureScore?: number | null;
+  v13LadderPosition?: Record<string, unknown> | null;
   v13BuyabilityScore?: number | null;
   v13ChipRiskScore?: number | null;
   v13ShadowScore?: number | null;

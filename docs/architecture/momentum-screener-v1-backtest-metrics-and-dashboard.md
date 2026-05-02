@@ -242,7 +242,7 @@ V1 期望关系：
 
 定义：
 
-- 触发后满足“可交易合格”的比例：T+1 非一字不可买、`T+1 open >= T0 close * 0.99`、`T+1 close > T+1 open`，且 `T+2 high >= T+1 close * 1.025`
+- 触发后满足“可交易合格”的比例：T+1 非一字不可买、`T+1 open >= T0 close * 0.99`、`T+1 close > T+1 open`，且 `(T+2 high + T+2 close) / 2 >= T+1 close * 1.02`
 
 ### `weak_continuity_rate`
 
@@ -254,7 +254,7 @@ V1 期望关系：
 
 定义：
 
-- V1.3 主验收比例：T+1 非一字不可买、未深低开、T+1 收阳，并且 T+2 给出至少 `2.5%` 利润缓冲
+- V1.3 主验收比例：T+1 非一字不可买、未深低开、T+1 收阳，并且 T+2 滑点调整退出价给出至少 `2%` 利润缓冲
 
 ### `profit_window_t1`
 
@@ -517,7 +517,7 @@ V1 结果页必须遵守 4 条显示原则：
 - 必须同时给出 `tradable_success_rate` / `settlement_pass_rate`、`weak_continuity_rate` 以及拆分项：
   - `t1_direction_pass_rate`
   - `t2_continuation_pass_rate`
-- 候选池 Top10 与官方 Top3 都要输出上述拆分，避免只看到最终合格率而无法判断瓶颈在可买性、T+1 方向、T+2 延续还是 2.5% 利润缓冲。
+- 候选池 Top10 与官方 Top3 都要输出上述拆分，避免只看到最终合格率而无法判断瓶颈在可买性、T+1 方向、T+2 延续还是 2% 滑点退出缓冲。
 
 ### 11.2 `benchmark_comparison`
 

@@ -220,6 +220,7 @@ flowchart TD
 1. `prepare_candidate_rows()`
    - 读取候选池、历史数据、基础统计
    - 只负责形成全候选基础输入
+   - 单只候选股历史日线加载超时或失败时，只跳过该股并记录 warning，不允许把整日候选池判为失败
 2. `build_all_candidate_profiles()`
    - 调用 `MomentumV13DataService`
    - 为**全部候选股票**构建统一的 V1.3 / V1.5 profile map
@@ -736,6 +737,17 @@ V1.3 仍从完整排序集收口，不从页面当前 TopN 截断结果收口。
 - 一字板只增强“强度确认”，不得自动提升“买入可行性”，也不得单独触发最优执行状态。
 - `limit_list_d` 或封单字段缺失时只降低置信度，不硬扣分、不硬阻断。
 
+### 7.4.1 Elite Protocol 梯队画像
+
+第五阶段起，同一份 `limit_list_d` 还需要产出 `v13_ladder_position`：
+
+- `board_count = candidate.limit_times`。
+- `market_height = max(limit_times)`。
+- `gap_to_leader = market_height - board_count`。
+- 当 `board_count == market_height` 且 `board_count >= 2` 时，标记为 `Space Leader / 空间龙头`。
+
+空间龙头在 Risk Stack 中豁免 `R4 Mainline Risk`，因为最高连板本身有能力定义短线主线；该豁免不影响 `R1 高位 / R2 封板 / R3 资金背离`，也不绕过可交易合格率。
+
 ### 6.5 盘中快照辅助
 
 盘中快照辅助只用来判断：
@@ -957,6 +969,7 @@ V1.3 判断有效的方向不是“每天都提高收益”，而是：
 - `v13_alpha_vs_pool_pct = Group A - Group C`。
 - `selection_efficiency_pct = Group A - Group B`。
 - 当 `Group A < Group C` 时，`warning_message` 固定为 `LOGIC FAILURE: Screener is destroying Pool Alpha`。
+- 当 `0 <= v13_alpha_vs_pool_pct < 15` 时，`warning_message` 固定为 `ALPHA_EROSION_DETECTED: Refine Secondary Decision Weights`，说明过滤层虽未破坏候选池 Alpha，但未达到准生产要求的 15 个百分点优势。
 
 `benchmark_comparison` 继续保留候选池 Top10、主仓、主线龙头和空仓基准，但 Stage 2 的主审计结论以 `strategy_alpha_report` 为准；旧 run 若没有 `candidate_pool` 冻结结果，可降级用 `candidate_top10` 兼容展示，但不能作为正式 Alpha 验收样本。
 

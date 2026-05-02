@@ -1120,8 +1120,20 @@ class MomentumScreenerService:
         prepared_rows: List[tuple[pd.Series, Dict[str, Any]]] = []
         stage_started_at = time.perf_counter()
         progress_interval = max(25, total_candidates // 10) if total_candidates > 0 else 25
+        skipped_history_errors = 0
         for index, row in candidates.iterrows():
-            history = self._load_history(_safe_str(row.get("ts_code") or row.get("symbol")), trade_date)
+            ts_code = _safe_str(row.get("ts_code") or row.get("symbol"))
+            try:
+                history = self._load_history(ts_code, trade_date)
+            except Exception as exc:  # noqa: BLE001
+                skipped_history_errors += 1
+                logger.warning(
+                    "跳过历史数据加载失败的候选股: trade_date=%s ts_code=%s error=%s",
+                    trade_date,
+                    ts_code,
+                    exc,
+                )
+                continue
             if history.empty:
                 logger.debug("跳过缺少历史数据的候选股: %s", row["ts_code"])
                 continue
@@ -1157,9 +1169,20 @@ class MomentumScreenerService:
                     event="prepare_candidate_scoring_rows_progress",
                     elapsed_seconds=time.perf_counter() - stage_started_at,
                     trade_date=trade_date,
-                    extra={"processed_rows": processed_rows, "total_candidates": total_candidates},
+                    extra={
+                        "processed_rows": processed_rows,
+                        "total_candidates": total_candidates,
+                        "skipped_history_errors": skipped_history_errors,
+                    },
                 )
 
+        if skipped_history_errors:
+            logger.warning(
+                "候选池历史数据加载容错完成: trade_date=%s skipped_history_errors=%s total_candidates=%s",
+                trade_date,
+                skipped_history_errors,
+                total_candidates,
+            )
         return prepared_rows
 
     def _build_v13_profile_seed_candidates(

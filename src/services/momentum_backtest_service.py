@@ -37,14 +37,14 @@ from src.storage import (
 
 logger = logging.getLogger(__name__)
 
-MOMENTUM_BACKTEST_ENGINE_VERSION = "v1_3_alpha_validation"
+MOMENTUM_BACKTEST_ENGINE_VERSION = "v1_3_elite_protocol_history_tolerant"
 MOMENTUM_BACKTEST_OFFICIAL_PROFILE = "standard"
 MOMENTUM_BACKTEST_OFFICIAL_TOP_N = MOMENTUM_DEFAULT_TOP_N
 MOMENTUM_BACKTEST_SCREENING_TRUTH_MODE = MOMENTUM_TRUTH_MODE_FULL
 MOMENTUM_BACKTEST_STRATEGY_HEALTH_MODE_CACHED_ONLY = STRATEGY_HEALTH_MODE_CACHED_ONLY
 MOMENTUM_BACKTEST_STRATEGY_HEALTH_MODE_STRICT_FINAL = STRATEGY_HEALTH_MODE_STRICT_FINAL
 MOMENTUM_BACKTEST_T1_MIN_OPEN_RATIO = 0.99
-MOMENTUM_BACKTEST_T2_EXIT_BUFFER_RATIO = 1.025
+MOMENTUM_BACKTEST_T2_ADJUSTED_EXIT_BUFFER_RATIO = 1.02
 MOMENTUM_BACKTEST_STRATEGY_HEALTH_MODE_LABELS = {
     MOMENTUM_BACKTEST_STRATEGY_HEALTH_MODE_CACHED_ONLY: "兼容缓存口径",
     MOMENTUM_BACKTEST_STRATEGY_HEALTH_MODE_STRICT_FINAL: "严格 final 口径",
@@ -1766,6 +1766,12 @@ class MomentumBacktestService:
         t1_low_price = self._to_float(evaluation_t1_bar.get("low")) if evaluation_t1_bar else None
         t1_close_price = self._to_float(evaluation_t1_bar.get("close")) if evaluation_t1_bar else None
         t2_high_price = self._to_float(evaluation_t2_bar.get("high")) if evaluation_t2_bar else None
+        t2_close_price = self._to_float(evaluation_t2_bar.get("close")) if evaluation_t2_bar else None
+        t2_slippage_adjusted_exit_price = (
+            (t2_high_price + t2_close_price) / 2.0
+            if t2_high_price is not None and t2_close_price is not None
+            else None
+        )
         t0_close_price = self._resolve_t0_close_price(item)
         t1_direction_pass = (
             t1_open_price is not None
@@ -1786,9 +1792,9 @@ class MomentumBacktestService:
             and t1_open_price >= t0_close_price * MOMENTUM_BACKTEST_T1_MIN_OPEN_RATIO
         )
         tradable_profit_window_pass = (
-            t2_high_price is not None
+            t2_slippage_adjusted_exit_price is not None
             and t1_close_price is not None
-            and t2_high_price >= t1_close_price * MOMENTUM_BACKTEST_T2_EXIT_BUFFER_RATIO
+            and t2_slippage_adjusted_exit_price >= t1_close_price * MOMENTUM_BACKTEST_T2_ADJUSTED_EXIT_BUFFER_RATIO
         )
         tradable_success_pass = bool(
             t1_buyability_pass
@@ -1840,13 +1846,19 @@ class MomentumBacktestService:
                     "evaluation_bars": [bar for bar in (evaluation_t1_bar, evaluation_t2_bar) if bar],
                     "settlement_rule": "v13_tradable_success_v1",
                     "weak_continuity_rule": "t1_close_gt_open_and_t2_high_gt_t1_close",
-                    "tradable_success_rule": "t1_buyable_no_one_word_open_ge_t0_close_0_99_t1_close_gt_open_t2_high_ge_t1_close_1_025",
+                    "tradable_success_rule": "t1_buyable_no_one_word_open_ge_t0_close_0_99_t1_close_gt_open_t2_adjusted_exit_ge_t1_close_1_02",
                     "t0_close_price": t0_close_price,
                     "t1_open_price": t1_open_price,
                     "t1_high_price": t1_high_price,
                     "t1_low_price": t1_low_price,
                     "t1_close_price": t1_close_price,
                     "t2_high_price": t2_high_price,
+                    "t2_close_price": t2_close_price,
+                    "t2_slippage_adjusted_exit_price": (
+                        round(t2_slippage_adjusted_exit_price, 4)
+                        if t2_slippage_adjusted_exit_price is not None
+                        else None
+                    ),
                     "t1_direction_pass": t1_direction_pass,
                     "t2_continuation_pass": t2_continuation_pass,
                     "weak_continuity_pass": weak_continuity_pass,
@@ -2880,14 +2892,19 @@ class MomentumBacktestService:
         market_base_rate = market_base_metrics.get("tradable_success_rate_pct")
         alpha_vs_pool = self._delta_pct(official_rate, market_base_rate)
         selection_efficiency = self._delta_pct(official_rate, raw_rate)
-        warning_triggered = (
-            official_rate is not None
-            and market_base_rate is not None
-            and official_rate < market_base_rate
+        has_alpha_sample = official_rate is not None and market_base_rate is not None
+        warning_triggered = bool(has_alpha_sample and official_rate < market_base_rate)
+        alpha_erosion_triggered = bool(
+            has_alpha_sample
+            and alpha_vs_pool is not None
+            and alpha_vs_pool < 15.0
         )
         if warning_triggered:
             status = "logic_failure"
             warning_message = "LOGIC FAILURE: Screener is destroying Pool Alpha"
+        elif alpha_erosion_triggered:
+            status = "alpha_erosion_detected"
+            warning_message = "ALPHA_EROSION_DETECTED: Refine Secondary Decision Weights"
         elif selection_efficiency is not None and selection_efficiency < 0:
             status = "raw_momentum_outperforming"
             warning_message = None
@@ -2900,7 +2917,8 @@ class MomentumBacktestService:
 
         return {
             "status": status,
-            "warning_triggered": warning_triggered,
+            "warning_triggered": warning_triggered or alpha_erosion_triggered,
+            "alpha_erosion_triggered": alpha_erosion_triggered,
             "warning_message": warning_message,
             "official_top3_sample_count": official_metrics.get("sample_count", 0),
             "raw_momentum_top3_sample_count": raw_momentum_metrics.get("sample_count", 0),
@@ -3952,6 +3970,8 @@ class MomentumBacktestService:
             "t1_low_price": payload.get("t1_low_price"),
             "t1_close_price": payload.get("t1_close_price"),
             "t2_high_price": payload.get("t2_high_price"),
+            "t2_close_price": payload.get("t2_close_price"),
+            "t2_slippage_adjusted_exit_price": payload.get("t2_slippage_adjusted_exit_price"),
             "t1_direction_pass": MomentumBacktestService._outcome_t1_direction_pass(row),
             "t2_continuation_pass": MomentumBacktestService._outcome_t2_continuation_pass(row),
             "weak_continuity_pass": MomentumBacktestService._outcome_weak_continuity_pass(row),

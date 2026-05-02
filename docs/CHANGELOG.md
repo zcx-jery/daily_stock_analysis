@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [改进] 强势筛选 V1.3 第五阶段新增 Elite Protocol：基于 `limit_list_d.limit_times` 输出梯队画像，并允许市场最高连板空间龙豁免 Risk Stack 的主线不足 R4。
+- [改进] V1.3 回测可交易主标签改用 `(T+2 high + T+2 close) / 2` 滑点调整退出价，要求相对 T+1 收盘仍具备 2% 可成交利润缓冲。
+- [改进] 强势筛选 AI 执行守卫新增动态止损合同：T+1 未突破开盘后 30 分钟高点时提示 `Reduce Position / 降仓`。
+- [修复] 修复本地全量 CI 暴露的 LiteLLM 可选依赖异常分类、UTF-8 源码读取和 SQLite 并发测试文件锁清理问题，并让 `test.sh` 在 Windows Git Bash 下可回退使用 `python`。
+- [改进] V1.3 回测 Alpha 审计新增准生产阈值：官方 Top3 相对全候选池 Alpha 不足 `15pct` 时输出 `ALPHA_EROSION_DETECTED`，用于阻止过滤层弱优势误判为通过。
+- [修复] 强势筛选真实回测在单只候选股历史日线加载超时或失败时改为跳过该股并继续处理当天候选池，避免单股 Tushare 抖动拖垮整日回放。
+- [chore] V1.3 Elite Protocol、滑点退出标签与单股历史数据容错改动后，回测引擎版本升级为 `v1_3_elite_protocol_history_tolerant`，避免新旧验收结果混用。
 - [改进] 强势筛选 AI 点评升级为短线交易逻辑审计员，注入 Risk Stack、Mainline Intensity、Adaptive Gate 与 T+1 执行守卫上下文。
 - [改进] 强势筛选二次决策新增 Adaptive Gate：最近总闸门防守成功率超过 80% 时，官方 Top3 自动要求主线池计数不低于 3。
 - [改进] V1.3 回测总闸门审计报告新增 evaluated_gate_days 与最近 5 日防守成功率，支撑动态阈值调优。

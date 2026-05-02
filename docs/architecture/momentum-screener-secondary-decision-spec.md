@@ -459,7 +459,7 @@ V1.3 第一阶段后，回测验收采用双层标签，主标签必须与 `src/
 - Buyability：`T+1` 不能是一字板，即不能出现 `open == high == low == close`。
 - Gap_Filter：`T+1 open >= 0.99 * T0 close`，用于过滤严重低开导致的不可控风险。
 - Confirmation：`T+1 close > T+1 open`，用于确认次日实际收阳。
-- Profit_Buffer：`T+2 high >= 1.025 * T1 close`，用于确认至少 `2.5%` 的可执行退出缓冲。
+- Profit_Buffer：`(T+2 high + T+2 close) / 2 >= 1.02 * T1 close`，用于确认至少 `2%` 的滑点调整可执行退出缓冲。
 - 主标签布尔表达式：`tradable_success_pass = buyability_pass AND gap_filter_pass AND confirmation_pass AND profit_buffer_pass`。
 - 兼容字段：`positive_t2_rate_pct` 与 `settlement_pass_rate_pct` 在 V1.3 新结果中等同于 `tradable_success_rate_pct`；旧的弱延续结果只能作为历史兼容或辅助观察。
 
@@ -501,7 +501,7 @@ V1.3 第一阶段后，回测验收采用双层标签，主标签必须与 `src/
 - 当真实板块强度 Provider 不可用时，强势筛选主链路仍应返回结果，并明确显示主线识别降级。
 - V1.3 盘中模块必须明确标注 `快照辅助` 与置信度，不能输出分钟级承接已确认或建议买入类表达。
 - V1.3 推荐卡片和落选说明必须能解释封板质量对买点清晰度的影响，例如早封强封、尾盘弱封、多次开板和一字难参与，但不得把封板强度等同于可买性。
-- V1.3 起，回测主胜率统一为 `可交易合格率`：必须同时满足 `T+1 非一字可买`、`T+1 open >= 0.99 * T0 close`、`T+1 close > T+1 open`、`T+2 high >= 1.025 * T1 close`。
+- V1.3 起，回测主胜率统一为 `可交易合格率`：必须同时满足 `T+1 非一字可买`、`T+1 open >= 0.99 * T0 close`、`T+1 close > T+1 open`、`(T+2 high + T+2 close) / 2 >= 1.02 * T1 close`。
 - `弱延续率`、`T+2 利润窗口`、`T+2 最大回撤`、`买点触发率` 保留为方向、执行质量与风险指标，不再单独作为主胜率定义。
 - 用户层的核心北极星之一是：
   - `用户在开盘后 60 分钟内做出明确“买 / 不买”决定的天数明显上升`

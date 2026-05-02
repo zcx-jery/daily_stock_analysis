@@ -527,7 +527,43 @@ entry_range_high = prev_close * 1.015
 - `强更强`
 - `高位博弈`
 
-## 14. 当前建议
+## 14. Elite Protocol：妖股特殊画像
+
+第五阶段起，Aggressive 画像需要显式区分“加速”与“衰竭”，避免把买不进的一字板幻觉当成可交易机会。
+
+### 14.1 加速 vs 衰竭
+
+| 类型 | 定义 | 处理 |
+| --- | --- | --- |
+| `Acceleration` | 高位、缩量、封单强，但仍有换手或分歧确认，属于强趋势继续加速 | 可进入进攻观察，但必须有 T+1 执行守卫 |
+| `Elite_Locked` | 当前市场最高连板，且封板结构极强；它本身可以定义主线 | 可豁免无同题材共振的 `Mainline Risk / R4`，但不豁免高位、封板和资金背离风险 |
+| `Exhaustion` | 连续多日一字或极低换手，强但不可参与，容易出现买不到或开板兑现 | 不进入可执行 Top3，只能保留为主线风向标 |
+
+### 14.2 梯队画像
+
+使用 `limit_list_d.limit_times` 建立市场高度：
+
+```text
+market_height = max(limit_times)
+board_count = candidate.limit_times
+gap_to_leader = market_height - board_count
+```
+
+- `board_count == market_height` 且 `board_count >= 2`：标记为 `Space Leader / 空间龙头`。
+- 空间龙头可跳过 Risk Stack 中的 `R4 Mainline Risk`，因为最高板本身具备“创造主线”的能力。
+- 非空间龙仍按同题材/同主线候选池数量判断主线共振，不能用单票强度替代板块合力。
+
+### 14.3 Dynamic Stop-loss Contract
+
+AI 执行守卫与盘中复盘必须写清动态止损：
+
+```text
+若 T+1 未能突破开盘后 30 分钟高点 -> 触发 Reduce Position / 降仓提醒
+```
+
+该规则不是新增买点，而是防止“强势股不强还继续幻想”。若同时出现低开、无法站回开盘价、题材退潮，应从 `Reduce Position` 进一步降为 `Abandon / 仅观察`。
+
+## 15. 当前建议
 
 `V1-Aggressive` 适合作为：
 
@@ -539,7 +575,13 @@ entry_range_high = prev_close * 1.015
 - 用它直接替代标准版 `V1`
 - 在没有回测前作为唯一默认规则
 
-## 15. 变更记录
+## 16. 变更记录
+
+### 2026-05-02
+
+- 增加 Elite Protocol，明确 `Acceleration / Elite_Locked / Exhaustion` 的边界。
+- 增加基于 `limit_list_d.limit_times` 的梯队画像与空间龙头 R4 豁免口径。
+- 增加 T+1 未突破首 30 分钟高点时触发 `Reduce Position` 的动态止损合同。
 
 ### 2026-04-10
 

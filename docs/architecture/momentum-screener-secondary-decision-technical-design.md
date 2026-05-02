@@ -102,7 +102,7 @@
 - Buyability：`T+1` 不能是一字板，代码使用 `open/high/low/close` 四价相等判断 `t1_one_word_limit`。
 - Gap_Filter：`T+1 open >= T0 close * 0.99`。
 - Confirmation：`T+1 close > T+1 open`。
-- Profit_Buffer：`T+2 high >= T1 close * 1.025`，即至少 `2.5%` 退出缓冲。
+- Profit_Buffer：`(T+2 high + T+2 close) / 2 >= T1 close * 1.02`，即用滑点调整退出价确认至少 `2%` 可成交退出缓冲。
 - 汇总字段：`weak_continuity_pass_rate_pct` 单独展示弱延续率，`tradable_success_rate_pct` 是 V1.3 主验收胜率；`positive_t2_rate_pct` 与 `settlement_pass_rate_pct` 在新结果中保持兼容映射到可交易合格率。
 
 ### 5.0.2 二次决策收口层边界（2026-04-27 冻结）
@@ -265,7 +265,7 @@ V1.3 第三阶段在 `src/services/momentum_secondary_decision_service.py` 中�
 - `R1 Position Risk`：`close > 1.2 * ma20`。
 - `R2 Sealing Risk`：`limit_list_d.first_time > 14:00:00` 或 `first_time != last_time`；`last_time` 透传为 `last_seal_time`。
 - `R3 Divergence Risk`：`close >= high_20d` 且 `v13_stock_buy_elg_amount < 0`。
-- `R4 Mainline Risk`：同主题 / 同主线在当日候选池中的数量 `< 2`，优先使用 `_theme_pool_count`，其次使用 V1.3 主线候选计数。
+- `R4 Mainline Risk`：同主题 / 同主线在当日候选池中的数量 `< 2`，优先使用 `_theme_pool_count`，其次使用 V1.3 主线候选计数；若 `limit_list_d.limit_times` 标记该股为当前市场最高连板且至少 2 板，则视为 `Space Leader` 并豁免 R4。
 
 Veto Policy：
 
@@ -793,7 +793,7 @@ risk_stack_count >= 3 -> hard_blockers += risk_stack_veto
 官方回测报告必须同时展示 `弱延续率` 与 `可交易合格率`，但二者职责不同。
 
 - `弱延续率`：用于判断系统是否捕捉到短线方向偏置，规则为 `T+1 close > T+1 open` 且 `T+2 high > T+1 close`。
-- `可交易合格率`：用于判断是否真的具备可执行获利窗口，规则为 `T+1 非一字板`、`T+1 open >= 0.99 * T0 close`、`T+1 close > T+1 open`、`T+2 high >= 1.025 * T1 close`。
+- `可交易合格率`：用于判断是否真的具备可执行获利窗口，规则为 `T+1 非一字板`、`T+1 open >= 0.99 * T0 close`、`T+1 close > T+1 open`、`(T+2 high + T+2 close) / 2 >= 1.02 * T1 close`。
 - 报告主结论、Benchmark、Regime、每日诊断和明细表的主胜率使用 `tradable_success_rate_pct`；弱延续只作为旁路参考，不能覆盖主标签。
 
 ### 9.2 Performance Auditing
@@ -999,4 +999,4 @@ Stage 4 起，`gate_justification_report` 同时作为动态阈值输入：
 - `0只清晰` 的机会质量是否始终为 `弱`
 - `20日进攻许可 = 暂停进攻` 时，是否仍允许在“强环境 + 强机会”下给出 `谨慎出手`
 - 官方回测是否同时输出 `weak_continuity_pass_rate_pct` 与 `tradable_success_rate_pct`，并以 `tradable_success_rate_pct` 作为 V1.3 主验收胜率
-- T+1/T+2 回填阈值是否与代码保持一致：`0.99` 跳空过滤、`1.025` 利润缓冲、T+1 非一字、T+1 收阳
+- T+1/T+2 回填阈值是否与代码保持一致：`0.99` 跳空过滤、`1.02` 滑点调整退出缓冲、T+1 非一字、T+1 收阳

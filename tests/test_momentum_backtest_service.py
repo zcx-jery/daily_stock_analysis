@@ -179,7 +179,7 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
             {
                 "date": "2026-04-14",
                 "open": 10.42,
-                "high": 10.55,
+                "high": 10.75,
                 "low": 10.10,
                 "close": 10.20,
             },
@@ -201,6 +201,7 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
 
         payload = self.service._outcome_payload(record)
         self.assertTrue(payload["weak_continuity_pass"])
+        self.assertEqual(payload["t2_slippage_adjusted_exit_price"], 10.475)
         self.assertFalse(payload["tradable_success_pass"])
         self.assertFalse(payload["settlement_pass"])
         self.assertEqual(record.real_strength_label, "weak_continuity")
@@ -311,9 +312,35 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
 
         self.assertEqual(report["status"], "logic_failure")
         self.assertTrue(report["warning_triggered"])
+        self.assertTrue(report["alpha_erosion_triggered"])
         self.assertEqual(report["warning_message"], "LOGIC FAILURE: Screener is destroying Pool Alpha")
         self.assertEqual(report["v13_alpha_vs_pool_pct"], -20.0)
         self.assertEqual(report["selection_efficiency_pct"], -10.0)
+
+    def test_strategy_alpha_report_warns_when_alpha_buffer_is_too_thin(self) -> None:
+        report = self.service._build_strategy_alpha_report(
+            official_metrics={
+                "sample_count": 3,
+                "tradable_success_rate_pct": 52.0,
+                "avg_t2_profit_window_pct": 1.0,
+            },
+            raw_momentum_metrics={
+                "sample_count": 3,
+                "tradable_success_rate_pct": 50.0,
+                "avg_t2_profit_window_pct": 2.0,
+            },
+            market_base_metrics={
+                "sample_count": 10,
+                "tradable_success_rate_pct": 40.0,
+                "avg_t2_profit_window_pct": 3.0,
+            },
+        )
+
+        self.assertEqual(report["status"], "alpha_erosion_detected")
+        self.assertTrue(report["warning_triggered"])
+        self.assertTrue(report["alpha_erosion_triggered"])
+        self.assertEqual(report["warning_message"], "ALPHA_EROSION_DETECTED: Refine Secondary Decision Weights")
+        self.assertEqual(report["v13_alpha_vs_pool_pct"], 12.0)
 
     def _build_daily_summary_fixture(self) -> MomentumBacktestDailySummary:
         trade_date = pd.Timestamp("2026-04-10").date()
@@ -424,7 +451,7 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
                 {
                     "settlement_rule": "v13_tradable_success_v1",
                     "weak_continuity_rule": "t1_close_gt_open_and_t2_high_gt_t1_close",
-                    "tradable_success_rule": "t1_buyable_no_one_word_open_ge_t0_close_0_99_t1_close_gt_open_t2_high_ge_t1_close_1_025",
+                    "tradable_success_rule": "t1_buyable_no_one_word_open_ge_t0_close_0_99_t1_close_gt_open_t2_adjusted_exit_ge_t1_close_1_02",
                     "t1_direction_pass": t1_direction_pass,
                     "t2_continuation_pass": t2_continuation_pass,
                     "weak_continuity_pass": resolved_weak_continuity_pass,

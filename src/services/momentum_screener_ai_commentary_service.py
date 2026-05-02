@@ -296,6 +296,7 @@ class MomentumScreenerAICommentaryService:
 9. 必须显式使用 `decision_intelligence`、`risk_stack`、`mainline_intensity` 和 `adaptive_gate` 上下文。
 10. 对默认 Top3 的每只股票，都必须扮演一次 Devil's Advocate：至少找出一个背离/瑕疵因子；若没有明显硬风险，也要说明“最接近风险的未确认项”。
 11. 执行守卫必须落到 V1.3 可交易合同：若 T+1 开盘低于 T 日收盘价的 99%，只能放弃/仅观察，不能升级为执行。
+12. 动态止损必须写清：若 T+1 未能突破开盘后 30 分钟高点，必须提示 `Reduce Position` / 降仓，而不是继续等待幻想修复。
 
 本次回答必须使用以下结构：
 {self._build_answer_contract(request.review_type)}
@@ -312,7 +313,7 @@ class MomentumScreenerAICommentaryService:
 ## [Risk Audit]
 - 列出已触发的 Risk Stack 因子，并额外指出至少一个背离或未确认项。
 ## [Execution Guard]
-- 明确 T+1 开盘、承接、放弃条件；若开盘 < T日收盘*0.99，结论必须是放弃或仅观察。
+- 明确 T+1 开盘、承接、放弃条件；若开盘 < T日收盘*0.99，结论必须是放弃或仅观察；若未突破首 30 分钟高点，提示 Reduce Position。
 ## [External Check]
 - 若调用了工具，总结外部验证；若未调用，明确说明当前以规则快照为主。"""
         if review_type == "decision":
@@ -321,7 +322,7 @@ class MomentumScreenerAICommentaryService:
 ## [Risk Audit]
 - 逐只列出 Risk Stack 触发项；每只 Top3 必须给出至少一个 Devil's Advocate 背离/瑕疵因子。
 ## [Execution Guard]
-- 用 V1.3 可交易合同描述明天的执行守卫；若 T+1 开盘 < T日收盘*0.99，必须放弃或仅观察。
+- 用 V1.3 可交易合同描述明天的执行守卫；若 T+1 开盘 < T日收盘*0.99，必须放弃或仅观察；若未突破首 30 分钟高点，提示 Reduce Position。
 ## [External Check]
 - 若调用了工具，总结外部验证是否支持当前主线和默认组合。"""
         if review_type == "intraday":
@@ -422,6 +423,7 @@ class MomentumScreenerAICommentaryService:
                         "risk_stack_count": self._model_value(item, "risk_stack_count"),
                         "risk_stack_veto": self._model_value(item, "risk_stack_veto"),
                         "mainline_intensity": self._build_model_mainline_intensity(item),
+                        "ladder_position": self._model_value(item, "v13_ladder_position"),
                         "adaptive_gate": self._model_value(item, "adaptive_gate"),
                         "adaptive_mainline_count": self._model_value(item, "adaptive_mainline_count"),
                         "adaptive_mainline_min_count": self._model_value(item, "adaptive_mainline_min_count"),
@@ -470,6 +472,7 @@ class MomentumScreenerAICommentaryService:
                     "top_reasons": candidate["top_reasons"],
                     "risk_tags": candidate["risk_tags"],
                     "mainline_intensity": self._build_candidate_mainline_intensity(candidate, slot),
+                    "ladder_position": slot.get("v13_ladder_position") if isinstance(slot, dict) else None,
                     "risk_stack": slot.get("risk_stack") if isinstance(slot, dict) else None,
                     "risk_stack_count": slot.get("risk_stack_count") if isinstance(slot, dict) else None,
                     "risk_stack_veto": slot.get("risk_stack_veto") if isinstance(slot, dict) else None,
@@ -551,6 +554,7 @@ class MomentumScreenerAICommentaryService:
                         "risk_stack_count": self._model_value(item, "risk_stack_count"),
                         "risk_stack_veto": self._model_value(item, "risk_stack_veto"),
                         "mainline_intensity": self._build_model_mainline_intensity(item),
+                        "ladder_position": self._model_value(item, "v13_ladder_position"),
                         "adaptive_gate": self._model_value(item, "adaptive_gate"),
                     }
                     for item in excluded_items
@@ -703,6 +707,7 @@ class MomentumScreenerAICommentaryService:
                     "theme": item.theme,
                     "official_score": item.official_score,
                     "mainline_intensity": self._build_candidate_mainline_intensity(candidate, item),
+                    "ladder_position": self._model_value(item, "v13_ladder_position"),
                     "risk_stack": risk_stack,
                     "risk_stack_triggered_factors": triggered_factors,
                     "devils_advocate_required": True,
@@ -813,13 +818,15 @@ class MomentumScreenerAICommentaryService:
             gap_floor = None
         return {
             "t1_gap_threshold": "T+1 Open >= T0 Close * 0.99",
+            "dynamic_stop_loss": "If T+1 fails to break the first 30-min high, trigger Reduce Position warning.",
             "t0_close": close_price,
             "abandon_if": (
                 f"T+1 开盘低于 {gap_floor}，按 V1.3 可交易合同放弃/仅观察。"
                 if gap_floor is not None
                 else "T+1 开盘低于 T 日收盘价的 99%，按 V1.3 可交易合同放弃/仅观察。"
             ),
-            "confirm_if": "T+1 开盘不深低开，且收盘强于开盘，T+2 需提供 >=2.5% 利润缓冲。",
+            "reduce_if": "T+1 不能突破开盘后 30 分钟高点，触发 Reduce Position / 降仓提醒。",
+            "confirm_if": "T+1 开盘不深低开，且收盘强于开盘，T+2 滑点调整退出价需提供 >=2% 利润缓冲。",
         }
 
     def _find_candidate(self, request: MomentumScreenerAIReviewRequest) -> Dict[str, Any]:
