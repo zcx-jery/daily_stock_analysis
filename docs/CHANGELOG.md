@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [chore] 手动部署 workflow 支持部署后启动服务器端 V1.3 强势筛选回测任务。
 - [改进] 强势筛选 V1.3 第五阶段新增 Elite Protocol：基于 `limit_list_d.limit_times` 输出梯队画像，并允许市场最高连板空间龙豁免 Risk Stack 的主线不足 R4。
 - [改进] V1.3 回测可交易主标签改用 `(T+2 high + T+2 close) / 2` 滑点调整退出价，要求相对 T+1 收盘仍具备 2% 可成交利润缓冲。
 - [改进] 强势筛选 AI 执行守卫新增动态止损合同：T+1 未突破开盘后 30 分钟高点时提示 `Reduce Position / 降仓`。
