@@ -330,6 +330,23 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
         MomentumV13DataService.reset_cache()
         Config.reset_instance()
 
+    def test_mainline_intensity_bonus_caps_at_thirty_percent(self) -> None:
+        service = self._build_service()
+
+        adjusted = service._apply_mainline_intensity_bonus(
+            70.0,
+            {"v13_profile": {"candidate_count": 5}},
+        )
+        fallback_adjusted = service._apply_mainline_intensity_bonus(
+            70.0,
+            {"sector_stats": {"strong_count": 2}},
+        )
+
+        self.assertEqual(adjusted["mainline_intensity_count"], 5.0)
+        self.assertEqual(adjusted["mainline_intensity_multiplier"], 1.3)
+        self.assertEqual(adjusted["score"], 91.0)
+        self.assertEqual(fallback_adjusted["mainline_intensity_multiplier"], 1.2)
+
     def _build_service(self, fetcher: _FakeFetcher | None = None) -> MomentumScreenerService:
         cache_root = Path(self.cache_root_dir.name)
         return MomentumScreenerService(

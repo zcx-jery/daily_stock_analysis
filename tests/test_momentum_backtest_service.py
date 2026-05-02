@@ -167,6 +167,154 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
         self.assertEqual(record.real_strength_label, "insufficient")
         self.assertIsNone(record.t1_trade_date)
 
+    def test_outcome_record_separates_weak_continuity_from_tradable_success(self) -> None:
+        bars = [
+            {
+                "date": "2026-04-11",
+                "open": 10.00,
+                "high": 10.60,
+                "low": 9.90,
+                "close": 10.40,
+            },
+            {
+                "date": "2026-04-14",
+                "open": 10.42,
+                "high": 10.55,
+                "low": 10.10,
+                "close": 10.20,
+            },
+        ]
+
+        with patch.object(self.service, "_load_forward_bars", return_value=bars):
+            record = self.service._build_outcome_record(
+                trade_dt=pd.Timestamp("2026-04-10").date(),
+                item={
+                    "ts_code": "600001.SH",
+                    "name": "弱延续样本",
+                    "close": 10.10,
+                    "entry_range_low": 9.90,
+                    "entry_range_high": 10.05,
+                },
+                view_scope="decision_top3",
+                slot="main",
+            )
+
+        payload = self.service._outcome_payload(record)
+        self.assertTrue(payload["weak_continuity_pass"])
+        self.assertFalse(payload["tradable_success_pass"])
+        self.assertFalse(payload["settlement_pass"])
+        self.assertEqual(record.real_strength_label, "weak_continuity")
+
+    def test_summarize_outcomes_uses_tradable_success_as_primary_rate(self) -> None:
+        rows = [
+            self._build_outcome_record(
+                view_scope="decision_top3",
+                slot="main",
+                ts_code="600001.SH",
+                name="可交易成功",
+                t2_profit_window_pct=5.0,
+                weak_continuity_pass=True,
+                tradable_success_pass=True,
+            ),
+            self._build_outcome_record(
+                view_scope="decision_top3",
+                slot="secondary",
+                ts_code="600002.SH",
+                name="只有弱延续",
+                t2_profit_window_pct=1.0,
+                weak_continuity_pass=True,
+                tradable_success_pass=False,
+            ),
+        ]
+
+        metrics = self.service._summarize_outcomes(rows)
+
+        self.assertEqual(metrics["weak_continuity_pass_rate_pct"], 100.0)
+        self.assertEqual(metrics["tradable_success_rate_pct"], 50.0)
+        self.assertEqual(metrics["settlement_pass_rate_pct"], 50.0)
+        self.assertEqual(metrics["positive_t2_rate_pct"], 50.0)
+
+    def test_raw_momentum_top3_selects_from_candidate_pool_by_rank_score(self) -> None:
+        candidate_rows = [
+            self._build_candidate_record(
+                ts_code="600001.SH",
+                name="A",
+                theme="机器人",
+                role="leader",
+                rank=1,
+                view_scope="candidate_pool",
+                rank_score=80.0,
+            ),
+            self._build_candidate_record(
+                ts_code="600002.SH",
+                name="B",
+                theme="机器人",
+                role="front",
+                rank=2,
+                view_scope="candidate_pool",
+                rank_score=95.0,
+            ),
+            self._build_candidate_record(
+                ts_code="600003.SH",
+                name="C",
+                theme="军工",
+                role="mid",
+                rank=3,
+                view_scope="candidate_pool",
+                rank_score=70.0,
+            ),
+            self._build_candidate_record(
+                ts_code="600004.SH",
+                name="D",
+                theme="军工",
+                role="front",
+                rank=4,
+                view_scope="candidate_pool",
+                rank_score=88.0,
+            ),
+        ]
+        candidate_outcomes = [
+            self._build_outcome_record(
+                view_scope="candidate_pool",
+                ts_code=row.ts_code,
+                name=row.name,
+                t2_profit_window_pct=1.0,
+            )
+            for row in candidate_rows
+        ]
+
+        selected = self.service._select_raw_momentum_top3_outcomes(
+            candidate_rows=candidate_rows,
+            candidate_outcomes=candidate_outcomes,
+        )
+
+        self.assertEqual([row.ts_code for row in selected], ["600002.SH", "600004.SH", "600001.SH"])
+
+    def test_strategy_alpha_report_flags_logic_failure_against_pool(self) -> None:
+        report = self.service._build_strategy_alpha_report(
+            official_metrics={
+                "sample_count": 3,
+                "tradable_success_rate_pct": 20.0,
+                "avg_t2_profit_window_pct": 1.0,
+            },
+            raw_momentum_metrics={
+                "sample_count": 3,
+                "tradable_success_rate_pct": 30.0,
+                "avg_t2_profit_window_pct": 2.0,
+            },
+            market_base_metrics={
+                "sample_count": 10,
+                "tradable_success_rate_pct": 40.0,
+                "avg_t2_profit_window_pct": 3.0,
+            },
+        )
+
+        self.assertEqual(report["status"], "logic_failure")
+        self.assertTrue(report["warning_triggered"])
+        self.assertEqual(report["warning_message"], "LOGIC FAILURE: Screener is destroying Pool Alpha")
+        self.assertEqual(report["v13_alpha_vs_pool_pct"], -20.0)
+        self.assertEqual(report["selection_efficiency_pct"], -10.0)
+
     def _build_daily_summary_fixture(self) -> MomentumBacktestDailySummary:
         trade_date = pd.Timestamp("2026-04-10").date()
         return MomentumBacktestDailySummary(
@@ -196,16 +344,22 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
         theme: str,
         role: str,
         rank: int,
+        view_scope: str = "candidate_top10",
+        rank_score: float | None = None,
+        final_score: float | None = None,
+        trade_date: pd.Timestamp | None = None,
     ) -> MomentumBacktestCandidateRecord:
         return MomentumBacktestCandidateRecord(
             run_id="momentum_bt_diag",
-            trade_date=pd.Timestamp("2026-04-10").date(),
-            view_scope="candidate_top10",
+            trade_date=(trade_date or pd.Timestamp("2026-04-10")).date(),
+            view_scope=view_scope,
             rank=rank,
             ts_code=ts_code,
             name=name,
             theme=theme,
             role=role,
+            rank_score=rank_score,
+            final_score=final_score,
         )
 
     def _build_decision_record(
@@ -241,15 +395,23 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
         t1_direction_pass: bool = True,
         t2_continuation_pass: bool = True,
         settlement_pass: bool | None = None,
+        weak_continuity_pass: bool | None = None,
+        tradable_success_pass: bool | None = None,
+        trade_date: pd.Timestamp | None = None,
     ) -> MomentumBacktestOutcomeRecord:
-        resolved_settlement_pass = (
+        resolved_weak_continuity_pass = (
             t1_direction_pass and t2_continuation_pass
-            if settlement_pass is None
-            else settlement_pass
+            if weak_continuity_pass is None
+            else weak_continuity_pass
+        )
+        resolved_tradable_success_pass = (
+            resolved_weak_continuity_pass
+            if tradable_success_pass is None and settlement_pass is None
+            else (settlement_pass if tradable_success_pass is None else tradable_success_pass)
         )
         return MomentumBacktestOutcomeRecord(
             run_id="momentum_bt_diag",
-            trade_date=pd.Timestamp("2026-04-10").date(),
+            trade_date=(trade_date or pd.Timestamp("2026-04-10")).date(),
             view_scope=view_scope,
             slot=slot,
             ts_code=ts_code,
@@ -260,13 +422,95 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
             t2_close_return_pct=t2_profit_window_pct / 2,
             outcome_payload_json=self.service._dump_json(
                 {
-                    "settlement_rule": "t1_close_gt_open_and_t2_high_gt_t1_close",
+                    "settlement_rule": "v13_tradable_success_v1",
+                    "weak_continuity_rule": "t1_close_gt_open_and_t2_high_gt_t1_close",
+                    "tradable_success_rule": "t1_buyable_no_one_word_open_ge_t0_close_0_99_t1_close_gt_open_t2_high_ge_t1_close_1_025",
                     "t1_direction_pass": t1_direction_pass,
                     "t2_continuation_pass": t2_continuation_pass,
-                    "settlement_pass": resolved_settlement_pass,
+                    "weak_continuity_pass": resolved_weak_continuity_pass,
+                    "tradable_success_pass": resolved_tradable_success_pass,
+                    "settlement_pass": resolved_tradable_success_pass,
                 }
             ),
         )
+
+    def test_gate_justification_report_classifies_stand_aside_days(self) -> None:
+        low_rate_day = pd.Timestamp("2026-04-10")
+        high_rate_day = pd.Timestamp("2026-04-11")
+        low_rate_row = self._build_daily_summary_fixture()
+        low_rate_row.action_level = "stand_aside"
+        low_rate_row.action_label = "今日不做"
+        low_rate_row.trade_date = low_rate_day.date()
+        high_rate_row = self._build_daily_summary_fixture()
+        high_rate_row.action_level = "stand_aside"
+        high_rate_row.action_label = "今日不做"
+        high_rate_row.trade_date = high_rate_day.date()
+
+        report = self.service._build_gate_justification_report(
+            daily_rows=[low_rate_row, high_rate_row],
+            candidate_pool_outcomes_by_date={
+                low_rate_day.date(): [
+                    self._build_outcome_record(
+                        view_scope="candidate_pool",
+                        ts_code="600001.SH",
+                        name="A",
+                        t2_profit_window_pct=1.0,
+                        tradable_success_pass=True,
+                        trade_date=low_rate_day,
+                    ),
+                    self._build_outcome_record(
+                        view_scope="candidate_pool",
+                        ts_code="600002.SH",
+                        name="B",
+                        t2_profit_window_pct=-1.0,
+                        tradable_success_pass=False,
+                        trade_date=low_rate_day,
+                    ),
+                    self._build_outcome_record(
+                        view_scope="candidate_pool",
+                        ts_code="600003.SH",
+                        name="C",
+                        t2_profit_window_pct=-2.0,
+                        tradable_success_pass=False,
+                        trade_date=low_rate_day,
+                    ),
+                ],
+                high_rate_day.date(): [
+                    self._build_outcome_record(
+                        view_scope="candidate_pool",
+                        ts_code="600004.SH",
+                        name="D",
+                        t2_profit_window_pct=2.0,
+                        tradable_success_pass=True,
+                        trade_date=high_rate_day,
+                    ),
+                    self._build_outcome_record(
+                        view_scope="candidate_pool",
+                        ts_code="600005.SH",
+                        name="E",
+                        t2_profit_window_pct=2.5,
+                        tradable_success_pass=True,
+                        trade_date=high_rate_day,
+                    ),
+                    self._build_outcome_record(
+                        view_scope="candidate_pool",
+                        ts_code="600006.SH",
+                        name="F",
+                        t2_profit_window_pct=-0.5,
+                        tradable_success_pass=False,
+                        trade_date=high_rate_day,
+                    ),
+                ],
+            },
+        )
+
+        self.assertEqual(report["successful_defensive_gate_count"], 1)
+        self.assertEqual(report["false_alarm_warning_count"], 1)
+        self.assertEqual(len(report["evaluated_gate_days"]), 2)
+        self.assertEqual(report["recent_gate_lookback_days"], 2)
+        self.assertEqual(report["recent_successful_defensive_gate_rate_pct"], 50.0)
+        self.assertEqual(report["successful_defensive_gate"][0]["classification"], "Successful_Defensive_Gate")
+        self.assertEqual(report["false_alarm_warnings"][0]["classification"], "False_Alarm_Warning")
 
     def test_create_run_replays_trade_dates_and_persists_summary(self) -> None:
         result = self.service.create_run(
@@ -303,11 +547,19 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
         self.assertIn("decision_top3_t1_direction_pass_rate", summary["summary"])
         self.assertIn("decision_top3_t2_continuation_pass_rate", summary["summary"])
         self.assertIn("candidate_top10_t1_direction_pass_rate", summary["summary"])
+        self.assertIn("candidate_pool_tradable_success_rate", summary["summary"])
         self.assertIn("benchmark_comparison", summary["summary"])
+        self.assertIn("strategy_alpha_report", summary["summary"])
+        self.assertIn("gate_justification_report", summary["summary"])
         self.assertIn("layer_diagnostics", summary["summary"])
         self.assertIn("gate_module_breakdown", summary["summary"])
         self.assertIn("regime_breakdown", summary["summary"])
         self.assertIn("v13_diagnostics", summary["summary"])
+        benchmark_keys = {item["key"] for item in summary["summary"]["benchmark_comparison"]}
+        self.assertTrue({"official_top3", "raw_rank_top3", "market_base"}.issubset(benchmark_keys))
+        self.assertIn("v13_alpha_vs_pool_pct", summary["summary"]["strategy_alpha_report"])
+        self.assertIn("selection_efficiency_pct", summary["summary"]["strategy_alpha_report"])
+        self.assertIn("false_alarm_warning_count", summary["summary"]["gate_justification_report"])
         self.assertIn("mainline_quality", summary["summary"]["v13_diagnostics"])
         self.assertIn("theme_concentration", summary["summary"]["v13_diagnostics"])
         self.assertIn("sentiment_alignment", summary["summary"]["v13_diagnostics"])
@@ -436,6 +688,7 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
                     "benchmark_comparison": [],
                     "layer_diagnostics": [],
                     "gate_module_breakdown": [],
+                    "gate_justification_report": {},
                     "regime_breakdown": [],
                     "candidate_top10_positive_t2_rate": 0.0,
                     "candidate_top10_t1_direction_pass_rate": 0.0,

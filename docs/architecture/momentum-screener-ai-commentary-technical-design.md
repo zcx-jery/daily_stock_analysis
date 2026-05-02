@@ -706,3 +706,32 @@ def generate_screener_session_id(review_type: str, object_id: str, trade_date: s
 | 多 profile 会话冲突 | session_id 包含 profile，Standard 和 Aggressive 的点评独立 |
 | 用户过度相信 AI | trust bar 必显 + 回答结构固定为“规则结论优先” + 盘中边界硬限制 |
 | 旧会话与新数据混淆 | `resume / rerun` 分离 + 每轮回答带 `context_meta` |
+
+## 11. V1.3 Decision Intelligence Sync
+
+第四阶段后，实际实现以 `src/services/momentum_screener_ai_commentary_service.py` 为准。AI 点评服务继续作为解释层，不替代规则引擎，但角色从普通点评助手升级为 `Short-term Trading Auditor / Logic Auditor`。
+
+### 11.1 Prompt Contract
+
+系统 Prompt 必须固定要求输出：
+
+- `[Core Logic]`：复述规则层结论，并解释主线、强度、角色与 `Mainline_Intensity`。
+- `[Risk Audit]`：列出 `Risk_Stack_Check` 已触发因子，并对每只默认 Top3 执行一次 Devil's Advocate 审计。
+- `[Execution Guard]`：落到 V1.3 可交易合同，尤其是 `T+1 Open >= T0 Close * 0.99`；不满足时只能放弃或仅观察。
+- `[External Check]`：工具调用只作为外部验证，不能覆盖规则层结论。
+
+### 11.2 Context Injection
+
+`_build_review_context()` 必须注入 `decision_intelligence`：
+
+- `top3_audit[]`：包含每个槽位的 `risk_stack`、触发风险因子、`mainline_intensity`、Devil's Advocate 候选背离项和 `execution_guard`。
+- `adaptive_gate`：透出动态总闸门状态，说明是否进入弱市收口。
+- `required_output_sections`：给 LLM 明确结构约束，避免生成泛泛摘要。
+
+### 11.3 Test Coverage
+
+`tests/test_momentum_screener_ai_commentary_service.py` 需要覆盖：
+
+- Prompt 中包含 `Risk Stack` / `Mainline Intensity` / Devil's Advocate 要求。
+- 规则上下文中能看到 `risk_stack_triggered_factors`。
+- `[Risk Audit]` 与 `T+1 Open >= T0 Close * 0.99` 执行守卫不会从 Prompt 中丢失。

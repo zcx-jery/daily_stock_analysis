@@ -420,6 +420,81 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         self.assertEqual(STRATEGY_HEALTH_CACHE_TTL, timedelta(hours=12))
         self.assertEqual(STRATEGY_HEALTH_SAMPLE_CACHE_TTL, timedelta(days=30))
 
+    def test_risk_stack_veto_blocks_candidate_from_official_slots(self) -> None:
+        service = MomentumSecondaryDecisionService(strategy_health_async=False)
+        candidate = self._selected_candidate_fixture(
+            ts_code="600301.SH",
+            name="风险堆叠样本",
+            theme="机器人",
+            role_key="leader",
+            buy_point_status="clear",
+            decision_score=95.0,
+            forward_alpha_score=90.0,
+            official_score=96.0,
+            risk_score=18.0,
+            v13_mainline_score=88.0,
+        )
+        candidate.update(
+            {
+                "close": 12.5,
+                "ma20": 10.0,
+                "high_20d": 12.5,
+                "v13_stock_buy_elg_amount": -2_000_000.0,
+                "_theme_pool_count": 1,
+                "_v13_sealing_strength_signal": {
+                    "available": True,
+                    "first_seal_time": "14:10:00",
+                    "last_seal_time": "14:25:00",
+                },
+            }
+        )
+
+        blockers = service._slot_hard_blocker_items("main", candidate, {"机器人": 92.0})
+
+        self.assertTrue(candidate["_risk_stack_veto"])
+        self.assertEqual(candidate["_risk_stack_count"], 4)
+        self.assertTrue(any(item["key"] == "risk_stack_veto" for item in blockers))
+        self.assertTrue(service._slot_hard_blockers("secondary", candidate, {"机器人": 92.0}))
+
+    def test_adaptive_gate_strict_mainline_threshold_blocks_isolated_candidates(self) -> None:
+        service = MomentumSecondaryDecisionService(
+            strategy_health_async=False,
+            adaptive_gate_audit_provider=lambda _profile: {
+                "run_id": "momentum_bt_adaptive",
+                "report": {
+                    "evaluated_gate_days": [
+                        {
+                            "trade_date": f"2026-04-{day:02d}",
+                            "classification": "Successful_Defensive_Gate",
+                        }
+                        for day in range(21, 26)
+                    ],
+                },
+            },
+        )
+        context = service._build_adaptive_gate_context(profile="standard")
+        candidate = self._selected_candidate_fixture(
+            ts_code="600302.SH",
+            name="弱市孤立样本",
+            theme="机器人",
+            role_key="leader",
+            buy_point_status="clear",
+            decision_score=92.0,
+            forward_alpha_score=88.0,
+            official_score=94.0,
+            risk_score=12.0,
+            v13_mainline_score=86.0,
+        )
+        candidate["_theme_pool_count"] = 2
+        service._apply_adaptive_mainline_threshold([candidate], context)
+
+        blockers = service._slot_hard_blocker_items("main", candidate, {"机器人": 92.0})
+
+        self.assertTrue(context["enabled"])
+        self.assertEqual(context["required_mainline_count"], 3)
+        self.assertFalse(candidate["_adaptive_mainline_pass"])
+        self.assertTrue(any(item["key"] == "adaptive_mainline_threshold" for item in blockers))
+
     @staticmethod
     def _selected_candidate_fixture(
         *,

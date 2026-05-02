@@ -37,12 +37,14 @@ from src.storage import (
 
 logger = logging.getLogger(__name__)
 
-MOMENTUM_BACKTEST_ENGINE_VERSION = "v1_2_official_score"
+MOMENTUM_BACKTEST_ENGINE_VERSION = "v1_3_alpha_validation"
 MOMENTUM_BACKTEST_OFFICIAL_PROFILE = "standard"
 MOMENTUM_BACKTEST_OFFICIAL_TOP_N = MOMENTUM_DEFAULT_TOP_N
 MOMENTUM_BACKTEST_SCREENING_TRUTH_MODE = MOMENTUM_TRUTH_MODE_FULL
 MOMENTUM_BACKTEST_STRATEGY_HEALTH_MODE_CACHED_ONLY = STRATEGY_HEALTH_MODE_CACHED_ONLY
 MOMENTUM_BACKTEST_STRATEGY_HEALTH_MODE_STRICT_FINAL = STRATEGY_HEALTH_MODE_STRICT_FINAL
+MOMENTUM_BACKTEST_T1_MIN_OPEN_RATIO = 0.99
+MOMENTUM_BACKTEST_T2_EXIT_BUFFER_RATIO = 1.025
 MOMENTUM_BACKTEST_STRATEGY_HEALTH_MODE_LABELS = {
     MOMENTUM_BACKTEST_STRATEGY_HEALTH_MODE_CACHED_ONLY: "兼容缓存口径",
     MOMENTUM_BACKTEST_STRATEGY_HEALTH_MODE_STRICT_FINAL: "严格 final 口径",
@@ -994,6 +996,11 @@ class MomentumBacktestService:
     ) -> _ReplayDayArtifacts:
         ranked_results = list(screening.get("ranked_results") or screening.get("results") or [])
         top_candidates = ranked_results[:10]
+        ranked_by_code = {
+            str(item.get("ts_code") or ""): item
+            for item in ranked_results
+            if isinstance(item, dict) and item.get("ts_code")
+        }
         portfolio = list(decision.get("portfolio") or [])
         candidate_diagnostics_by_code = {
             str(item.get("ts_code") or ""): item
@@ -1033,11 +1040,11 @@ class MomentumBacktestService:
             ),
         )
 
-        candidate_records = [
-            MomentumBacktestCandidateRecord(
+        def build_candidate_record(item: Dict[str, Any], view_scope: str) -> MomentumBacktestCandidateRecord:
+            return MomentumBacktestCandidateRecord(
                 run_id="",
                 trade_date=trade_dt,
-                view_scope="candidate_top10",
+                view_scope=view_scope,
                 rank=int(item.get("rank") or 0),
                 ts_code=str(item.get("ts_code") or ""),
                 name=str(item.get("name") or ""),
@@ -1057,6 +1064,12 @@ class MomentumBacktestService:
                     )
                 ),
             )
+
+        candidate_records = [
+            build_candidate_record(item, "candidate_pool")
+            for item in ranked_results
+        ] + [
+            build_candidate_record(item, "candidate_top10")
             for item in top_candidates
         ]
 
@@ -1084,6 +1097,17 @@ class MomentumBacktestService:
         ]
 
         outcome_records = []
+        forward_bars_cache: Dict[Tuple[str, date], List[Dict[str, Any]]] = {}
+        for item in ranked_results:
+            outcome_records.append(
+                self._build_outcome_record(
+                    trade_dt=trade_dt,
+                    item=item,
+                    view_scope="candidate_pool",
+                    slot=None,
+                    forward_bars_cache=forward_bars_cache,
+                )
+            )
         for item in top_candidates:
             outcome_records.append(
                 self._build_outcome_record(
@@ -1091,15 +1115,19 @@ class MomentumBacktestService:
                     item=item,
                     view_scope="candidate_top10",
                     slot=None,
+                    forward_bars_cache=forward_bars_cache,
                 )
             )
         for item in portfolio:
+            outcome_item = dict(ranked_by_code.get(str(item.get("ts_code") or "")) or {})
+            outcome_item.update(item)
             outcome_records.append(
                 self._build_outcome_record(
                     trade_dt=trade_dt,
-                    item=item,
+                    item=outcome_item,
                     view_scope="decision_top3",
                     slot=str(item.get("slot") or ""),
+                    forward_bars_cache=forward_bars_cache,
                 )
             )
 
@@ -1511,7 +1539,7 @@ class MomentumBacktestService:
                     "issue_key": "t1_direction_failure_high",
                     "severity": "warning",
                     "title": "T+1 方向失败偏高",
-                    "summary": "默认组合次日收盘强于开盘的比例偏低，短线延续主要卡在 T+1 方向确认。",
+                    "summary": "默认组合次日收盘强于开盘的比例偏低，可交易合格主要卡在 T+1 方向确认。",
                     "affected_codes": failed_t1_codes or [row.ts_code for row in decision_rows],
                     "metrics": {
                         "decision_t1_direction_pass_rate_pct": decision_metrics["t1_direction_pass_rate_pct"],
@@ -1533,7 +1561,7 @@ class MomentumBacktestService:
                     "issue_key": "gate_missed_opportunity",
                     "severity": "critical" if daily_row.action_level == "stand_aside" else "warning",
                     "title": "总闸门可能错杀机会",
-                    "summary": "当日被降到观察/不做，但候选池整体短线延续合格率和 T+2 利润窗口仍偏强。",
+                    "summary": "当日被降到观察/不做，但候选池整体可交易合格率和 T+2 利润窗口仍偏强。",
                     "affected_codes": [row.ts_code for row in candidate_rows[:3]],
                     "metrics": {
                         "candidate_positive_t2_rate_pct": candidate_metrics["positive_t2_rate_pct"],
@@ -1652,7 +1680,7 @@ class MomentumBacktestService:
                     "issue_key": "candidate_pool_weak",
                     "severity": "info",
                     "title": "候选池整体偏弱",
-                    "summary": "候选池后续延续性不足，当天可能更像噪音行情而非可持续强势。",
+                    "summary": "候选池后续可交易性不足，当天可能更像噪音行情而非可持续强势。",
                     "affected_codes": [row.ts_code for row in candidate_rows[:3]],
                     "metrics": {
                         "candidate_positive_t2_rate_pct": candidate_metrics["positive_t2_rate_pct"],
@@ -1684,8 +1712,16 @@ class MomentumBacktestService:
         item: Dict[str, Any],
         view_scope: str,
         slot: Optional[str],
+        forward_bars_cache: Optional[Dict[Tuple[str, date], List[Dict[str, Any]]]] = None,
     ) -> MomentumBacktestOutcomeRecord:
-        bars = self._load_forward_bars(str(item.get("ts_code") or ""), trade_dt)
+        ts_code = str(item.get("ts_code") or "")
+        cache_key = (ts_code, trade_dt)
+        if forward_bars_cache is not None and cache_key in forward_bars_cache:
+            bars = forward_bars_cache[cache_key]
+        else:
+            bars = self._load_forward_bars(ts_code, trade_dt)
+            if forward_bars_cache is not None:
+                forward_bars_cache[cache_key] = bars
         reference_entry_price = self._to_float(bars[0].get("open")) if bars else None
         entry_low = self._to_float(item.get("entry_range_low"))
         entry_high = self._to_float(item.get("entry_range_high"))
@@ -1719,13 +1755,18 @@ class MomentumBacktestService:
         window_bars = bars[trigger_index: trigger_index + 2] if bars else []
         t1_bar = window_bars[0] if len(window_bars) >= 1 else None
         t2_bar = window_bars[1] if len(window_bars) >= 2 else None
+        evaluation_t1_bar = bars[0] if len(bars) >= 1 else None
+        evaluation_t2_bar = bars[1] if len(bars) >= 2 else None
         base_price = trigger_price or reference_entry_price
         t1_stats = self._compute_window_stats(base_price, window_bars[:1])
         t2_stats = self._compute_window_stats(base_price, window_bars[:2])
 
-        t1_open_price = self._to_float(t1_bar.get("open")) if t1_bar else None
-        t1_close_price = self._to_float(t1_bar.get("close")) if t1_bar else None
-        t2_high_price = self._to_float(t2_bar.get("high")) if t2_bar else None
+        t1_open_price = self._to_float(evaluation_t1_bar.get("open")) if evaluation_t1_bar else None
+        t1_high_price = self._to_float(evaluation_t1_bar.get("high")) if evaluation_t1_bar else None
+        t1_low_price = self._to_float(evaluation_t1_bar.get("low")) if evaluation_t1_bar else None
+        t1_close_price = self._to_float(evaluation_t1_bar.get("close")) if evaluation_t1_bar else None
+        t2_high_price = self._to_float(evaluation_t2_bar.get("high")) if evaluation_t2_bar else None
+        t0_close_price = self._resolve_t0_close_price(item)
         t1_direction_pass = (
             t1_open_price is not None
             and t1_close_price is not None
@@ -1736,14 +1777,35 @@ class MomentumBacktestService:
             and t1_close_price is not None
             and t2_high_price > t1_close_price
         )
-        settlement_pass = bool(t1_direction_pass and t2_continuation_pass)
+        weak_continuity_pass = bool(t1_direction_pass and t2_continuation_pass)
+        t1_one_word_limit = self._is_one_word_limit_bar(evaluation_t1_bar)
+        t1_buyability_pass = bool(evaluation_t1_bar and not t1_one_word_limit)
+        t1_gap_risk_pass = (
+            t1_open_price is not None
+            and t0_close_price is not None
+            and t1_open_price >= t0_close_price * MOMENTUM_BACKTEST_T1_MIN_OPEN_RATIO
+        )
+        tradable_profit_window_pass = (
+            t2_high_price is not None
+            and t1_close_price is not None
+            and t2_high_price >= t1_close_price * MOMENTUM_BACKTEST_T2_EXIT_BUFFER_RATIO
+        )
+        tradable_success_pass = bool(
+            t1_buyability_pass
+            and t1_gap_risk_pass
+            and t1_direction_pass
+            and tradable_profit_window_pass
+        )
+        settlement_pass = tradable_success_pass
 
         if not window_bars:
             real_strength_label = "insufficient"
-        elif settlement_pass and (t2_stats.get("profit_window_pct") or 0.0) >= 5.0:
+        elif tradable_success_pass and (t2_stats.get("profit_window_pct") or 0.0) >= 5.0:
             real_strength_label = "strong"
-        elif settlement_pass:
+        elif tradable_success_pass:
             real_strength_label = "medium"
+        elif weak_continuity_pass:
+            real_strength_label = "weak_continuity"
         else:
             real_strength_label = "weak"
 
@@ -1752,7 +1814,7 @@ class MomentumBacktestService:
             trade_date=trade_dt,
             view_scope=view_scope,
             slot=slot,
-            ts_code=str(item.get("ts_code") or ""),
+            ts_code=ts_code,
             name=str(item.get("name") or ""),
             buy_triggered=buy_triggered,
             reference_entry_price=reference_entry_price,
@@ -1775,12 +1837,24 @@ class MomentumBacktestService:
                     "trigger_trade_date": trigger_trade_date.isoformat() if trigger_trade_date else None,
                     "trigger_price": trigger_price,
                     "bars": window_bars,
-                    "settlement_rule": "t1_close_gt_open_and_t2_high_gt_t1_close",
+                    "evaluation_bars": [bar for bar in (evaluation_t1_bar, evaluation_t2_bar) if bar],
+                    "settlement_rule": "v13_tradable_success_v1",
+                    "weak_continuity_rule": "t1_close_gt_open_and_t2_high_gt_t1_close",
+                    "tradable_success_rule": "t1_buyable_no_one_word_open_ge_t0_close_0_99_t1_close_gt_open_t2_high_ge_t1_close_1_025",
+                    "t0_close_price": t0_close_price,
                     "t1_open_price": t1_open_price,
+                    "t1_high_price": t1_high_price,
+                    "t1_low_price": t1_low_price,
                     "t1_close_price": t1_close_price,
                     "t2_high_price": t2_high_price,
                     "t1_direction_pass": t1_direction_pass,
                     "t2_continuation_pass": t2_continuation_pass,
+                    "weak_continuity_pass": weak_continuity_pass,
+                    "t1_one_word_limit": t1_one_word_limit,
+                    "t1_buyability_pass": t1_buyability_pass,
+                    "t1_gap_risk_pass": t1_gap_risk_pass,
+                    "tradable_profit_window_pass": tradable_profit_window_pass,
+                    "tradable_success_pass": tradable_success_pass,
                     "settlement_pass": settlement_pass,
                 }
             ),
@@ -1790,9 +1864,15 @@ class MomentumBacktestService:
         run = self.repository.get_run(run_id)
         daily_rows = self.repository.list_daily_summaries(run_id)
         candidate_rows = self.repository.list_candidate_records_for_run(run_id, view_scope="candidate_top10")
+        candidate_pool_rows = self.repository.list_candidate_records_for_run(run_id, view_scope="candidate_pool")
+        if not candidate_pool_rows:
+            candidate_pool_rows = candidate_rows
         decision_rows = self.repository.list_decision_records_for_run(run_id)
         outcome_rows = self.repository.list_outcomes(run_id)
         candidate_outcomes = [row for row in outcome_rows if row.view_scope == "candidate_top10"]
+        candidate_pool_outcomes = [row for row in outcome_rows if row.view_scope == "candidate_pool"]
+        if not candidate_pool_outcomes:
+            candidate_pool_outcomes = candidate_outcomes
         decision_outcomes = [row for row in outcome_rows if row.view_scope == "decision_top3"]
 
         strategy_health_mode = self._normalize_strategy_health_mode(
@@ -1834,23 +1914,22 @@ class MomentumBacktestService:
                 )
 
         candidate_metrics = self._summarize_outcomes(candidate_outcomes)
+        candidate_pool_metrics = self._summarize_outcomes(candidate_pool_outcomes)
         decision_metrics = self._summarize_outcomes(decision_outcomes)
         decision_outcomes_by_slot = self._group_outcomes_by_slot(decision_outcomes)
 
-        candidate_rank_map = {(row.trade_date, row.ts_code): row.rank for row in candidate_rows}
-        raw_rank_top3_outcomes = [
-            row
-            for row in candidate_outcomes
-            if (candidate_rank_map.get((row.trade_date, row.ts_code)) or 999) <= 3
-        ]
+        raw_rank_top3_outcomes = self._select_raw_momentum_top3_outcomes(
+            candidate_rows=candidate_pool_rows,
+            candidate_outcomes=candidate_pool_outcomes,
+        )
         leader_baseline_outcomes = [
             outcome
-            for outcome in candidate_outcomes
+            for outcome in candidate_pool_outcomes
             if self._is_leader_role(
                 next(
                     (
                         row.role
-                        for row in candidate_rows
+                        for row in candidate_pool_rows
                         if row.trade_date == outcome.trade_date and row.ts_code == outcome.ts_code
                     ),
                     None,
@@ -1861,6 +1940,7 @@ class MomentumBacktestService:
         candidate_rows_by_date: Dict[date, List[MomentumBacktestCandidateRecord]] = {}
         decision_rows_by_date: Dict[date, List[MomentumBacktestDecisionRecord]] = {}
         candidate_outcomes_by_date: Dict[date, List[MomentumBacktestOutcomeRecord]] = {}
+        candidate_pool_outcomes_by_date: Dict[date, List[MomentumBacktestOutcomeRecord]] = {}
         decision_outcomes_by_date: Dict[date, List[MomentumBacktestOutcomeRecord]] = {}
         for row in candidate_rows:
             candidate_rows_by_date.setdefault(row.trade_date, []).append(row)
@@ -1868,6 +1948,8 @@ class MomentumBacktestService:
             decision_rows_by_date.setdefault(row.trade_date, []).append(row)
         for row in candidate_outcomes:
             candidate_outcomes_by_date.setdefault(row.trade_date, []).append(row)
+        for row in candidate_pool_outcomes:
+            candidate_pool_outcomes_by_date.setdefault(row.trade_date, []).append(row)
         for row in decision_outcomes:
             decision_outcomes_by_date.setdefault(row.trade_date, []).append(row)
 
@@ -1883,11 +1965,22 @@ class MomentumBacktestService:
 
         benchmark_comparison = self._build_benchmark_comparison(
             candidate_metrics=candidate_metrics,
+            candidate_pool_metrics=candidate_pool_metrics,
             decision_metrics=decision_metrics,
             raw_rank_top3_outcomes=raw_rank_top3_outcomes,
             leader_baseline_outcomes=leader_baseline_outcomes,
             main_slot_outcomes=decision_outcomes_by_slot.get("main", []),
             total_trade_days=len(daily_rows),
+        )
+        raw_rank_metrics = self._summarize_outcomes(raw_rank_top3_outcomes)
+        strategy_alpha_report = self._build_strategy_alpha_report(
+            official_metrics=decision_metrics,
+            raw_momentum_metrics=raw_rank_metrics,
+            market_base_metrics=candidate_pool_metrics,
+        )
+        gate_justification_report = self._build_gate_justification_report(
+            daily_rows=daily_rows,
+            candidate_pool_outcomes_by_date=candidate_pool_outcomes_by_date,
         )
         gate_module_breakdown = self._build_gate_module_breakdown(
             daily_rows=daily_rows,
@@ -1927,20 +2020,30 @@ class MomentumBacktestService:
             "candidate_top10_buy_trigger_rate": candidate_metrics["trigger_rate_pct"],
             "candidate_top10_positive_t2_rate": candidate_metrics["positive_t2_rate_pct"],
             "candidate_top10_settlement_pass_rate": candidate_metrics["settlement_pass_rate_pct"],
+            "candidate_top10_weak_continuity_rate": candidate_metrics["weak_continuity_pass_rate_pct"],
+            "candidate_top10_tradable_success_rate": candidate_metrics["tradable_success_rate_pct"],
             "candidate_top10_t1_direction_pass_rate": candidate_metrics["t1_direction_pass_rate_pct"],
             "candidate_top10_t2_continuation_pass_rate": candidate_metrics["t2_continuation_pass_rate_pct"],
             "candidate_top10_avg_t2_profit_window_pct": candidate_metrics["avg_t2_profit_window_pct"],
             "candidate_top10_avg_t2_max_drawdown_pct": candidate_metrics["avg_t2_max_drawdown_pct"],
+            "candidate_pool_tradable_success_rate": candidate_pool_metrics["tradable_success_rate_pct"],
+            "candidate_pool_weak_continuity_rate": candidate_pool_metrics["weak_continuity_pass_rate_pct"],
+            "candidate_pool_avg_t2_profit_window_pct": candidate_pool_metrics["avg_t2_profit_window_pct"],
+            "candidate_pool_avg_t2_max_drawdown_pct": candidate_pool_metrics["avg_t2_max_drawdown_pct"],
             "decision_top3_buy_trigger_rate": decision_metrics["trigger_rate_pct"],
             "decision_top3_positive_t1_rate": decision_metrics["positive_t1_rate_pct"],
             "decision_top3_positive_t2_rate": decision_metrics["positive_t2_rate_pct"],
             "decision_top3_settlement_pass_rate": decision_metrics["settlement_pass_rate_pct"],
+            "decision_top3_weak_continuity_rate": decision_metrics["weak_continuity_pass_rate_pct"],
+            "decision_top3_tradable_success_rate": decision_metrics["tradable_success_rate_pct"],
             "decision_top3_t1_direction_pass_rate": decision_metrics["t1_direction_pass_rate_pct"],
             "decision_top3_t2_continuation_pass_rate": decision_metrics["t2_continuation_pass_rate_pct"],
             "decision_top3_avg_t1_profit_window_pct": decision_metrics["avg_t1_profit_window_pct"],
             "decision_top3_avg_t2_profit_window_pct": decision_metrics["avg_t2_profit_window_pct"],
             "decision_top3_avg_t2_max_drawdown_pct": decision_metrics["avg_t2_max_drawdown_pct"],
             "benchmark_comparison": benchmark_comparison,
+            "strategy_alpha_report": strategy_alpha_report,
+            "gate_justification_report": gate_justification_report,
             "layer_diagnostics": layer_diagnostics,
             "gate_module_breakdown": gate_module_breakdown,
             "regime_breakdown": regime_breakdown,
@@ -2676,10 +2779,18 @@ class MomentumBacktestService:
             "gate_module_breakdown",
             "regime_breakdown",
             "candidate_top10_positive_t2_rate",
+            "candidate_top10_weak_continuity_rate",
+            "candidate_top10_tradable_success_rate",
             "candidate_top10_t1_direction_pass_rate",
             "candidate_top10_t2_continuation_pass_rate",
+            "candidate_pool_tradable_success_rate",
+            "candidate_pool_weak_continuity_rate",
+            "decision_top3_tradable_success_rate",
+            "decision_top3_weak_continuity_rate",
             "decision_top3_t1_direction_pass_rate",
             "decision_top3_t2_continuation_pass_rate",
+            "strategy_alpha_report",
+            "gate_justification_report",
             "market_environment_breakdown",
             "strategy_health_mode",
             "strategy_health_validation_status_breakdown",
@@ -2726,10 +2837,169 @@ class MomentumBacktestService:
                 return False
         return True
 
+    @staticmethod
+    def _raw_momentum_candidate_sort_key(row: MomentumBacktestCandidateRecord) -> Tuple[float, int, str]:
+        score = row.rank_score
+        if score is None:
+            score = row.final_score
+        if score is None:
+            score = -float(row.rank or 999)
+        return (-float(score), int(row.rank or 999), row.ts_code)
+
+    def _select_raw_momentum_top3_outcomes(
+        self,
+        *,
+        candidate_rows: List[MomentumBacktestCandidateRecord],
+        candidate_outcomes: List[MomentumBacktestOutcomeRecord],
+    ) -> List[MomentumBacktestOutcomeRecord]:
+        outcomes_by_key = {
+            (row.trade_date, row.ts_code): row
+            for row in candidate_outcomes
+        }
+        rows_by_date: Dict[date, List[MomentumBacktestCandidateRecord]] = {}
+        for row in candidate_rows:
+            rows_by_date.setdefault(row.trade_date, []).append(row)
+
+        selected: List[MomentumBacktestOutcomeRecord] = []
+        for trade_date, rows in rows_by_date.items():
+            for row in sorted(rows, key=self._raw_momentum_candidate_sort_key)[:3]:
+                outcome = outcomes_by_key.get((trade_date, row.ts_code))
+                if outcome is not None:
+                    selected.append(outcome)
+        return selected
+
+    def _build_strategy_alpha_report(
+        self,
+        *,
+        official_metrics: Dict[str, Optional[float]],
+        raw_momentum_metrics: Dict[str, Optional[float]],
+        market_base_metrics: Dict[str, Optional[float]],
+    ) -> Dict[str, Any]:
+        official_rate = official_metrics.get("tradable_success_rate_pct")
+        raw_rate = raw_momentum_metrics.get("tradable_success_rate_pct")
+        market_base_rate = market_base_metrics.get("tradable_success_rate_pct")
+        alpha_vs_pool = self._delta_pct(official_rate, market_base_rate)
+        selection_efficiency = self._delta_pct(official_rate, raw_rate)
+        warning_triggered = (
+            official_rate is not None
+            and market_base_rate is not None
+            and official_rate < market_base_rate
+        )
+        if warning_triggered:
+            status = "logic_failure"
+            warning_message = "LOGIC FAILURE: Screener is destroying Pool Alpha"
+        elif selection_efficiency is not None and selection_efficiency < 0:
+            status = "raw_momentum_outperforming"
+            warning_message = None
+        elif alpha_vs_pool is not None and alpha_vs_pool >= 0:
+            status = "positive_alpha"
+            warning_message = None
+        else:
+            status = "insufficient_data"
+            warning_message = None
+
+        return {
+            "status": status,
+            "warning_triggered": warning_triggered,
+            "warning_message": warning_message,
+            "official_top3_sample_count": official_metrics.get("sample_count", 0),
+            "raw_momentum_top3_sample_count": raw_momentum_metrics.get("sample_count", 0),
+            "market_base_sample_count": market_base_metrics.get("sample_count", 0),
+            "official_top3_tradable_success_rate_pct": official_rate,
+            "raw_momentum_top3_tradable_success_rate_pct": raw_rate,
+            "market_base_tradable_success_rate_pct": market_base_rate,
+            "v13_alpha_vs_pool_pct": alpha_vs_pool,
+            "selection_efficiency_pct": selection_efficiency,
+            "official_top3_avg_t2_profit_window_pct": official_metrics.get("avg_t2_profit_window_pct"),
+            "raw_momentum_top3_avg_t2_profit_window_pct": raw_momentum_metrics.get("avg_t2_profit_window_pct"),
+            "market_base_avg_t2_profit_window_pct": market_base_metrics.get("avg_t2_profit_window_pct"),
+        }
+
+    def _build_gate_justification_report(
+        self,
+        *,
+        daily_rows: List[MomentumBacktestDailySummary],
+        candidate_pool_outcomes_by_date: Dict[date, List[MomentumBacktestOutcomeRecord]],
+    ) -> Dict[str, Any]:
+        successful_defensive_gate: List[Dict[str, Any]] = []
+        false_alarm_warnings: List[Dict[str, Any]] = []
+        evaluated_gate_days: List[Dict[str, Any]] = []
+        evaluated_days = 0
+        stand_aside_days = [row for row in daily_rows if row.action_level == "stand_aside"]
+
+        for row in stand_aside_days:
+            pool_metrics = self._summarize_outcomes(candidate_pool_outcomes_by_date.get(row.trade_date, []))
+            pool_rate = pool_metrics.get("tradable_success_rate_pct")
+            if pool_rate is None:
+                continue
+            evaluated_days += 1
+            item = {
+                "trade_date": row.trade_date.isoformat(),
+                "action_level": row.action_level,
+                "action_label": row.action_label,
+                "pool_base_win_rate_pct": pool_rate,
+                "candidate_pool_sample_count": pool_metrics.get("sample_count", 0),
+            }
+            if pool_rate < 35.0:
+                classified_item = {
+                    **item,
+                    "classification": "Successful_Defensive_Gate",
+                    "summary": "总闸门不做且全池可交易合格率低于 35%，防守判断成立。",
+                }
+                successful_defensive_gate.append(classified_item)
+                evaluated_gate_days.append(classified_item)
+            elif pool_rate > 55.0:
+                classified_item = {
+                    **item,
+                    "classification": "False_Alarm_Warning",
+                    "summary": "总闸门不做但全池可交易合格率高于 55%，需要复核风控参数是否过紧。",
+                }
+                false_alarm_warnings.append(classified_item)
+                evaluated_gate_days.append(classified_item)
+            else:
+                evaluated_gate_days.append(
+                    {
+                        **item,
+                        "classification": "Neutral_Gate",
+                        "summary": "总闸门不做且全池可交易合格率处于 35%-55% 中性区间，暂不计入防守成功或误报。",
+                    }
+                )
+
+        recent_gate_days = sorted(
+            evaluated_gate_days,
+            key=lambda item: str(item.get("trade_date") or ""),
+            reverse=True,
+        )[:5]
+        recent_success_count = sum(
+            1
+            for item in recent_gate_days
+            if item.get("classification") == "Successful_Defensive_Gate"
+        )
+        recent_success_rate = (
+            round(recent_success_count / len(recent_gate_days) * 100.0, 2)
+            if recent_gate_days
+            else None
+        )
+
+        return {
+            "stand_aside_days": len(stand_aside_days),
+            "evaluated_stand_aside_days": evaluated_days,
+            "successful_defensive_gate_count": len(successful_defensive_gate),
+            "false_alarm_warning_count": len(false_alarm_warnings),
+            "evaluated_gate_days": evaluated_gate_days,
+            "recent_gate_lookback_days": len(recent_gate_days),
+            "recent_successful_defensive_gate_rate_pct": recent_success_rate,
+            "successful_defensive_gate": successful_defensive_gate,
+            "false_alarm_warnings": false_alarm_warnings,
+            "successful_defensive_gate_threshold_pct": 35.0,
+            "false_alarm_warning_threshold_pct": 55.0,
+        }
+
     def _build_benchmark_comparison(
         self,
         *,
         candidate_metrics: Dict[str, Optional[float]],
+        candidate_pool_metrics: Dict[str, Optional[float]],
         decision_metrics: Dict[str, Optional[float]],
         raw_rank_top3_outcomes: List[MomentumBacktestOutcomeRecord],
         leader_baseline_outcomes: List[MomentumBacktestOutcomeRecord],
@@ -2738,6 +3008,9 @@ class MomentumBacktestService:
     ) -> List[Dict[str, Any]]:
         decision_profit = decision_metrics["avg_t2_profit_window_pct"]
         candidate_profit = candidate_metrics["avg_t2_profit_window_pct"]
+        market_base_profit = candidate_pool_metrics["avg_t2_profit_window_pct"]
+        official_success = decision_metrics["tradable_success_rate_pct"]
+        market_base_success = candidate_pool_metrics["tradable_success_rate_pct"]
         benchmarks = [
             self._build_benchmark_item(
                 key="official_top3",
@@ -2745,6 +3018,19 @@ class MomentumBacktestService:
                 metrics=decision_metrics,
                 decision_profit=decision_profit,
                 candidate_profit=candidate_profit,
+                market_base_profit=market_base_profit,
+                official_success=official_success,
+                market_base_success=market_base_success,
+            ),
+            self._build_benchmark_item(
+                key="market_base",
+                label="全候选池基准",
+                metrics=candidate_pool_metrics,
+                decision_profit=decision_profit,
+                candidate_profit=candidate_profit,
+                market_base_profit=market_base_profit,
+                official_success=official_success,
+                market_base_success=market_base_success,
             ),
             self._build_benchmark_item(
                 key="candidate_top10",
@@ -2752,13 +3038,19 @@ class MomentumBacktestService:
                 metrics=candidate_metrics,
                 decision_profit=decision_profit,
                 candidate_profit=candidate_profit,
+                market_base_profit=market_base_profit,
+                official_success=official_success,
+                market_base_success=market_base_success,
             ),
             self._build_benchmark_item(
                 key="raw_rank_top3",
-                label="原始排序 Top3",
+                label="Raw Momentum Top3",
                 metrics=self._summarize_outcomes(raw_rank_top3_outcomes),
                 decision_profit=decision_profit,
                 candidate_profit=candidate_profit,
+                market_base_profit=market_base_profit,
+                official_success=official_success,
+                market_base_success=market_base_success,
             ),
             self._build_benchmark_item(
                 key="leader_baseline",
@@ -2766,6 +3058,9 @@ class MomentumBacktestService:
                 metrics=self._summarize_outcomes(leader_baseline_outcomes),
                 decision_profit=decision_profit,
                 candidate_profit=candidate_profit,
+                market_base_profit=market_base_profit,
+                official_success=official_success,
+                market_base_success=market_base_success,
             ),
             self._build_benchmark_item(
                 key="main_slot",
@@ -2773,6 +3068,9 @@ class MomentumBacktestService:
                 metrics=self._summarize_outcomes(main_slot_outcomes),
                 decision_profit=decision_profit,
                 candidate_profit=candidate_profit,
+                market_base_profit=market_base_profit,
+                official_success=official_success,
+                market_base_success=market_base_success,
             ),
             {
                 "key": "stay_out",
@@ -2781,10 +3079,15 @@ class MomentumBacktestService:
                 "trigger_rate_pct": 0.0,
                 "positive_t2_rate_pct": 0.0,
                 "settlement_pass_rate_pct": 0.0,
+                "weak_continuity_pass_rate_pct": 0.0,
+                "tradable_success_rate_pct": 0.0,
                 "avg_t2_profit_window_pct": 0.0,
                 "avg_t2_max_drawdown_pct": 0.0,
                 "alpha_vs_official_top3_pct": self._delta_pct(0.0, decision_profit),
                 "alpha_vs_candidate_top10_pct": self._delta_pct(0.0, candidate_profit),
+                "alpha_vs_market_base_pct": self._delta_pct(0.0, market_base_profit),
+                "tradable_success_alpha_vs_official_top3_pct": self._delta_pct(0.0, official_success),
+                "tradable_success_alpha_vs_market_base_pct": self._delta_pct(0.0, market_base_success),
             },
         ]
         return benchmarks
@@ -2880,13 +3183,16 @@ class MomentumBacktestService:
                 label="候选池",
                 level=candidate_level,
                 summary=(
-                    f"候选池 Top10 短线延续合格率 {self._format_pct(candidate_metrics['positive_t2_rate_pct'])}，"
+                    f"候选池 Top10 可交易合格率 {self._format_pct(candidate_metrics['tradable_success_rate_pct'])}，"
+                    f"弱延续率 {self._format_pct(candidate_metrics['weak_continuity_pass_rate_pct'])}，"
                     f"平均利润窗口 {self._format_pct(candidate_metrics['avg_t2_profit_window_pct'])}。"
                 ),
                 metrics={
                     "sample_count": candidate_metrics["sample_count"],
                     "positive_t2_rate_pct": candidate_metrics["positive_t2_rate_pct"],
                     "settlement_pass_rate_pct": candidate_metrics["settlement_pass_rate_pct"],
+                    "weak_continuity_pass_rate_pct": candidate_metrics["weak_continuity_pass_rate_pct"],
+                    "tradable_success_rate_pct": candidate_metrics["tradable_success_rate_pct"],
                     "t1_direction_pass_rate_pct": candidate_metrics["t1_direction_pass_rate_pct"],
                     "t2_continuation_pass_rate_pct": candidate_metrics["t2_continuation_pass_rate_pct"],
                     "avg_t2_profit_window_pct": candidate_metrics["avg_t2_profit_window_pct"],
@@ -2917,13 +3223,15 @@ class MomentumBacktestService:
                 level=execution_level,
                 summary=(
                     f"默认组合买点触发率 {self._format_pct(decision_metrics['trigger_rate_pct'])}，"
-                    f"触发后短线延续合格率 {self._format_pct(triggered_metrics['positive_t2_rate_pct'])}，"
+                    f"触发后可交易合格率 {self._format_pct(triggered_metrics['tradable_success_rate_pct'])}，"
                     f"平均回撤 {self._format_pct(triggered_metrics['avg_t2_max_drawdown_pct'])}。"
                 ),
                 metrics={
                     "buy_trigger_rate_pct": decision_metrics["trigger_rate_pct"],
                     "buy_signal_win_rate_t2_pct": triggered_metrics["positive_t2_rate_pct"],
                     "settlement_pass_rate_pct": triggered_metrics["settlement_pass_rate_pct"],
+                    "weak_continuity_pass_rate_pct": triggered_metrics["weak_continuity_pass_rate_pct"],
+                    "tradable_success_rate_pct": triggered_metrics["tradable_success_rate_pct"],
                     "profit_window_t2_pct": triggered_metrics["avg_t2_profit_window_pct"],
                     "max_drawdown_after_trigger_pct": triggered_metrics["avg_t2_max_drawdown_pct"],
                 },
@@ -2955,7 +3263,7 @@ class MomentumBacktestService:
                 label="环境适配",
                 level=regime_level,
                 summary=(
-                    f"强/中/弱市场的短线延续合格率分布为 "
+                    f"强/中/弱市场的可交易合格率分布为 "
                     f"{' / '.join(self._format_pct(item.get('decision_positive_t2_rate_pct')) for item in regime_breakdown)}，"
                     f"当前分桶离散度 {self._format_pct(regime_spread)}。"
                 ),
@@ -3122,6 +3430,8 @@ class MomentumBacktestService:
                     "label": REGIME_LABELS[level],
                     "trade_days": len(rows),
                     "decision_positive_t2_rate_pct": metrics["positive_t2_rate_pct"],
+                    "decision_weak_continuity_rate_pct": metrics["weak_continuity_pass_rate_pct"],
+                    "decision_tradable_success_rate_pct": metrics["tradable_success_rate_pct"],
                     "decision_avg_t2_profit_window_pct": metrics["avg_t2_profit_window_pct"],
                     "decision_avg_t2_max_drawdown_pct": metrics["avg_t2_max_drawdown_pct"],
                     "missed_opportunity_rate_pct": self._safe_ratio(missed_days, len(restricted_rows)),
@@ -3142,8 +3452,12 @@ class MomentumBacktestService:
         metrics: Dict[str, Optional[float]],
         decision_profit: Optional[float],
         candidate_profit: Optional[float],
+        market_base_profit: Optional[float],
+        official_success: Optional[float],
+        market_base_success: Optional[float],
     ) -> Dict[str, Any]:
         avg_profit = metrics.get("avg_t2_profit_window_pct")
+        tradable_success_rate = metrics.get("tradable_success_rate_pct")
         return {
             "key": key,
             "label": label,
@@ -3151,12 +3465,23 @@ class MomentumBacktestService:
             "trigger_rate_pct": metrics.get("trigger_rate_pct"),
             "positive_t2_rate_pct": metrics.get("positive_t2_rate_pct"),
             "settlement_pass_rate_pct": metrics.get("settlement_pass_rate_pct"),
+            "weak_continuity_pass_rate_pct": metrics.get("weak_continuity_pass_rate_pct"),
+            "tradable_success_rate_pct": metrics.get("tradable_success_rate_pct"),
             "t1_direction_pass_rate_pct": metrics.get("t1_direction_pass_rate_pct"),
             "t2_continuation_pass_rate_pct": metrics.get("t2_continuation_pass_rate_pct"),
             "avg_t2_profit_window_pct": avg_profit,
             "avg_t2_max_drawdown_pct": metrics.get("avg_t2_max_drawdown_pct"),
             "alpha_vs_official_top3_pct": self._delta_pct(avg_profit, decision_profit),
             "alpha_vs_candidate_top10_pct": self._delta_pct(avg_profit, candidate_profit),
+            "alpha_vs_market_base_pct": self._delta_pct(avg_profit, market_base_profit),
+            "tradable_success_alpha_vs_official_top3_pct": self._delta_pct(
+                tradable_success_rate,
+                official_success,
+            ),
+            "tradable_success_alpha_vs_market_base_pct": self._delta_pct(
+                tradable_success_rate,
+                market_base_success,
+            ),
         }
 
     def _build_layer_item(
@@ -3424,6 +3749,8 @@ class MomentumBacktestService:
                 "positive_t1_rate_pct": None,
                 "positive_t2_rate_pct": None,
                 "settlement_pass_rate_pct": None,
+                "weak_continuity_pass_rate_pct": None,
+                "tradable_success_rate_pct": None,
                 "t1_direction_pass_rate_pct": None,
                 "t2_continuation_pass_rate_pct": None,
                 "avg_t1_profit_window_pct": None,
@@ -3438,7 +3765,11 @@ class MomentumBacktestService:
             sum(1 for row in rows if MomentumBacktestService._outcome_t1_direction_pass(row)) * 100.0 / sample_count,
             2,
         )
-        positive_t2_rate_pct = round(
+        weak_continuity_pass_rate_pct = round(
+            sum(1 for row in rows if MomentumBacktestService._outcome_weak_continuity_pass(row)) * 100.0 / sample_count,
+            2,
+        )
+        tradable_success_rate_pct = round(
             sum(1 for row in rows if MomentumBacktestService._outcome_settlement_pass(row)) * 100.0 / sample_count,
             2,
         )
@@ -3450,8 +3781,10 @@ class MomentumBacktestService:
             "sample_count": sample_count,
             "trigger_rate_pct": trigger_rate_pct,
             "positive_t1_rate_pct": positive_t1_rate_pct,
-            "positive_t2_rate_pct": positive_t2_rate_pct,
-            "settlement_pass_rate_pct": positive_t2_rate_pct,
+            "positive_t2_rate_pct": tradable_success_rate_pct,
+            "settlement_pass_rate_pct": tradable_success_rate_pct,
+            "weak_continuity_pass_rate_pct": weak_continuity_pass_rate_pct,
+            "tradable_success_rate_pct": tradable_success_rate_pct,
             "t1_direction_pass_rate_pct": positive_t1_rate_pct,
             "t2_continuation_pass_rate_pct": t2_continuation_pass_rate_pct,
             "avg_t1_profit_window_pct": MomentumBacktestService._avg_metric(row.t1_profit_window_pct for row in rows),
@@ -3485,8 +3818,29 @@ class MomentumBacktestService:
         return (row.t2_close_return_pct or 0.0) > 0.0
 
     @staticmethod
+    def _outcome_weak_continuity_pass(row: MomentumBacktestOutcomeRecord) -> bool:
+        payload = MomentumBacktestService._outcome_payload(row)
+        if "weak_continuity_pass" in payload:
+            return bool(payload.get("weak_continuity_pass"))
+        return (
+            MomentumBacktestService._outcome_t1_direction_pass(row)
+            and MomentumBacktestService._outcome_t2_continuation_pass(row)
+        )
+
+    @staticmethod
+    def _outcome_tradable_success_pass(row: MomentumBacktestOutcomeRecord) -> bool:
+        payload = MomentumBacktestService._outcome_payload(row)
+        if "tradable_success_pass" in payload:
+            return bool(payload.get("tradable_success_pass"))
+        if "settlement_pass" in payload:
+            return bool(payload.get("settlement_pass"))
+        return MomentumBacktestService._outcome_weak_continuity_pass(row)
+
+    @staticmethod
     def _outcome_settlement_pass(row: MomentumBacktestOutcomeRecord) -> bool:
         payload = MomentumBacktestService._outcome_payload(row)
+        if "tradable_success_pass" in payload:
+            return bool(payload.get("tradable_success_pass"))
         if "settlement_pass" in payload:
             return bool(payload.get("settlement_pass"))
         if row.t1_close_return_pct is None and row.t2_close_return_pct is not None:
@@ -3570,6 +3924,7 @@ class MomentumBacktestService:
 
     @staticmethod
     def _serialize_outcome_record(row: MomentumBacktestOutcomeRecord) -> Dict[str, Any]:
+        payload = MomentumBacktestService._outcome_payload(row)
         return {
             "view_scope": row.view_scope,
             "slot": row.slot,
@@ -3588,9 +3943,27 @@ class MomentumBacktestService:
             "t2_profit_window_pct": row.t2_profit_window_pct,
             "t2_max_drawdown_pct": row.t2_max_drawdown_pct,
             "real_strength_label": row.real_strength_label,
-            "settlement_rule": MomentumBacktestService._outcome_payload(row).get("settlement_rule"),
+            "settlement_rule": payload.get("settlement_rule"),
+            "weak_continuity_rule": payload.get("weak_continuity_rule"),
+            "tradable_success_rule": payload.get("tradable_success_rule"),
+            "t0_close_price": payload.get("t0_close_price"),
+            "t1_open_price": payload.get("t1_open_price"),
+            "t1_high_price": payload.get("t1_high_price"),
+            "t1_low_price": payload.get("t1_low_price"),
+            "t1_close_price": payload.get("t1_close_price"),
+            "t2_high_price": payload.get("t2_high_price"),
             "t1_direction_pass": MomentumBacktestService._outcome_t1_direction_pass(row),
             "t2_continuation_pass": MomentumBacktestService._outcome_t2_continuation_pass(row),
+            "weak_continuity_pass": MomentumBacktestService._outcome_weak_continuity_pass(row),
+            "t1_one_word_limit": bool(payload.get("t1_one_word_limit")),
+            "t1_buyability_pass": bool(payload.get("t1_buyability_pass")) if "t1_buyability_pass" in payload else None,
+            "t1_gap_risk_pass": bool(payload.get("t1_gap_risk_pass")) if "t1_gap_risk_pass" in payload else None,
+            "tradable_profit_window_pass": (
+                bool(payload.get("tradable_profit_window_pass"))
+                if "tradable_profit_window_pass" in payload
+                else None
+            ),
+            "tradable_success_pass": MomentumBacktestService._outcome_tradable_success_pass(row),
             "settlement_pass": MomentumBacktestService._outcome_settlement_pass(row),
         }
 
@@ -3606,8 +3979,10 @@ class MomentumBacktestService:
         lines = [
             (
                 f"当日结论为 {daily_row.action_label}，"
-                f"候选池短线延续合格率 {self._format_pct(candidate_metrics['positive_t2_rate_pct'])}，"
-                f"默认组合短线延续合格率 {self._format_pct(decision_metrics['positive_t2_rate_pct'])}。"
+                f"候选池可交易合格率 {self._format_pct(candidate_metrics['tradable_success_rate_pct'])}"
+                f"（弱延续 {self._format_pct(candidate_metrics['weak_continuity_pass_rate_pct'])}），"
+                f"默认组合可交易合格率 {self._format_pct(decision_metrics['tradable_success_rate_pct'])}"
+                f"（弱延续 {self._format_pct(decision_metrics['weak_continuity_pass_rate_pct'])}）。"
             ),
             (
                 f"候选池 T+2 平均利润窗口 {self._format_pct(candidate_metrics['avg_t2_profit_window_pct'])}，"
@@ -3775,6 +4150,28 @@ class MomentumBacktestService:
             if valid_lows
             else None,
         }
+
+    @staticmethod
+    def _resolve_t0_close_price(item: Dict[str, Any]) -> Optional[float]:
+        for key in ("close", "current_price", "last_price", "price"):
+            value = MomentumBacktestService._to_float(item.get(key))
+            if value is not None and value > 0:
+                return value
+        return None
+
+    @staticmethod
+    def _is_one_word_limit_bar(bar: Optional[Dict[str, Any]]) -> bool:
+        if not bar:
+            return False
+        prices = [
+            MomentumBacktestService._to_float(bar.get(key))
+            for key in ("open", "high", "low", "close")
+        ]
+        if any(value is None or value <= 0 for value in prices):
+            return False
+        anchor = float(prices[0] or 0.0)
+        tolerance = max(0.01, anchor * 0.0002)
+        return all(abs(float(value or 0.0) - anchor) <= tolerance for value in prices[1:])
 
     @staticmethod
     def _pct(value: Optional[float], base: Optional[float]) -> Optional[float]:

@@ -231,6 +231,26 @@ flowchart TD
    - 固化 `官方总分` 的排序顺序
    - 提供给页面、二次决策、回测和导出
 
+#### 4.0.3.3.1 Mainline Intensity 官方分加权
+
+V1.3 第三阶段在 `src/services/momentum_screener_service.py` 中把主线共振从“解释层证据”推进到官方分轻量加权：
+
+```text
+mainline_intensity_multiplier = min(1.3, 1 + 0.1 * count_in_pool)
+official_score = clamp_0_100(base_official_score * mainline_intensity_multiplier)
+```
+
+`count_in_pool` 优先取 V1.3 题材 / 主线画像中的 `candidate_count`，缺失时回退到旧行业上下文的 `sector_stats.strong_count`。加权上限固定为 `1.3x`，避免强题材密度把单股质量完全淹没。
+
+输出字段：
+
+- `_official_mainline_intensity_count`
+- `_official_mainline_intensity_multiplier`
+- `_official_mainline_intensity_bonus`
+- `v13_mainline_candidate_count`
+
+设计意图：强势筛选的目标不是寻找孤立高分股，而是寻找“主线支撑 + 可交易买点 + 次日溢价概率更高”的标的；同题材候选密度越高，越说明板块共振燃料更足，应在官方排序中得到有限加分。
+
 短期允许保留旧函数名和返回字段以减少兼容性破坏，但内部职责必须逐步向上述四段收敛。
 
 #### 4.0.3.4 字段兼容策略
@@ -906,20 +926,54 @@ class MomentumScreeningRunCreateResponse(BaseModel):
 回测至少保留以下比较：
 
 - 官方 Top3。
+- 全候选池基准。
+- Raw Momentum Top3。
 - 候选池 Top10。
-- 原始 rank Top3。
 - 主仓基准。
 - 同主线 Top3。
 - 非主线高分股。
 
 V1.3 判断有效的方向不是“每天都提高收益”，而是：
 
-- 官方 Top3 相比原始 rank Top3 的风险更低。
+- 官方 Top3 相比全候选池基准拥有正向可交易 Alpha。
+- 官方 Top3 相比 Raw Momentum Top3 没有长期负向 Selection Efficiency。
 - 主线内强票命中率更高。
 - 在退潮和分歧日更少误出手。
 - 失败归因能解释大部分亏损日。
 
-### 8.4 严格回测与生产回测
+### 8.4 Performance Auditing
+
+`momentum_backtest_service.py` 在 T+1/T+2 回填阶段需要同时冻结并汇总三组结果：
+
+- Group A：`decision_top3`，即 V1.3 官方 Top3，经过主线、画像、二次决策和总闸门收口。
+- Group B：`raw_rank_top3`，从 `candidate_pool` 中按 T 日可见 `rank_score` 降序选出每日 Top3，绕过 Secondary Decision 和 Mainline 检查。
+- Group C：`candidate_pool`，即固定入口 `涨幅 >= 4% / 成交额 >= 2亿 / 换手率 >= 2%` 的完整候选池。
+
+回测 summary 必须输出 `strategy_alpha_report`：
+
+- `official_top3_tradable_success_rate_pct`：Group A 可交易合格率。
+- `raw_momentum_top3_tradable_success_rate_pct`：Group B 可交易合格率。
+- `market_base_tradable_success_rate_pct`：Group C 可交易合格率。
+- `v13_alpha_vs_pool_pct = Group A - Group C`。
+- `selection_efficiency_pct = Group A - Group B`。
+- 当 `Group A < Group C` 时，`warning_message` 固定为 `LOGIC FAILURE: Screener is destroying Pool Alpha`。
+
+`benchmark_comparison` 继续保留候选池 Top10、主仓、主线龙头和空仓基准，但 Stage 2 的主审计结论以 `strategy_alpha_report` 为准；旧 run 若没有 `candidate_pool` 冻结结果，可降级用 `candidate_top10` 兼容展示，但不能作为正式 Alpha 验收样本。
+
+Stage 3 起，回测 summary 还需要输出 `gate_justification_report`：
+
+- `Successful_Defensive_Gate`：当 `action_level = stand_aside` 且 `candidate_pool.tradable_success_rate_pct < 35%`，说明总闸门成功规避弱池。
+- `False_Alarm_Warning`：当 `action_level = stand_aside` 但 `candidate_pool.tradable_success_rate_pct > 55%`，说明总闸门可能过度收口，需要调参。
+- 该报告用于总闸门校准，不替代 `strategy_alpha_report`；前者回答“该不该做”，后者回答“选出来的 Top3 有没有创造 Alpha”。
+
+Stage 4 起，`gate_justification_report` 进一步驱动 `Adaptive Gate`：
+
+- `momentum_backtest_service.py` 在 summary 中输出 `evaluated_gate_days`、`recent_gate_lookback_days` 与 `recent_successful_defensive_gate_rate_pct`。
+- `MomentumSecondaryDecisionService` 读取最近完成回测的该报告；若最近 5 个可审计 `stand_aside` 交易日中 `Successful_Defensive_Gate` 占比 `> 80%`，视为市场极弱。
+- 极弱状态下，官方 Top3 需要满足 `mainline_intensity_count >= 3`；不满足的候选保留诊断但触发 `adaptive_mainline_threshold`，不得进入 `main / secondary / watch` 官方槽位。
+- 该动态阈值只用于弱市收缩，不降低强市出手机会，也不替代 `strategy_alpha_report` 对过滤层 Alpha 的审计。
+
+### 8.5 严格回测与生产回测
 
 | 口径 | 用途 | 说明 |
 | --- | --- | --- |

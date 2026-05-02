@@ -28,6 +28,14 @@ export interface MomentumScreenerResult {
   entryRangeHigh?: number | null;
   finalScore: number;
   officialScore: number;
+  mainlineIntensityCount?: number | null;
+  mainlineIntensityMultiplier?: number | null;
+  mainlineIntensityBonus?: number | null;
+  close?: number | null;
+  ma20?: number | null;
+  high20d?: number | null;
+  v13MainlineCandidateCount?: number | null;
+  v13StockBuyElgAmount?: number | null;
   themes: string[];
   leaderLevel: string;
   topReasons: string[];
@@ -157,7 +165,47 @@ export interface MomentumDecisionReasonItem {
   detail?: string | null;
 }
 
-export interface MomentumDecisionPortfolioSlot {
+export interface MomentumRiskStackFactor {
+  key: string;
+  label: string;
+  triggered: boolean;
+  evidence?: string | null;
+}
+
+export interface MomentumRiskStackCheck {
+  factorCount: number;
+  veto: boolean;
+  threshold: number;
+  factors: MomentumRiskStackFactor[];
+  triggeredKeys: string[];
+}
+
+export interface MomentumAdaptiveGateContext {
+  enabled: boolean;
+  mode: 'normal' | 'strict_mainline' | string;
+  requiredMainlineCount: number;
+  lookbackDays: number;
+  evaluatedDays: number;
+  successfulDefensiveGateRatePct?: number | null;
+  sourceRunId?: string | null;
+  reason?: string | null;
+  [key: string]: unknown;
+}
+
+export interface MomentumDecisionIntelligenceFields {
+  riskStack?: MomentumRiskStackCheck | null;
+  riskStackCount?: number | null;
+  riskStackVeto?: boolean | null;
+  mainlineIntensityCount?: number | null;
+  mainlineIntensityMultiplier?: number | null;
+  mainlineIntensityBonus?: number | null;
+  adaptiveGate?: MomentumAdaptiveGateContext | null;
+  adaptiveMainlineCount?: number | null;
+  adaptiveMainlineMinCount?: number | null;
+  adaptiveMainlinePass?: boolean | null;
+}
+
+export interface MomentumDecisionPortfolioSlot extends MomentumDecisionIntelligenceFields {
   slot: MomentumDecisionSlot;
   slotLabel: string;
   rank: number;
@@ -202,7 +250,7 @@ export interface MomentumDecisionPortfolioSlot {
   riskTags?: string[];
 }
 
-export interface MomentumDecisionExcludedCandidate {
+export interface MomentumDecisionExcludedCandidate extends MomentumDecisionIntelligenceFields {
   rank: number;
   baseRank: number;
   tsCode: string;
@@ -220,7 +268,7 @@ export interface MomentumDecisionExcludedCandidate {
   softAdjustments: MomentumDecisionReasonItem[];
 }
 
-export interface MomentumDecisionCandidateDiagnostic {
+export interface MomentumDecisionCandidateDiagnostic extends MomentumDecisionIntelligenceFields {
   rank: number;
   baseRank: number;
   tsCode: string;
@@ -477,6 +525,7 @@ export interface MomentumSecondaryDecision {
   mainlineRadar?: MomentumMainlineRadarItem[];
   shortTermSentiment?: MomentumShortTermSentiment | null;
   v13DataStatus?: MomentumV13DataStatus | null;
+  adaptiveGate?: MomentumAdaptiveGateContext | null;
   themes: MomentumDecisionTheme[];
   portfolio: MomentumDecisionPortfolioSlot[];
   candidateDiagnostics?: MomentumDecisionCandidateDiagnostic[];

@@ -31,6 +31,20 @@ class FakeModel:
 def _build_request(review_type: str):
     blocker = FakeModel(key="buyability_block", label="买点不清晰", delta=None, detail="开盘后不适合直接接。")
     adjustment = FakeModel(key="theme_tailwind", label="主线共振", delta=1.2, detail="题材强度高于候选池均值。")
+    risk_stack = {
+        "factor_count": 1,
+        "veto": False,
+        "threshold": 3,
+        "factors": [
+            {
+                "key": "divergence_risk",
+                "label": "量价背离风险",
+                "triggered": True,
+                "evidence": "buy_elg=-1000000, close=10.00, high20=10.00",
+            }
+        ],
+        "triggered_keys": ["divergence_risk"],
+    }
     result = FakeModel(
         rank=1,
         ts_code="600001.SH",
@@ -47,6 +61,13 @@ def _build_request(review_type: str):
         entry_range_high=10.8,
         final_score=74.1,
         official_score=78.6,
+        mainline_intensity_count=3,
+        mainline_intensity_multiplier=1.3,
+        mainline_intensity_bonus=5.4,
+        close=10.0,
+        ma20=8.0,
+        high_20d=10.0,
+        v13_stock_buy_elg_amount=-1_000_000.0,
         rank_score=73.2,
         themes=["电子"],
         leader_level="龙头",
@@ -71,6 +92,16 @@ def _build_request(review_type: str):
         decision_adjustment_reason="题材强度和槽位匹配支持保留主仓。",
         hard_blockers=[blocker],
         soft_adjustments=[adjustment],
+        risk_stack=risk_stack,
+        risk_stack_count=1,
+        risk_stack_veto=False,
+        mainline_intensity_count=3,
+        mainline_intensity_multiplier=1.3,
+        mainline_intensity_bonus=5.4,
+        adaptive_gate={"enabled": False, "mode": "normal", "required_mainline_count": 1},
+        adaptive_mainline_count=3,
+        adaptive_mainline_min_count=1,
+        adaptive_mainline_pass=True,
         primary_reason="主线核心",
         execution_plan="关注开盘承接后再判断。",
     )
@@ -90,6 +121,13 @@ def _build_request(review_type: str):
         decision_adjustment_reason="主线内已有更优先的同题材标的。",
         hard_blockers=[blocker],
         soft_adjustments=[adjustment],
+        risk_stack=risk_stack,
+        risk_stack_count=1,
+        risk_stack_veto=False,
+        mainline_intensity_count=2,
+        mainline_intensity_multiplier=1.2,
+        mainline_intensity_bonus=3.1,
+        adaptive_gate={"enabled": False, "mode": "normal", "required_mainline_count": 1},
     )
     screening = FakeModel(
         trade_date="2026-04-27",
@@ -107,6 +145,7 @@ def _build_request(review_type: str):
         mainline_radar=[],
         short_term_sentiment=None,
         v13_data_status={"status": "ok"},
+        adaptive_gate={"enabled": False, "mode": "normal", "required_mainline_count": 1},
         excluded_candidates=[excluded_item],
         action_checklist=FakeModel(steps=[]),
     )
@@ -134,6 +173,10 @@ def test_build_review_context_prefers_official_score_and_structured_reasons():
     assert portfolio["base_rank"] == 1
     assert portfolio["decision_adjustment_reason"] == "题材强度和槽位匹配支持保留主仓。"
     assert portfolio["hard_blockers"][0]["label"] == "买点不清晰"
+    assert portfolio["risk_stack_count"] == 1
+    assert portfolio["mainline_intensity"]["count"] == 3
+    top3_audit = context["decision"]["decision_intelligence"]["top3_audit"]
+    assert top3_audit[0]["risk_stack_triggered_factors"][0]["key"] == "divergence_risk"
     assert service._build_rule_conclusion(request) == "主仓 / 计划明确 / 等待触发"
 
 
@@ -149,4 +192,19 @@ def test_build_review_context_for_excluded_candidates_uses_structured_reason_fie
     assert excluded["reason_detail"] == "同一主线里已有更高的官方总分和更清晰的槽位位置。"
     assert excluded["decision_adjustment_reason"] == "主线内已有更优先的同题材标的。"
     assert excluded["hard_blockers"][0]["label"] == "买点不清晰"
+    assert excluded["risk_stack_count"] == 1
     assert "rank_score" not in excluded
+
+
+def test_system_prompt_requires_logic_audit_sections_and_risk_stack_context():
+    service = MomentumScreenerAICommentaryService(config=object(), tool_registry=object(), llm_adapter=object())
+    request = _build_request("decision")
+
+    prompt = service._build_system_prompt(request)
+
+    assert "短线交易逻辑审计员" in prompt
+    assert "Devil's Advocate" in prompt
+    assert "[Risk Audit]" in prompt
+    assert "risk_stack" in prompt
+    assert "mainline_intensity" in prompt
+    assert "T+1 Open >= T0 Close * 0.99" in prompt

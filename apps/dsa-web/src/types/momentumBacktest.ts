@@ -27,20 +27,30 @@ export interface MomentumBacktestSummary {
   candidateTop10BuyTriggerRate?: number | null;
   candidateTop10PositiveT2Rate?: number | null;
   candidateTop10SettlementPassRate?: number | null;
+  candidateTop10WeakContinuityRate?: number | null;
+  candidateTop10TradableSuccessRate?: number | null;
   candidateTop10T1DirectionPassRate?: number | null;
   candidateTop10T2ContinuationPassRate?: number | null;
   candidateTop10AvgT2ProfitWindowPct?: number | null;
   candidateTop10AvgT2MaxDrawdownPct?: number | null;
+  candidatePoolTradableSuccessRate?: number | null;
+  candidatePoolWeakContinuityRate?: number | null;
+  candidatePoolAvgT2ProfitWindowPct?: number | null;
+  candidatePoolAvgT2MaxDrawdownPct?: number | null;
   decisionTop3BuyTriggerRate?: number | null;
   decisionTop3PositiveT1Rate?: number | null;
   decisionTop3PositiveT2Rate?: number | null;
   decisionTop3SettlementPassRate?: number | null;
+  decisionTop3WeakContinuityRate?: number | null;
+  decisionTop3TradableSuccessRate?: number | null;
   decisionTop3T1DirectionPassRate?: number | null;
   decisionTop3T2ContinuationPassRate?: number | null;
   decisionTop3AvgT1ProfitWindowPct?: number | null;
   decisionTop3AvgT2ProfitWindowPct?: number | null;
   decisionTop3AvgT2MaxDrawdownPct?: number | null;
   benchmarkComparison: MomentumBacktestBenchmarkItem[];
+  strategyAlphaReport?: MomentumBacktestStrategyAlphaReport | null;
+  gateJustificationReport?: MomentumBacktestGateJustificationReport | null;
   layerDiagnostics: MomentumBacktestLayerDiagnostic[];
   gateModuleBreakdown: MomentumBacktestGateModuleBreakdownItem[];
   regimeBreakdown: MomentumBacktestRegimeBreakdownItem[];
@@ -54,12 +64,58 @@ export interface MomentumBacktestBenchmarkItem {
   triggerRatePct?: number | null;
   positiveT2RatePct?: number | null;
   settlementPassRatePct?: number | null;
+  weakContinuityPassRatePct?: number | null;
+  tradableSuccessRatePct?: number | null;
   t1DirectionPassRatePct?: number | null;
   t2ContinuationPassRatePct?: number | null;
   avgT2ProfitWindowPct?: number | null;
   avgT2MaxDrawdownPct?: number | null;
   alphaVsOfficialTop3Pct?: number | null;
   alphaVsCandidateTop10Pct?: number | null;
+  alphaVsMarketBasePct?: number | null;
+  tradableSuccessAlphaVsOfficialTop3Pct?: number | null;
+  tradableSuccessAlphaVsMarketBasePct?: number | null;
+}
+
+export interface MomentumBacktestStrategyAlphaReport {
+  status: string;
+  warningTriggered: boolean;
+  warningMessage?: string | null;
+  officialTop3SampleCount: number;
+  rawMomentumTop3SampleCount: number;
+  marketBaseSampleCount: number;
+  officialTop3TradableSuccessRatePct?: number | null;
+  rawMomentumTop3TradableSuccessRatePct?: number | null;
+  marketBaseTradableSuccessRatePct?: number | null;
+  v13AlphaVsPoolPct?: number | null;
+  selectionEfficiencyPct?: number | null;
+  officialTop3AvgT2ProfitWindowPct?: number | null;
+  rawMomentumTop3AvgT2ProfitWindowPct?: number | null;
+  marketBaseAvgT2ProfitWindowPct?: number | null;
+}
+
+export interface MomentumBacktestGateJustificationItem {
+  tradeDate: string;
+  actionLevel: string;
+  actionLabel: string;
+  poolBaseWinRatePct?: number | null;
+  candidatePoolSampleCount: number;
+  classification: 'Successful_Defensive_Gate' | 'False_Alarm_Warning' | 'Neutral_Gate';
+  summary: string;
+}
+
+export interface MomentumBacktestGateJustificationReport {
+  standAsideDays: number;
+  evaluatedStandAsideDays: number;
+  successfulDefensiveGateCount: number;
+  falseAlarmWarningCount: number;
+  evaluatedGateDays: MomentumBacktestGateJustificationItem[];
+  recentGateLookbackDays: number;
+  recentSuccessfulDefensiveGateRatePct?: number | null;
+  successfulDefensiveGate: MomentumBacktestGateJustificationItem[];
+  falseAlarmWarnings: MomentumBacktestGateJustificationItem[];
+  successfulDefensiveGateThresholdPct: number;
+  falseAlarmWarningThresholdPct: number;
 }
 
 export interface MomentumBacktestLayerDiagnostic {
@@ -117,6 +173,8 @@ export interface MomentumBacktestRegimeBreakdownItem {
   label: string;
   tradeDays: number;
   decisionPositiveT2RatePct?: number | null;
+  decisionWeakContinuityRatePct?: number | null;
+  decisionTradableSuccessRatePct?: number | null;
   decisionAvgT2ProfitWindowPct?: number | null;
   decisionAvgT2MaxDrawdownPct?: number | null;
   missedOpportunityRatePct?: number | null;
@@ -311,8 +369,22 @@ export interface MomentumBacktestOutcomeItem {
   t2MaxDrawdownPct?: number | null;
   realStrengthLabel?: string | null;
   settlementRule?: string | null;
+  weakContinuityRule?: string | null;
+  tradableSuccessRule?: string | null;
+  t0ClosePrice?: number | null;
+  t1OpenPrice?: number | null;
+  t1HighPrice?: number | null;
+  t1LowPrice?: number | null;
+  t1ClosePrice?: number | null;
+  t2HighPrice?: number | null;
   t1DirectionPass?: boolean | null;
   t2ContinuationPass?: boolean | null;
+  weakContinuityPass?: boolean | null;
+  t1OneWordLimit?: boolean | null;
+  t1BuyabilityPass?: boolean | null;
+  t1GapRiskPass?: boolean | null;
+  tradableProfitWindowPass?: boolean | null;
+  tradableSuccessPass?: boolean | null;
   settlementPass?: boolean | null;
 }
 
@@ -322,6 +394,8 @@ export interface MomentumBacktestOutcomeMetrics {
   positiveT1RatePct?: number | null;
   positiveT2RatePct?: number | null;
   settlementPassRatePct?: number | null;
+  weakContinuityPassRatePct?: number | null;
+  tradableSuccessRatePct?: number | null;
   t1DirectionPassRatePct?: number | null;
   t2ContinuationPassRatePct?: number | null;
   avgT1ProfitWindowPct?: number | null;

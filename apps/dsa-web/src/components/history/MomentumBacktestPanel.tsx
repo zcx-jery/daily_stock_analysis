@@ -17,6 +17,7 @@ import type {
   MomentumBacktestRunListResponse,
   MomentumBacktestRegimeBreakdownItem,
   MomentumBacktestRunResponse,
+  MomentumBacktestStrategyAlphaReport,
   MomentumBacktestSummary,
   MomentumBacktestV13DataStatus,
   MomentumBacktestV13Diagnostics,
@@ -75,15 +76,24 @@ const EMPTY_SUMMARY: MomentumBacktestSummary = {
   avgBuyReadyCount: null,
   candidateTop10BuyTriggerRate: null,
   candidateTop10PositiveT2Rate: null,
+  candidateTop10WeakContinuityRate: null,
+  candidateTop10TradableSuccessRate: null,
   candidateTop10AvgT2ProfitWindowPct: null,
   candidateTop10AvgT2MaxDrawdownPct: null,
+  candidatePoolTradableSuccessRate: null,
+  candidatePoolWeakContinuityRate: null,
+  candidatePoolAvgT2ProfitWindowPct: null,
+  candidatePoolAvgT2MaxDrawdownPct: null,
   decisionTop3BuyTriggerRate: null,
   decisionTop3PositiveT1Rate: null,
   decisionTop3PositiveT2Rate: null,
+  decisionTop3WeakContinuityRate: null,
+  decisionTop3TradableSuccessRate: null,
   decisionTop3AvgT1ProfitWindowPct: null,
   decisionTop3AvgT2ProfitWindowPct: null,
   decisionTop3AvgT2MaxDrawdownPct: null,
   benchmarkComparison: [],
+  strategyAlphaReport: null,
   layerDiagnostics: [],
   gateModuleBreakdown: [],
   regimeBreakdown: [],
@@ -516,7 +526,7 @@ function buildDailyQuery(filters: DailyFilters, page: number, pageSize: number):
 
 function issueTitle(summary?: MomentumBacktestSummary | null): string {
   if (!summary) return '--';
-  return `${pct(summary.decisionTop3BuyTriggerRate)} / ${pct(summary.decisionTop3PositiveT2Rate)}`;
+  return `${pct(summary.decisionTop3BuyTriggerRate)} / ${pct(summary.decisionTop3TradableSuccessRate ?? summary.decisionTop3PositiveT2Rate)}`;
 }
 
 function DetailMetric({ label, value, hint }: { label: string; value: string; hint?: string }) {
@@ -529,6 +539,75 @@ function DetailMetric({ label, value, hint }: { label: string; value: string; hi
   );
 }
 
+function alphaStatusLabel(status?: string): string {
+  switch (status) {
+    case 'logic_failure':
+      return '逻辑失败';
+    case 'raw_momentum_outperforming':
+      return '原始排序更强';
+    case 'positive_alpha':
+      return 'Alpha 为正';
+    case 'insufficient_data':
+      return '样本不足';
+    default:
+      return status || '--';
+  }
+}
+
+function alphaStatusVariant(status?: string, warningTriggered?: boolean): 'default' | 'success' | 'warning' | 'danger' | 'info' {
+  if (warningTriggered || status === 'logic_failure') return 'danger';
+  if (status === 'raw_momentum_outperforming') return 'warning';
+  if (status === 'positive_alpha') return 'success';
+  if (status === 'insufficient_data') return 'info';
+  return 'default';
+}
+
+function StrategyAlphaReportCard({ report }: { report?: MomentumBacktestStrategyAlphaReport | null }) {
+  if (!report) {
+    return null;
+  }
+
+  return (
+    <Card padding="lg" className="space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <span className="label-uppercase">Strategy Alpha Report</span>
+          <h3 className="mt-1 text-lg font-semibold text-foreground">策略 Alpha 审计</h3>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-secondary-text">
+            用可交易合格率对比官方 Top3、Raw Momentum Top3 与全候选池基准，判断 V1.3 过滤层是否真的创造增益。
+          </p>
+        </div>
+        <Badge variant={alphaStatusVariant(report.status, report.warningTriggered)} glow={report.warningTriggered}>
+          {alphaStatusLabel(report.status)}
+        </Badge>
+      </div>
+
+      {report.warningMessage ? (
+        <div className="flex items-start gap-2 rounded-xl border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>{report.warningMessage}</span>
+        </div>
+      ) : null}
+
+      <div className="grid gap-3 md:grid-cols-3">
+        <DetailMetric label="V1.3 Alpha vs Pool" value={signedPct(report.v13AlphaVsPoolPct)} hint="官方 Top3 - 全候选池" />
+        <DetailMetric label="Selection Efficiency" value={signedPct(report.selectionEfficiencyPct)} hint="官方 Top3 - Raw Momentum Top3" />
+        <DetailMetric label="全候选池样本" value={String(report.marketBaseSampleCount ?? 0)} />
+      </div>
+      <div className="grid gap-3 md:grid-cols-3">
+        <DetailMetric label="官方 Top3 可交易" value={pct(report.officialTop3TradableSuccessRatePct)} />
+        <DetailMetric label="Raw Momentum Top3 可交易" value={pct(report.rawMomentumTop3TradableSuccessRatePct)} />
+        <DetailMetric label="全候选池可交易" value={pct(report.marketBaseTradableSuccessRatePct)} />
+      </div>
+      <div className="grid gap-3 md:grid-cols-3">
+        <DetailMetric label="官方 Top3 T+2 窗口" value={pct(report.officialTop3AvgT2ProfitWindowPct)} />
+        <DetailMetric label="Raw Momentum T+2 窗口" value={pct(report.rawMomentumTop3AvgT2ProfitWindowPct)} />
+        <DetailMetric label="全候选池 T+2 窗口" value={pct(report.marketBaseAvgT2ProfitWindowPct)} />
+      </div>
+    </Card>
+  );
+}
+
 function BenchmarkCard({ item }: { item: MomentumBacktestBenchmarkItem }) {
   return (
     <div className="rounded-2xl border border-border/60 bg-card/60 p-4">
@@ -537,13 +616,16 @@ function BenchmarkCard({ item }: { item: MomentumBacktestBenchmarkItem }) {
           <div className="text-sm font-medium text-foreground">{item.label}</div>
           <div className="mt-1 text-xs text-muted-text">样本 {item.sampleCount}</div>
         </div>
-        <Badge variant="default">{pct(item.settlementPassRatePct ?? item.positiveT2RatePct)}</Badge>
+        <Badge variant="default">{pct(item.tradableSuccessRatePct ?? item.settlementPassRatePct ?? item.positiveT2RatePct)}</Badge>
       </div>
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        <DetailMetric label="可交易合格率" value={pct(item.tradableSuccessRatePct ?? item.settlementPassRatePct)} />
+        <DetailMetric label="弱延续率" value={pct(item.weakContinuityPassRatePct)} />
         <DetailMetric label="T+2 利润窗口" value={pct(item.avgT2ProfitWindowPct)} />
         <DetailMetric label="T+2 平均回撤" value={pct(item.avgT2MaxDrawdownPct)} />
         <DetailMetric label="买点触发率" value={pct(item.triggerRatePct)} />
         <DetailMetric label="相对官方 Top3" value={signedPct(item.alphaVsOfficialTop3Pct)} hint="按 T+2 利润窗口比较" />
+        <DetailMetric label="相对全候选池" value={signedPct(item.tradableSuccessAlphaVsMarketBasePct)} hint="按可交易合格率比较" />
       </div>
     </div>
   );
@@ -575,7 +657,8 @@ function RegimeCard({ item }: { item: MomentumBacktestRegimeBreakdownItem }) {
         {levelBadge(item.level)}
       </div>
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
-        <DetailMetric label="延续合格率" value={pct(item.decisionPositiveT2RatePct)} />
+        <DetailMetric label="可交易合格率" value={pct(item.decisionTradableSuccessRatePct ?? item.decisionPositiveT2RatePct)} />
+        <DetailMetric label="弱延续率" value={pct(item.decisionWeakContinuityRatePct)} />
         <DetailMetric label="T+2 利润窗口" value={pct(item.decisionAvgT2ProfitWindowPct)} />
         <DetailMetric label="放行准确率" value={pct(item.allowedTradePrecisionPct)} />
         <DetailMetric label="错杀率" value={pct(item.missedOpportunityRatePct)} />
@@ -1516,7 +1599,7 @@ export const MomentumBacktestPanel: React.FC = () => {
               <div className="grid gap-3 md:grid-cols-4">
                 <DetailMetric label="回测区间" value={`${run.startTradeDate} → ${run.endTradeDate}`} />
                 <DetailMetric label="已处理交易日" value={`${run.processedTradeDates} / ${run.totalTradeDates}`} />
-                <DetailMetric label="触发率 / 延续合格率" value={issueTitle(summaryView)} />
+                <DetailMetric label="触发率 / 可交易合格率" value={issueTitle(summaryView)} />
                 <DetailMetric label="T+2 平均回撤" value={pct(summaryView.decisionTop3AvgT2MaxDrawdownPct)} />
               </div>
               <RunProgressPanel run={run} title="当前任务快照" />
@@ -1530,7 +1613,7 @@ export const MomentumBacktestPanel: React.FC = () => {
               <div className="grid gap-3 md:grid-cols-4">
                 <DetailMetric label="候选池均值" value={num(summaryView.avgCandidateCount)} />
                 <DetailMetric label="默认组合均值" value={num(summaryView.avgSelectedCount)} />
-                <DetailMetric label="Ready 数量均值" value={num(summaryView.avgBuyReadyCount)} />
+                <DetailMetric label="弱延续 / 可交易" value={`${pct(summaryView.decisionTop3WeakContinuityRate)} / ${pct(summaryView.decisionTop3TradableSuccessRate ?? summaryView.decisionTop3PositiveT2Rate)}`} />
                 <DetailMetric label="问题总数" value={String(issues?.totalIssues ?? 0)} />
               </div>
               {run.errorMessage ? (
@@ -1585,13 +1668,15 @@ export const MomentumBacktestPanel: React.FC = () => {
 
           <V13RunDiagnosticsSection diagnostics={summaryView.v13Diagnostics} />
 
+          <StrategyAlphaReportCard report={summaryView.strategyAlphaReport} />
+
           <Card padding="lg" className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <span className="label-uppercase">Benchmark Comparison</span>
                 <h3 className="mt-1 text-lg font-semibold text-foreground">比较基准区</h3>
               </div>
-              <div className="text-sm text-secondary-text">用官方 Top3 对比候选池 Top10、原始排序、主线龙头和空仓基准</div>
+              <div className="text-sm text-secondary-text">用官方 Top3 对比全候选池、Raw Momentum Top3、候选池 Top10、主线龙头和空仓基准</div>
             </div>
               <div className="grid gap-4 xl:grid-cols-3">
                 {summaryView.benchmarkComparison.map((item) => (
@@ -1900,8 +1985,10 @@ export const MomentumBacktestPanel: React.FC = () => {
                 ))}
               </div>
               <div className="grid gap-3 md:grid-cols-2">
-                <DetailMetric label="候选池延续合格率" value={pct(selectedDetail.diagnosis.candidateMetrics.positiveT2RatePct)} />
-                <DetailMetric label="默认组合延续合格率" value={pct(selectedDetail.diagnosis.decisionMetrics.positiveT2RatePct)} />
+                <DetailMetric label="候选池可交易合格率" value={pct(selectedDetail.diagnosis.candidateMetrics.tradableSuccessRatePct ?? selectedDetail.diagnosis.candidateMetrics.positiveT2RatePct)} />
+                <DetailMetric label="默认组合可交易合格率" value={pct(selectedDetail.diagnosis.decisionMetrics.tradableSuccessRatePct ?? selectedDetail.diagnosis.decisionMetrics.positiveT2RatePct)} />
+                <DetailMetric label="候选池弱延续率" value={pct(selectedDetail.diagnosis.candidateMetrics.weakContinuityPassRatePct)} />
+                <DetailMetric label="默认组合弱延续率" value={pct(selectedDetail.diagnosis.decisionMetrics.weakContinuityPassRatePct)} />
                 <DetailMetric label="候选池 T+2 利润窗口" value={pct(selectedDetail.diagnosis.candidateMetrics.avgT2ProfitWindowPct)} />
                 <DetailMetric label="默认组合 T+2 最大回撤" value={pct(selectedDetail.diagnosis.decisionMetrics.avgT2MaxDrawdownPct)} />
               </div>
@@ -1948,7 +2035,7 @@ export const MomentumBacktestPanel: React.FC = () => {
                         <th className="px-3 py-3">股票</th>
                         <th className="px-3 py-3">主线 / 角色</th>
                         <th className="px-3 py-3">官方总分</th>
-                        <th className="px-3 py-3">延续合格</th>
+                        <th className="px-3 py-3">可交易 / 弱延续</th>
                         <th className="px-3 py-3">T+2 利润窗口</th>
                         <th className="px-3 py-3">T+2 回撤</th>
                       </tr>
@@ -1965,7 +2052,11 @@ export const MomentumBacktestPanel: React.FC = () => {
                           <td className="px-3 py-3 text-secondary-text">
                             {num(item.officialScore)}
                           </td>
-                          <td className="px-3 py-3 text-secondary-text">{item.outcome?.settlementPass ? '是' : '否'}</td>
+                          <td className="px-3 py-3 text-secondary-text">
+                            {(item.outcome?.tradableSuccessPass ?? item.outcome?.settlementPass) ? '是' : '否'}
+                            {' / '}
+                            {item.outcome?.weakContinuityPass ? '是' : '否'}
+                          </td>
                           <td className="px-3 py-3 text-secondary-text">{pct(item.outcome?.t2ProfitWindowPct)}</td>
                           <td className="px-3 py-3 text-secondary-text">{pct(item.outcome?.t2MaxDrawdownPct)}</td>
                         </tr>
@@ -2001,7 +2092,8 @@ export const MomentumBacktestPanel: React.FC = () => {
                           label="买点区间"
                           value={item.entryRangeLow != null && item.entryRangeHigh != null ? `${item.entryRangeLow} - ${item.entryRangeHigh}` : '--'}
                         />
-                        <DetailMetric label="延续合格" value={item.outcome?.settlementPass ? '是' : '否'} />
+                        <DetailMetric label="可交易合格" value={(item.outcome?.tradableSuccessPass ?? item.outcome?.settlementPass) ? '是' : '否'} />
+                        <DetailMetric label="弱延续" value={item.outcome?.weakContinuityPass ? '是' : '否'} />
                         <DetailMetric label="T+2 利润窗口" value={pct(item.outcome?.t2ProfitWindowPct)} />
                         <DetailMetric label="T+2 回撤" value={pct(item.outcome?.t2MaxDrawdownPct)} />
                       </div>

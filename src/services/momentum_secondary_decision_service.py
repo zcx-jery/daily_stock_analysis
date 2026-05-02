@@ -133,6 +133,9 @@ WAITING_FRONT_CLEAR_LEADER_OFFICIAL_GAP_TOLERANCE = 1.2
 WAITING_FRONT_CLEAR_LEADER_FORWARD_ALPHA_ADVANTAGE_CAP = 7.5
 V13_CONTEXT_MAX_TS_CODES = 30
 DECISION_CANDIDATE_POOL_LIMIT = 12
+ADAPTIVE_GATE_LOOKBACK_DAYS = 5
+ADAPTIVE_GATE_DEFENSIVE_RATE_THRESHOLD_PCT = 80.0
+ADAPTIVE_MAINLINE_MIN_POOL_COUNT = 3
 
 EXCLUDED_REASON_LABELS = {
     "non_mainline_weak": "非主线 / 主线过弱",
@@ -370,12 +373,14 @@ class MomentumSecondaryDecisionService:
         strategy_health_async: bool = False,
         strategy_health_async_delay_seconds: float = 0.0,
         strategy_health_cache_dir: Optional[Path] = None,
+        adaptive_gate_audit_provider: Optional[Callable[[str], Optional[Dict[str, Any]]]] = None,
     ) -> None:
         self.screener_service = screener_service
         self.stock_service = stock_service
         self.stock_repo = stock_repo or getattr(stock_service, "repo", None) or StockRepository()
         self.v13_data_service = v13_data_service
         self.enable_v13_mainline = enable_v13_mainline
+        self.adaptive_gate_audit_provider = adaptive_gate_audit_provider
         self.strategy_health_async = strategy_health_async
         self.strategy_health_async_delay_seconds = max(0.0, float(strategy_health_async_delay_seconds))
         self._strategy_health_cache: Dict[str, Dict[str, Any]] = {}
@@ -552,6 +557,7 @@ class MomentumSecondaryDecisionService:
                     "status": "not_applicable",
                     "reason": "当前没有候选池，跳过 V1.3 主线增强数据。",
                 },
+                "adaptive_gate": self._default_adaptive_gate_context(),
                 "themes": [],
                 "portfolio": [],
                 "candidate_diagnostics": [],
@@ -580,6 +586,11 @@ class MomentumSecondaryDecisionService:
         )
         themes = self._build_theme_summaries(enriched_candidates)
         theme_score_map = {theme["name"]: theme["score"] for theme in themes}
+        adaptive_gate_context = self._build_adaptive_gate_context(profile=profile)
+        enriched_candidates = self._apply_adaptive_mainline_threshold(
+            enriched_candidates,
+            adaptive_gate_context,
+        )
         portfolio = self._build_portfolio(enriched_candidates, themes, theme_score_map)
         excluded = self._build_excluded_candidates(enriched_candidates, portfolio, themes, theme_score_map)
         strategy_health = self._build_strategy_health(
@@ -661,6 +672,7 @@ class MomentumSecondaryDecisionService:
             "mainline_radar": mainline_radar,
             "short_term_sentiment": short_term_sentiment,
             "v13_data_status": v13_data_status,
+            "adaptive_gate": adaptive_gate_context,
             "themes": themes,
             "portfolio": portfolio,
             "candidate_diagnostics": candidate_diagnostics,
@@ -792,6 +804,150 @@ class MomentumSecondaryDecisionService:
         )
         return context, mainline_radar, short_term_sentiment, status
 
+    @staticmethod
+    def _default_adaptive_gate_context() -> Dict[str, Any]:
+        return {
+            "enabled": False,
+            "mode": "normal",
+            "required_mainline_count": 1,
+            "lookback_days": ADAPTIVE_GATE_LOOKBACK_DAYS,
+            "evaluated_days": 0,
+            "successful_defensive_gate_rate_pct": None,
+            "source_run_id": None,
+            "reason": "暂无可用总闸门审计样本，沿用常规主线阈值。",
+        }
+
+    def _build_adaptive_gate_context(self, *, profile: str) -> Dict[str, Any]:
+        payload = self._load_latest_gate_justification_payload(profile=profile)
+        if not payload:
+            return self._default_adaptive_gate_context()
+
+        report = payload.get("report") if isinstance(payload, dict) else None
+        if not isinstance(report, dict):
+            return self._default_adaptive_gate_context()
+
+        recent_days = self._extract_recent_gate_audit_days(report)[:ADAPTIVE_GATE_LOOKBACK_DAYS]
+        if recent_days:
+            evaluated_days = len(recent_days)
+            successful_days = sum(
+                1
+                for item in recent_days
+                if _safe_str(item.get("classification")) == "Successful_Defensive_Gate"
+            )
+        else:
+            evaluated_days = int(_safe_float(report.get("evaluated_stand_aside_days")))
+            successful_days = int(_safe_float(report.get("successful_defensive_gate_count")))
+
+        if evaluated_days <= 0:
+            context = self._default_adaptive_gate_context()
+            context["source_run_id"] = payload.get("run_id")
+            context["reason"] = "最近回测没有可审计的不做样本，沿用常规主线阈值。"
+            return context
+
+        defensive_rate = round(successful_days / evaluated_days * 100.0, 2)
+        strict_enabled = defensive_rate > ADAPTIVE_GATE_DEFENSIVE_RATE_THRESHOLD_PCT
+        required_count = ADAPTIVE_MAINLINE_MIN_POOL_COUNT if strict_enabled else 1
+        return {
+            "enabled": strict_enabled,
+            "mode": "strict_mainline" if strict_enabled else "normal",
+            "required_mainline_count": required_count,
+            "lookback_days": ADAPTIVE_GATE_LOOKBACK_DAYS,
+            "evaluated_days": evaluated_days,
+            "successful_defensive_gate_count": successful_days,
+            "successful_defensive_gate_rate_pct": defensive_rate,
+            "source_run_id": payload.get("run_id"),
+            "threshold_pct": ADAPTIVE_GATE_DEFENSIVE_RATE_THRESHOLD_PCT,
+            "recent_gate_days": recent_days,
+            "reason": (
+                f"最近 {evaluated_days} 个总闸门不做样本中，防守成功率 {defensive_rate:.2f}% "
+                f"> {ADAPTIVE_GATE_DEFENSIVE_RATE_THRESHOLD_PCT:.0f}%，弱市自动要求主线池计数 >= {required_count}。"
+                if strict_enabled
+                else f"最近总闸门防守成功率 {defensive_rate:.2f}%，未触发动态收口，沿用常规主线阈值。"
+            ),
+        }
+
+    def _load_latest_gate_justification_payload(self, *, profile: str) -> Optional[Dict[str, Any]]:
+        if callable(self.adaptive_gate_audit_provider):
+            try:
+                provided = self.adaptive_gate_audit_provider(profile)
+            except Exception:  # noqa: BLE001
+                logger.warning("Adaptive gate audit provider failed", exc_info=True)
+                return None
+            if not isinstance(provided, dict):
+                return None
+            if isinstance(provided.get("report"), dict):
+                return provided
+            return {"run_id": provided.get("run_id"), "report": provided}
+
+        try:
+            from src.repositories.momentum_backtest_repo import MomentumBacktestRepository
+
+            repository = MomentumBacktestRepository()
+            for run in repository.list_runs(limit=5, profile=profile, statuses=("completed",)):
+                try:
+                    summary = json.loads(run.summary_json or "{}")
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if not isinstance(summary, dict):
+                    continue
+                report = summary.get("gate_justification_report")
+                if isinstance(report, dict):
+                    return {"run_id": run.run_id, "report": report}
+        except Exception:  # noqa: BLE001
+            logger.debug("No adaptive gate audit report available", exc_info=True)
+        return None
+
+    @staticmethod
+    def _extract_recent_gate_audit_days(report: Dict[str, Any]) -> List[Dict[str, Any]]:
+        rows = report.get("evaluated_gate_days")
+        if isinstance(rows, list) and rows:
+            normalized = [dict(item) for item in rows if isinstance(item, dict)]
+        else:
+            normalized = []
+            for key in ("successful_defensive_gate", "false_alarm_warnings"):
+                items = report.get(key)
+                if isinstance(items, list):
+                    normalized.extend(dict(item) for item in items if isinstance(item, dict))
+
+        return sorted(
+            normalized,
+            key=lambda item: _safe_str(item.get("trade_date")),
+            reverse=True,
+        )
+
+    @staticmethod
+    def _resolve_adaptive_mainline_count(item: Dict[str, Any]) -> int:
+        count = MomentumSecondaryDecisionService._first_available_int(
+            item,
+            (
+                "_theme_pool_count",
+                "_v13_mainline_pool_count",
+                "v13_mainline_candidate_count",
+                "_official_mainline_intensity_count",
+                "mainline_intensity_count",
+                "candidate_count",
+            ),
+        )
+        return max(0, int(count or 0))
+
+    def _apply_adaptive_mainline_threshold(
+        self,
+        candidates: List[Dict[str, Any]],
+        context: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        if not candidates:
+            return candidates
+        enabled = bool(context.get("enabled"))
+        required_count = int(_safe_float(context.get("required_mainline_count"), 1.0))
+        for candidate in candidates:
+            count = self._resolve_adaptive_mainline_count(candidate)
+            candidate["_adaptive_gate_context"] = dict(context)
+            candidate["_adaptive_gate_enabled"] = enabled
+            candidate["_adaptive_mainline_count"] = count
+            candidate["_adaptive_mainline_min_count"] = required_count
+            candidate["_adaptive_mainline_pass"] = (not enabled) or count >= required_count
+        return candidates
+
     def _apply_v13_mainline_to_candidates(
         self,
         candidates: List[Dict[str, Any]],
@@ -847,6 +1003,7 @@ class MomentumSecondaryDecisionService:
                 updated["_v13_mainline_level"] = _safe_str(best_radar.get("level"))
                 updated["_v13_mainline_level_label"] = _safe_str(best_radar.get("level_label"))
                 updated["_v13_mainline_summary"] = _safe_str(best_radar.get("summary"))
+                updated["_v13_mainline_pool_count"] = int(_safe_float(best_radar.get("candidate_count")))
                 themes = list(updated.get("themes") or [])
                 if theme_name and theme_name not in themes:
                     updated["themes"] = [theme_name, *themes]
@@ -1040,6 +1197,7 @@ class MomentumSecondaryDecisionService:
 
         limit_flag = _safe_str(event.get("limit")).upper()
         first_time = _safe_str(event.get("first_time")).strip()
+        last_time = _safe_str(event.get("last_time")).strip()
         first_minutes = cls._parse_limit_time_minutes(first_time)
         time_score = cls._sealing_time_score(first_minutes)
         fd_amount = _safe_float(event.get("fd_amount"))
@@ -1118,6 +1276,7 @@ class MomentumSecondaryDecisionService:
             "level_label": level_label,
             "limit": limit_flag or None,
             "first_seal_time": first_time or None,
+            "last_seal_time": last_time or None,
             "first_seal_time_score": round(time_score, 2) if time_score is not None else None,
             "fd_amount": fd_amount if fd_amount > 0 else None,
             "amount": amount if amount > 0 else None,
@@ -1245,6 +1404,7 @@ class MomentumSecondaryDecisionService:
             "level": signal.get("level"),
             "level_label": signal.get("level_label"),
             "first_seal_time": signal.get("first_seal_time"),
+            "last_seal_time": signal.get("last_seal_time"),
             "first_seal_time_score": signal.get("first_seal_time_score"),
             "seal_amount_ratio": signal.get("seal_amount_ratio"),
             "seal_amount_score": signal.get("seal_amount_score"),
@@ -1611,6 +1771,8 @@ class MomentumSecondaryDecisionService:
         summaries: List[Dict[str, Any]] = []
         for theme, items in grouped.items():
             sorted_items = sorted(items, key=self._decision_candidate_sort_key, reverse=True)
+            for item in sorted_items:
+                item["_theme_pool_count"] = len(sorted_items)
             clear_count = sum(item["_buy_point_status"] == "clear" for item in sorted_items)
             leader_count = sum(item["_role_key"] == "leader" for item in sorted_items)
             front_count = sum(item["_role_key"] == "front" for item in sorted_items)
@@ -1684,6 +1846,8 @@ class MomentumSecondaryDecisionService:
         selected_themes: List[str] = []
 
         main_candidate = self._pick_main_candidate(sorted_candidates, theme_score_map)
+        if main_candidate is None:
+            return []
         selected.append(("main", main_candidate))
         selected_codes.add(main_candidate["ts_code"])
         selected_themes.append(main_candidate["_theme"])
@@ -1790,6 +1954,22 @@ class MomentumSecondaryDecisionService:
                     ),
                     "v13_sealing_strength_level": candidate.get("_v13_sealing_strength_level"),
                     "v13_sealing_strength_level_label": candidate.get("_v13_sealing_strength_level_label"),
+                    "risk_stack": candidate.get("_risk_stack_check"),
+                    "risk_stack_count": candidate.get("_risk_stack_count"),
+                    "risk_stack_veto": candidate.get("_risk_stack_veto"),
+                    "mainline_intensity_count": int(_safe_float(candidate.get("_official_mainline_intensity_count"))),
+                    "mainline_intensity_multiplier": round(
+                        _safe_float(candidate.get("_official_mainline_intensity_multiplier"), 1.0),
+                        2,
+                    ),
+                    "mainline_intensity_bonus": round(
+                        _safe_float(candidate.get("_official_mainline_intensity_bonus")),
+                        2,
+                    ),
+                    "adaptive_gate": candidate.get("_adaptive_gate_context"),
+                    "adaptive_mainline_count": candidate.get("_adaptive_mainline_count"),
+                    "adaptive_mainline_min_count": candidate.get("_adaptive_mainline_min_count"),
+                    "adaptive_mainline_pass": candidate.get("_adaptive_mainline_pass"),
                     "decision_adjustment": decision_adjustment,
                     "decision_adjustment_reason": self._describe_adjustments(soft_adjustments),
                     "hard_blockers": hard_blockers,
@@ -1873,6 +2053,22 @@ class MomentumSecondaryDecisionService:
                         if candidate.get("_v13_chip_risk_score") is not None
                         else None
                     ),
+                    "risk_stack": candidate.get("_risk_stack_check"),
+                    "risk_stack_count": candidate.get("_risk_stack_count"),
+                    "risk_stack_veto": candidate.get("_risk_stack_veto"),
+                    "mainline_intensity_count": int(_safe_float(candidate.get("_official_mainline_intensity_count"))),
+                    "mainline_intensity_multiplier": round(
+                        _safe_float(candidate.get("_official_mainline_intensity_multiplier"), 1.0),
+                        2,
+                    ),
+                    "mainline_intensity_bonus": round(
+                        _safe_float(candidate.get("_official_mainline_intensity_bonus")),
+                        2,
+                    ),
+                    "adaptive_gate": candidate.get("_adaptive_gate_context"),
+                    "adaptive_mainline_count": candidate.get("_adaptive_mainline_count"),
+                    "adaptive_mainline_min_count": candidate.get("_adaptive_mainline_min_count"),
+                    "adaptive_mainline_pass": candidate.get("_adaptive_mainline_pass"),
                     "v13_shadow_score": (
                         round(_safe_float(candidate.get("_v13_shadow_score")), 2)
                         if candidate.get("_v13_shadow_score") is not None
@@ -5229,6 +5425,8 @@ class MomentumSecondaryDecisionService:
             "back_role_main": "后排角色不做主仓",
             "unclear_buy_point_main": "主仓买点不清晰",
             "high_risk_main": "主仓风险偏高",
+            "risk_stack_veto": "风险堆叠 >= 3",
+            "adaptive_mainline_threshold": "动态主线阈值不足",
             "weak_secondary_score": "次仓强度不足",
             "high_risk_secondary": "次仓风险过高且买点不清晰",
             "back_role_secondary": "后排角色不做次仓",
@@ -5596,6 +5794,129 @@ class MomentumSecondaryDecisionService:
             items.extend(self._slot_hard_blocker_items(slot, item, theme_score_map))
         return self._dedupe_reason_items(items)
 
+    @staticmethod
+    def _first_available_float(item: Dict[str, Any], keys: Tuple[str, ...]) -> Optional[float]:
+        for key in keys:
+            value = item.get(key)
+            if value not in (None, ""):
+                return _safe_float(value, default=None)
+        return None
+
+    @staticmethod
+    def _first_available_int(item: Dict[str, Any], keys: Tuple[str, ...]) -> Optional[int]:
+        value = MomentumSecondaryDecisionService._first_available_float(item, keys)
+        return int(value) if value is not None else None
+
+    @staticmethod
+    def _risk_factor_item(
+        *,
+        key: str,
+        label: str,
+        triggered: bool,
+        evidence: str,
+    ) -> Dict[str, Any]:
+        return {
+            "key": key,
+            "label": label,
+            "triggered": bool(triggered),
+            "evidence": evidence,
+        }
+
+    def _risk_stack_check(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        close_price = self._first_available_float(item, ("close", "close_price", "current_price"))
+        ma20 = self._first_available_float(item, ("ma20", "ma_20", "ma20_close", "moving_average_20"))
+        position_risk = close_price is not None and ma20 is not None and ma20 > 0 and close_price > ma20 * 1.2
+
+        sealing_signal = item.get("_v13_sealing_strength_signal")
+        if not isinstance(sealing_signal, dict):
+            sealing_signal = item.get("v13_sealing_strength") if isinstance(item.get("v13_sealing_strength"), dict) else {}
+        first_seal_time = (
+            _safe_str(sealing_signal.get("first_seal_time"))
+            or _safe_str(item.get("first_seal_time"))
+            or _safe_str(item.get("first_time"))
+        )
+        last_seal_time = (
+            _safe_str(sealing_signal.get("last_seal_time"))
+            or _safe_str(item.get("last_seal_time"))
+            or _safe_str(item.get("last_time"))
+        )
+        first_minutes = self._parse_limit_time_minutes(first_seal_time)
+        last_minutes = self._parse_limit_time_minutes(last_seal_time)
+        late_seal = first_minutes is not None and first_minutes > 14 * 60
+        seal_reopen = first_minutes is not None and last_minutes is not None and first_minutes != last_minutes
+        sealing_risk = late_seal or seal_reopen
+
+        buy_elg_amount = self._first_available_float(
+            item,
+            (
+                "v13_stock_buy_elg_amount",
+                "_v13_stock_buy_elg_amount",
+                "buy_elg_amount",
+                "stock_fund_buy_elg_amount",
+            ),
+        )
+        high_20d = self._first_available_float(item, ("high_20d", "prev_20d_high", "highest_20d", "twenty_day_high"))
+        price_at_20d_high = close_price is not None and high_20d is not None and high_20d > 0 and close_price >= high_20d
+        divergence_risk = buy_elg_amount is not None and buy_elg_amount < 0 and price_at_20d_high
+
+        mainline_count = self._first_available_int(
+            item,
+            (
+                "_theme_pool_count",
+                "_v13_mainline_pool_count",
+                "v13_mainline_candidate_count",
+                "candidate_count",
+            ),
+        )
+        mainline_risk = mainline_count is not None and mainline_count < 2
+
+        factors = [
+            self._risk_factor_item(
+                key="position_risk",
+                label="高位风险",
+                triggered=position_risk,
+                evidence=(
+                    f"close={close_price:.2f}, ma20={ma20:.2f}"
+                    if close_price is not None and ma20 is not None
+                    else "缺少 close/20MA"
+                ),
+            ),
+            self._risk_factor_item(
+                key="sealing_risk",
+                label="封板风险",
+                triggered=sealing_risk,
+                evidence=f"first={first_seal_time or '--'}, last={last_seal_time or '--'}",
+            ),
+            self._risk_factor_item(
+                key="divergence_risk",
+                label="量价背离风险",
+                triggered=divergence_risk,
+                evidence=(
+                    f"buy_elg={buy_elg_amount:.2f}, close={close_price:.2f}, high20={high_20d:.2f}"
+                    if buy_elg_amount is not None and close_price is not None and high_20d is not None
+                    else "缺少超大单/20日高点"
+                ),
+            ),
+            self._risk_factor_item(
+                key="mainline_risk",
+                label="主线风险",
+                triggered=mainline_risk,
+                evidence=f"pool_count={mainline_count}" if mainline_count is not None else "缺少主线池计数",
+            ),
+        ]
+        triggered_factors = [factor for factor in factors if factor["triggered"]]
+        result = {
+            "factor_count": len(triggered_factors),
+            "veto": len(triggered_factors) >= 3,
+            "threshold": 3,
+            "factors": factors,
+            "triggered_keys": [factor["key"] for factor in triggered_factors],
+        }
+        item["_risk_stack_check"] = result
+        item["_risk_stack_count"] = result["factor_count"]
+        item["_risk_stack_veto"] = result["veto"]
+        return result
+
     def _slot_hard_blocker_items(
         self,
         slot: str,
@@ -5609,6 +5930,26 @@ class MomentumSecondaryDecisionService:
         buy_point_status = _safe_str(item.get("_buy_point_status"), item.get("buy_point_status"))
         risk_score = _safe_float(item.get("risk_score"))
         blockers: List[Dict[str, Any]] = []
+        risk_stack = self._risk_stack_check(item)
+        if risk_stack["veto"]:
+            blockers.append(
+                self._reason_item(
+                    "risk_stack_veto",
+                    "风险堆叠 >= 3",
+                    detail="、".join(str(factor.get("label")) for factor in risk_stack["factors"] if factor.get("triggered")),
+                )
+            )
+        if bool(item.get("_adaptive_gate_enabled")) and not bool(item.get("_adaptive_mainline_pass")):
+            blockers.append(
+                self._reason_item(
+                    "adaptive_mainline_threshold",
+                    "动态主线阈值不足",
+                    detail=(
+                        f"弱市收口要求主线池计数 >= {int(_safe_float(item.get('_adaptive_mainline_min_count'), 1.0))}，"
+                        f"当前为 {int(_safe_float(item.get('_adaptive_mainline_count')))}。"
+                    ),
+                )
+            )
 
         if slot == "main":
             if official_score < 60:
@@ -5774,13 +6115,19 @@ class MomentumSecondaryDecisionService:
         self,
         candidates: List[Dict[str, Any]],
         theme_score_map: Dict[str, float],
-    ) -> Dict[str, Any]:
+    ) -> Optional[Dict[str, Any]]:
         eligible = [
             item
             for item in candidates
             if not self._slot_hard_blockers("main", item, theme_score_map)
         ]
-        pool = eligible or candidates
+        pool = eligible or [
+            item
+            for item in candidates
+            if not bool(self._risk_stack_check(item).get("veto"))
+        ]
+        if not pool:
+            return None
         return max(pool, key=lambda item: self._main_slot_priority(item, theme_score_map))
 
     def _pick_secondary_candidate(
@@ -6141,6 +6488,22 @@ class MomentumSecondaryDecisionService:
                 if candidate.get("_v13_chip_risk_score") is not None
                 else None
             ),
+            "risk_stack": candidate.get("_risk_stack_check"),
+            "risk_stack_count": candidate.get("_risk_stack_count"),
+            "risk_stack_veto": candidate.get("_risk_stack_veto"),
+            "mainline_intensity_count": int(_safe_float(candidate.get("_official_mainline_intensity_count"))),
+            "mainline_intensity_multiplier": round(
+                _safe_float(candidate.get("_official_mainline_intensity_multiplier"), 1.0),
+                2,
+            ),
+            "mainline_intensity_bonus": round(
+                _safe_float(candidate.get("_official_mainline_intensity_bonus")),
+                2,
+            ),
+            "adaptive_gate": candidate.get("_adaptive_gate_context"),
+            "adaptive_mainline_count": candidate.get("_adaptive_mainline_count"),
+            "adaptive_mainline_min_count": candidate.get("_adaptive_mainline_min_count"),
+            "adaptive_mainline_pass": candidate.get("_adaptive_mainline_pass"),
             "v13_shadow_score": (
                 round(_safe_float(candidate.get("_v13_shadow_score")), 1)
                 if candidate.get("_v13_shadow_score") is not None

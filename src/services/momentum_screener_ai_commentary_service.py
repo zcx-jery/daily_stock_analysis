@@ -280,9 +280,9 @@ class MomentumScreenerAICommentaryService:
             indent=2,
             default=str,
         )
-        return f"""你是“强势筛选 AI 点评助手”。
+        return f"""你是“强势筛选 AI 短线交易逻辑审计员”。
 
-你的角色是：解释层与追问层，不是新的决策引擎。
+你的角色是：逻辑审计层与追问层，不是新的决策引擎。你不做行情记者式复述，而是审计“信心 vs 风险”的权衡是否成立。
 
 必须遵守以下边界：
 1. 所有回答都必须先复述规则结论，再解释为什么会得到这个结论。
@@ -293,6 +293,9 @@ class MomentumScreenerAICommentaryService:
 6. 你可以调用工具补充外部验证，但只能作为补充说明，不能改判规则层结论。
 7. 如果没有必要，不要为了“显得聪明”强行调用工具；优先解释当前规则快照。
 8. 只用中文回答，避免空泛结论，必须围绕具体股票、主线、风险和触发条件。
+9. 必须显式使用 `decision_intelligence`、`risk_stack`、`mainline_intensity` 和 `adaptive_gate` 上下文。
+10. 对默认 Top3 的每只股票，都必须扮演一次 Devil's Advocate：至少找出一个背离/瑕疵因子；若没有明显硬风险，也要说明“最接近风险的未确认项”。
+11. 执行守卫必须落到 V1.3 可交易合同：若 T+1 开盘低于 T 日收盘价的 99%，只能放弃/仅观察，不能升级为执行。
 
 本次回答必须使用以下结构：
 {self._build_answer_contract(request.review_type)}
@@ -304,40 +307,40 @@ class MomentumScreenerAICommentaryService:
 
     def _build_answer_contract(self, review_type: str) -> str:
         if review_type == "candidate":
-            return """## 规则结论
-- 先用一句话说明这只候选股当前在规则里处于什么位置。
-## AI解释
-- 说明它为什么入选、为什么值得关注、最大风险是什么。
-## 外部补充
-- 若调用了工具，总结新闻、行情或板块验证；若未调用，明确说明当前以规则快照为主。
-## 可执行提醒
-- 说明明天什么情况下继续观察，什么情况下直接放弃。"""
+            return """## [Core Logic]
+- 先复述规则结论，再说明它为什么具备主线/强度逻辑。
+## [Risk Audit]
+- 列出已触发的 Risk Stack 因子，并额外指出至少一个背离或未确认项。
+## [Execution Guard]
+- 明确 T+1 开盘、承接、放弃条件；若开盘 < T日收盘*0.99，结论必须是放弃或仅观察。
+## [External Check]
+- 若调用了工具，总结外部验证；若未调用，明确说明当前以规则快照为主。"""
         if review_type == "decision":
-            return """## 规则结论
-- 先明确今天做不做，以及规则层为什么这样判断。
-## AI解释
-- 解释为什么是这 1-3 只、为什么没选其他票、默认组合各自承担什么角色。
-## 外部补充
-- 若调用了工具，总结外部验证是否支持当前主线和默认组合。
-## 可执行提醒
-- 明确哪些条件允许继续跟踪，哪些条件出现时应该直接劝退。"""
+            return """## [Core Logic]
+- 先明确今天做不做，再解释默认 Top3 的主线强度、角色分工和 Mainline Intensity。
+## [Risk Audit]
+- 逐只列出 Risk Stack 触发项；每只 Top3 必须给出至少一个 Devil's Advocate 背离/瑕疵因子。
+## [Execution Guard]
+- 用 V1.3 可交易合同描述明天的执行守卫；若 T+1 开盘 < T日收盘*0.99，必须放弃或仅观察。
+## [External Check]
+- 若调用了工具，总结外部验证是否支持当前主线和默认组合。"""
         if review_type == "intraday":
-            return """## 规则结论
-- 先说明当前盘中结论和收口方向。
-## AI解释
-- 分别解释主仓 / 次仓 / 观察仓的当前状态，谁已触发、谁还差条件、谁不建议追。
-## 外部补充
-- 若调用了工具，总结盘中行情或外部情报是否强化了当前结论。
-## 可执行提醒
-- 明确接下来 30-60 分钟还要看什么，不得推翻规则总闸门。"""
-        return """## 规则结论
+            return """## [Core Logic]
+- 先说明当前盘中结论和收口方向，不得推翻昨晚总闸门。
+## [Risk Audit]
+- 分别审计主仓 / 次仓 / 观察仓的 Risk Stack、承接偏离和未确认项。
+## [Execution Guard]
+- 明确接下来 30-60 分钟还要看什么，哪些情况只能放弃/仅观察。
+## [External Check]
+- 若调用了工具，总结盘中行情或外部情报是否强化了当前结论。"""
+        return """## [Core Logic]
 - 先说明当前最可惜落选的是哪些票，以及它们没进默认组合的主因。
-## AI解释
-- 逐只解释它们是暂时不合适，还是今天就不该看。
-## 外部补充
-- 若调用了工具，总结外部验证是否支持继续观察这些落选票。
-## 可执行提醒
-- 给出继续观察和直接剔除的边界，不要强行拔高成可执行推荐。"""
+## [Risk Audit]
+- 逐只列出硬阻断、Risk Stack 或主线/买点瑕疵，不要只说分数不够。
+## [Execution Guard]
+- 给出继续观察和直接剔除的边界，不要强行拔高成可执行推荐。
+## [External Check]
+- 若调用了工具，总结外部验证是否支持继续观察这些落选票。"""
 
     def _build_default_user_message(self, request: MomentumScreenerAIReviewRequest) -> str:
         if request.review_type == "candidate":
@@ -415,11 +418,20 @@ class MomentumScreenerAICommentaryService:
                         "decision_adjustment_reason": item.decision_adjustment_reason,
                         "hard_blockers": self._serialize_reason_items(item.hard_blockers),
                         "soft_adjustments": self._serialize_reason_items(item.soft_adjustments),
+                        "risk_stack": self._model_value(item, "risk_stack"),
+                        "risk_stack_count": self._model_value(item, "risk_stack_count"),
+                        "risk_stack_veto": self._model_value(item, "risk_stack_veto"),
+                        "mainline_intensity": self._build_model_mainline_intensity(item),
+                        "adaptive_gate": self._model_value(item, "adaptive_gate"),
+                        "adaptive_mainline_count": self._model_value(item, "adaptive_mainline_count"),
+                        "adaptive_mainline_min_count": self._model_value(item, "adaptive_mainline_min_count"),
+                        "adaptive_mainline_pass": self._model_value(item, "adaptive_mainline_pass"),
                         "primary_reason": item.primary_reason,
                         "execution_plan": item.execution_plan,
                     }
                     for item in request.decision.portfolio[:3]
                 ],
+                "decision_intelligence": self._build_decision_intelligence_context(request),
                 "v13_mainline_radar": [
                     {
                         "theme_id": item.get("theme_id"),
@@ -457,6 +469,10 @@ class MomentumScreenerAICommentaryService:
                     "leader_level": candidate["leader_level"],
                     "top_reasons": candidate["top_reasons"],
                     "risk_tags": candidate["risk_tags"],
+                    "mainline_intensity": self._build_candidate_mainline_intensity(candidate, slot),
+                    "risk_stack": slot.get("risk_stack") if isinstance(slot, dict) else None,
+                    "risk_stack_count": slot.get("risk_stack_count") if isinstance(slot, dict) else None,
+                    "risk_stack_veto": slot.get("risk_stack_veto") if isinstance(slot, dict) else None,
                     "entry_range_low": candidate["entry_range_low"],
                     "entry_range_high": candidate["entry_range_high"],
                 },
@@ -531,6 +547,11 @@ class MomentumScreenerAICommentaryService:
                         "decision_adjustment_reason": item.decision_adjustment_reason,
                         "hard_blockers": self._serialize_reason_items(item.hard_blockers),
                         "soft_adjustments": self._serialize_reason_items(item.soft_adjustments),
+                        "risk_stack": self._model_value(item, "risk_stack"),
+                        "risk_stack_count": self._model_value(item, "risk_stack_count"),
+                        "risk_stack_veto": self._model_value(item, "risk_stack_veto"),
+                        "mainline_intensity": self._build_model_mainline_intensity(item),
+                        "adaptive_gate": self._model_value(item, "adaptive_gate"),
                     }
                     for item in excluded_items
                 ],
@@ -655,6 +676,151 @@ class MomentumScreenerAICommentaryService:
             "如果想继续观察，先盯哪一只？",
             "它们和默认组合差在哪里？",
         ]
+
+    def _build_decision_intelligence_context(self, request: MomentumScreenerAIReviewRequest) -> Dict[str, Any]:
+        if request.decision is None:
+            return {
+                "role": "Logic Auditor",
+                "summary": "当前没有二次决策快照，AI 只能解释原始候选池。",
+                "top3_audit": [],
+            }
+
+        candidates_by_code = {
+            item.ts_code: item.model_dump()
+            for item in request.screening.results
+        }
+        top3_audit: List[Dict[str, Any]] = []
+        for item in request.decision.portfolio[:3]:
+            candidate = candidates_by_code.get(item.ts_code, {})
+            risk_stack = self._model_value(item, "risk_stack") or {}
+            triggered_factors = self._triggered_risk_factors(risk_stack)
+            top3_audit.append(
+                {
+                    "slot": item.slot,
+                    "slot_label": item.slot_label,
+                    "ts_code": item.ts_code,
+                    "name": item.name,
+                    "theme": item.theme,
+                    "official_score": item.official_score,
+                    "mainline_intensity": self._build_candidate_mainline_intensity(candidate, item),
+                    "risk_stack": risk_stack,
+                    "risk_stack_triggered_factors": triggered_factors,
+                    "devils_advocate_required": True,
+                    "suggested_divergence_factors": self._infer_divergence_factors(
+                        portfolio_item=item,
+                        candidate=candidate,
+                        triggered_factors=triggered_factors,
+                    ),
+                    "execution_guard": self._build_execution_guard(candidate),
+                }
+            )
+
+        adaptive_gate = request.decision.adaptive_gate if hasattr(request.decision, "adaptive_gate") else None
+        return {
+            "role": "Logic Auditor",
+            "objective": "解释每只 Top3 的信心来源，同时主动寻找背离、瑕疵和 T+1 执行失败条件。",
+            "adaptive_gate": adaptive_gate,
+            "top3_audit": top3_audit,
+            "required_output_sections": ["[Core Logic]", "[Risk Audit]", "[Execution Guard]", "[External Check]"],
+        }
+
+    @staticmethod
+    def _model_value(item: Any, key: str, default: Any = None) -> Any:
+        if isinstance(item, dict):
+            return item.get(key, default)
+        return getattr(item, key, default)
+
+    def _build_model_mainline_intensity(self, item: Any) -> Dict[str, Any]:
+        return {
+            "count": self._model_value(item, "mainline_intensity_count"),
+            "multiplier": self._model_value(item, "mainline_intensity_multiplier"),
+            "bonus": self._model_value(item, "mainline_intensity_bonus"),
+            "v13_mainline_score": self._model_value(item, "v13_mainline_score"),
+        }
+
+    def _build_candidate_mainline_intensity(self, candidate: Dict[str, Any], slot: Any = None) -> Dict[str, Any]:
+        slot_context = self._build_model_mainline_intensity(slot) if slot is not None else {}
+        return {
+            "count": candidate.get("mainline_intensity_count", slot_context.get("count")),
+            "multiplier": candidate.get("mainline_intensity_multiplier", slot_context.get("multiplier")),
+            "bonus": candidate.get("mainline_intensity_bonus", slot_context.get("bonus")),
+            "v13_mainline_candidate_count": candidate.get("v13_mainline_candidate_count"),
+            "v13_mainline_score": slot_context.get("v13_mainline_score"),
+        }
+
+    @staticmethod
+    def _triggered_risk_factors(risk_stack: Any) -> List[Dict[str, Any]]:
+        if not isinstance(risk_stack, dict):
+            return []
+        factors = risk_stack.get("factors")
+        if not isinstance(factors, list):
+            return []
+        return [
+            {
+                "key": factor.get("key"),
+                "label": factor.get("label"),
+                "evidence": factor.get("evidence"),
+            }
+            for factor in factors
+            if isinstance(factor, dict) and factor.get("triggered")
+        ]
+
+    def _infer_divergence_factors(
+        self,
+        *,
+        portfolio_item: Any,
+        candidate: Dict[str, Any],
+        triggered_factors: List[Dict[str, Any]],
+    ) -> List[str]:
+        factors: List[str] = []
+        labels = [str(item.get("label")) for item in triggered_factors if item.get("label")]
+        if labels:
+            factors.append("Risk Stack 已触发：" + "、".join(labels))
+
+        buy_elg = candidate.get("v13_stock_buy_elg_amount")
+        close_price = candidate.get("close")
+        high_20d = candidate.get("high_20d")
+        try:
+            if buy_elg is not None and float(buy_elg) <= 0:
+                factors.append("价格强势但超大单买入不占优，需要防资金背离。")
+            if close_price is not None and high_20d is not None and float(close_price) >= float(high_20d):
+                factors.append("价格处于 20 日高位，若明天承接不足容易形成兑现压力。")
+        except (TypeError, ValueError):
+            pass
+
+        mainline_count = (
+            candidate.get("mainline_intensity_count")
+            or self._model_value(portfolio_item, "mainline_intensity_count")
+            or candidate.get("v13_mainline_candidate_count")
+            or 0
+        )
+        try:
+            if int(mainline_count) < 2:
+                factors.append("主线共振计数不足，可能是孤立强势而不是板块推动。")
+        except (TypeError, ValueError):
+            pass
+
+        if not factors:
+            factors.append("暂无硬背离，但仍需验证 T+1 开盘溢价和分时承接是否兑现。")
+        return factors[:3]
+
+    @staticmethod
+    def _build_execution_guard(candidate: Dict[str, Any]) -> Dict[str, Any]:
+        close_price = candidate.get("close")
+        try:
+            gap_floor = round(float(close_price) * 0.99, 3) if close_price is not None else None
+        except (TypeError, ValueError):
+            gap_floor = None
+        return {
+            "t1_gap_threshold": "T+1 Open >= T0 Close * 0.99",
+            "t0_close": close_price,
+            "abandon_if": (
+                f"T+1 开盘低于 {gap_floor}，按 V1.3 可交易合同放弃/仅观察。"
+                if gap_floor is not None
+                else "T+1 开盘低于 T 日收盘价的 99%，按 V1.3 可交易合同放弃/仅观察。"
+            ),
+            "confirm_if": "T+1 开盘不深低开，且收盘强于开盘，T+2 需提供 >=2.5% 利润缓冲。",
+        }
 
     def _find_candidate(self, request: MomentumScreenerAIReviewRequest) -> Dict[str, Any]:
         for item in request.screening.results:

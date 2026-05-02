@@ -123,6 +123,8 @@ V1.4 起，回测主胜率采用“短线延续合格”口径，而不是简单
 - `t1_red`
 - `t1_direction_pass`
 - `t2_continuation_pass`
+- `weak_continuity_pass`
+- `tradable_success_pass`
 - `settlement_pass`
 - `t1_profit_window`
 - `t2_profit_window`
@@ -240,7 +242,19 @@ V1 期望关系：
 
 定义：
 
-- 触发后满足“短线延续合格”的比例：`T+1 收盘价 > T+1 开盘价`，且 `T+2 最高价 > T+1 收盘价`
+- 触发后满足“可交易合格”的比例：T+1 非一字不可买、`T+1 open >= T0 close * 0.99`、`T+1 close > T+1 open`，且 `T+2 high >= T+1 close * 1.025`
+
+### `weak_continuity_rate`
+
+定义：
+
+- 辅助观察方向惯性的比例：`T+1 收盘价 > T+1 开盘价`，且 `T+2 最高价 > T+1 收盘价`
+
+### `tradable_success_rate`
+
+定义：
+
+- V1.3 主验收比例：T+1 非一字不可买、未深低开、T+1 收阳，并且 T+2 给出至少 `2.5%` 利润缓冲
 
 ### `profit_window_t1`
 
@@ -500,10 +514,10 @@ V1 结果页必须遵守 4 条显示原则：
 ### 11.1 `summary`
 
 - 区间级汇总指标
-- 必须同时给出 `positive_t2_rate` / `settlement_pass_rate` 以及拆分项：
+- 必须同时给出 `tradable_success_rate` / `settlement_pass_rate`、`weak_continuity_rate` 以及拆分项：
   - `t1_direction_pass_rate`
   - `t2_continuation_pass_rate`
-- 候选池 Top10 与官方 Top3 都要输出上述拆分，避免只看到最终合格率而无法判断瓶颈在 T+1 方向还是 T+2 延续。
+- 候选池 Top10 与官方 Top3 都要输出上述拆分，避免只看到最终合格率而无法判断瓶颈在可买性、T+1 方向、T+2 延续还是 2.5% 利润缓冲。
 
 ### 11.2 `benchmark_comparison`
 

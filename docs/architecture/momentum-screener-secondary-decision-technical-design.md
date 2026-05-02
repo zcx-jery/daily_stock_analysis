@@ -83,6 +83,7 @@
 5. `Gate Evaluation Layer`
 6. `Evidence Assembly Layer`
 7. `Presentation Adapter Layer`
+8. `Backtest Fill-back Layer`
 
 补充约束：
 
@@ -91,7 +92,20 @@
 - 标准链路应为：
   - `全市场统一入口 -> 候选池 -> 全量评分排序 -> Standard 二次决策 -> 页面展示 Top30`
 
-### 5.0.1 二次决策收口层边界（2026-04-27 冻结）
+### 5.0.1 Backtest Fill-back Service Layer
+
+`momentum_backtest_service.py` 在 T 日冻结候选池与 Standard 官方组合后，使用后续日线做固定的 `T+1/T+2` 回填，并同时产出双层指标。
+
+- 回填窗口：`evaluation_t1_bar = bars[0]`，`evaluation_t2_bar = bars[1]`，始终相对 T 日固定，不随买点触发日漂移。
+- 辅助层：`weak_continuity_pass = (T+1 close > T+1 open) AND (T+2 high > T+1 close)`。
+- 主验收层：`settlement_rule = v13_tradable_success_v1`，`settlement_pass` 等同于 `tradable_success_pass`。
+- Buyability：`T+1` 不能是一字板，代码使用 `open/high/low/close` 四价相等判断 `t1_one_word_limit`。
+- Gap_Filter：`T+1 open >= T0 close * 0.99`。
+- Confirmation：`T+1 close > T+1 open`。
+- Profit_Buffer：`T+2 high >= T1 close * 1.025`，即至少 `2.5%` 退出缓冲。
+- 汇总字段：`weak_continuity_pass_rate_pct` 单独展示弱延续率，`tradable_success_rate_pct` 是 V1.3 主验收胜率；`positive_t2_rate_pct` 与 `settlement_pass_rate_pct` 在新结果中保持兼容映射到可交易合格率。
+
+### 5.0.2 二次决策收口层边界（2026-04-27 冻结）
 
 技术上，二次决策必须从“重排层”调整为“收口层”。
 
@@ -241,6 +255,25 @@
 - 若默认组合里的次仓 / 观察仓存在更稳的 `leader + clear` 候选，且与高风险 `front` 的正式优先级差距不大，允许整组收口继续向低 `T+1` 风险方向倾斜
 - 若默认组合内已有跨主题但明显更稳的执行锚点，可在不重写正式排序的前提下，把主仓职责回摆给更适合作为组合锚点的标的
 - 观察仓不只承担“同主题补位”职责；若存在带 `V1.3` 主线标签、且正式优先级差距不大的候选，可允许其替代普通同主题观察位，用于补足主线确认
+
+#### 6.3.1 Risk Stack 收口合同
+
+V1.3 第三阶段在 `src/services/momentum_secondary_decision_service.py` 中新增 `Risk_Stack_Check`，用于把“多个弱信号叠加”从解释层提升为官方 Top3 硬阻断。它不替代单项评分，而是模拟交易员的风险堆叠判断：允许一个瑕疵，但不允许多个瑕疵同时存在。
+
+四个因子与实现字段：
+
+- `R1 Position Risk`：`close > 1.2 * ma20`。
+- `R2 Sealing Risk`：`limit_list_d.first_time > 14:00:00` 或 `first_time != last_time`；`last_time` 透传为 `last_seal_time`。
+- `R3 Divergence Risk`：`close >= high_20d` 且 `v13_stock_buy_elg_amount < 0`。
+- `R4 Mainline Risk`：同主题 / 同主线在当日候选池中的数量 `< 2`，优先使用 `_theme_pool_count`，其次使用 V1.3 主线候选计数。
+
+Veto Policy：
+
+```text
+risk_stack_count >= 3 -> hard_blockers += risk_stack_veto
+```
+
+命中 `risk_stack_veto` 的股票不得进入 `main / secondary / watch` 官方组合槽位；若全部候选均被 Risk Stack 否决，官方组合允许为空，不再回退选入高风险标的。输出需在 `risk_stack / risk_stack_count / risk_stack_veto` 中保留诊断证据，方便回测和页面复盘。
 
 ### 6.4 买点清晰判定模块
 
@@ -532,10 +565,10 @@
 
 - `has_core_premium = true`
   - 昨日 `Top3` 中至少 `1` 只先满足买点触发
-  - 且 `T+1/T+2 profit_window >= 2.0%`
+  - 且至少 `1` 只满足 V1.3 `tradable_success_pass`
 - `breadth_ok = true`
   - 昨日 `Top10` 命中率 `>= 30%`
-  - 且平均利润窗口 `>= 2.0%`
+  - 且 `Top10` 可交易合格率达到诊断阈值；平均利润窗口只作为辅助观察
 
 三档：
 
@@ -755,6 +788,49 @@
 
 兼容旧任务数据时可以继续读取历史 `profile` 字段，但新建任务必须归一化为 `standard`。如果后续需要评估 `Aggressive`，应作为补充诊断指标，而不是第二套官方回测 run。
 
+### 9.1 V1.3 双层验收指标
+
+官方回测报告必须同时展示 `弱延续率` 与 `可交易合格率`，但二者职责不同。
+
+- `弱延续率`：用于判断系统是否捕捉到短线方向偏置，规则为 `T+1 close > T+1 open` 且 `T+2 high > T+1 close`。
+- `可交易合格率`：用于判断是否真的具备可执行获利窗口，规则为 `T+1 非一字板`、`T+1 open >= 0.99 * T0 close`、`T+1 close > T+1 open`、`T+2 high >= 1.025 * T1 close`。
+- 报告主结论、Benchmark、Regime、每日诊断和明细表的主胜率使用 `tradable_success_rate_pct`；弱延续只作为旁路参考，不能覆盖主标签。
+
+### 9.2 Performance Auditing
+
+Stage 2 起，官方回测必须同时输出 `strategy_alpha_report`，用于证明二次决策和画像过滤是否真的产生增量，而不是只消耗数据流量：
+
+- Group A（V1.3 Official）：`decision_top3`，即最终官方 Top3。
+- Group B（Raw Momentum）：每日从完整 `candidate_pool` 中按初始 `rank_score` 选出的 Top3，不经过二次决策、主线收口和画像过滤。
+- Group C（Market Base）：固定入口 `涨幅 >= 4% / 成交额 >= 2亿 / 换手率 >= 2%` 形成的完整候选池平均表现。
+
+审计指标：
+
+- `V1.3 Alpha vs Pool = Group A 可交易合格率 - Group C 可交易合格率`。
+- `Selection Efficiency = Group A 可交易合格率 - Group B 可交易合格率`。
+- 如果 `Group A < Group C`，必须输出 `LOGIC FAILURE: Screener is destroying Pool Alpha`。
+- 如果 `Group A < Group B` 但仍高于全池，优先进入参数复核，不直接判定链路失败。
+
+实现约束：
+
+- 新建回测在冻结日内结果时必须额外写入 `candidate_pool` 视图的 candidate/outcome 记录。
+- Raw Momentum Top3 必须从 `candidate_pool` 选取，不能用页面 Top10 近似。
+- 历史旧 run 若缺少 `candidate_pool` 记录，可以用 `candidate_top10` 兼容展示，但下一轮正式验收必须重新跑新版本回测。
+
+Stage 3 起，`momentum_backtest_service.py` 还必须输出 `gate_justification_report`，用于校准总闸门是否“该收伞时收伞、该出手时没有误报”：
+
+- 仅审计 `action_level = stand_aside`（今日不做）的交易日。
+- 若当日 `Pool_Base_WinRate = candidate_pool.tradable_success_rate_pct < 35%`，记为 `Successful_Defensive_Gate`。
+- 若当日 `Pool_Base_WinRate > 55%`，记为 `False_Alarm_Warning`，用于后续调低过紧参数。
+- 输出字段包括 `stand_aside_days / evaluated_stand_aside_days / successful_defensive_gate_count / false_alarm_warning_count` 以及两类明细列表。
+
+Stage 4 起，`gate_justification_report` 同时作为动态阈值输入：
+
+- `evaluated_gate_days` 必须保留最近可审计交易日的日期、总闸门状态、全池可交易合格率和分类结果。
+- `recent_gate_lookback_days` 固定观察最近 5 个可审计交易日；`recent_successful_defensive_gate_rate_pct` 统计其中 `Successful_Defensive_Gate` 占比。
+- 若最近 5 日防守成功率 `> 80%`，`MomentumSecondaryDecisionService` 进入弱市动态收口：Official Top3 必须满足 `mainline_intensity_count >= 3`，否则写入 `adaptive_mainline_threshold` 硬阻断并剥离官方槽位。
+- 动态收口只提高主线共振要求，不改变 Risk Stack 的 `>= 3` 否决阈值，也不覆盖可交易合格率标签。
+
 ## 10. 状态机设计
 
 ### 8.1 今日出手级别状态机
@@ -922,3 +998,5 @@
 - `系统停用` 是否只在连续 `5` 个交易日 `20日暂停进攻 + 60日存疑` 时触发
 - `0只清晰` 的机会质量是否始终为 `弱`
 - `20日进攻许可 = 暂停进攻` 时，是否仍允许在“强环境 + 强机会”下给出 `谨慎出手`
+- 官方回测是否同时输出 `weak_continuity_pass_rate_pct` 与 `tradable_success_rate_pct`，并以 `tradable_success_rate_pct` 作为 V1.3 主验收胜率
+- T+1/T+2 回填阈值是否与代码保持一致：`0.99` 跳空过滤、`1.025` 利润缓冲、T+1 非一字、T+1 收阳

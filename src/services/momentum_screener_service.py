@@ -26,7 +26,7 @@ MOMENTUM_EOD_READY_COVERAGE_RATIO = 0.6
 MOMENTUM_MARKET_CLOSE_CUTOFF = "15:00"
 MOMENTUM_ENTRY_BASELINE_VERSION = "v1_4_3_0"
 MOMENTUM_MARKET_SCOPE_VERSION = "v1_a_share_main_chinext_star"
-MOMENTUM_SCREENING_CACHE_VERSION = "v1_4_3_0_official_score_v1"
+MOMENTUM_SCREENING_CACHE_VERSION = "v1_4_3_2_decision_intelligence"
 MOMENTUM_DEFAULT_TOP_N = 30
 MOMENTUM_V13_PROFILE_MAX_CANDIDATES = 12
 MOMENTUM_TRUTH_MODE_FULL = "full"
@@ -2577,6 +2577,32 @@ class MomentumScreenerService:
             return 62.0
         return 50.0
 
+    @staticmethod
+    def _resolve_mainline_intensity_count(features: Dict[str, Any]) -> int:
+        v13_profile = features.get("v13_profile") or {}
+        candidate_count = int(_safe_float(v13_profile.get("candidate_count")))
+        if candidate_count > 0:
+            return candidate_count
+
+        sector_stats = features.get("sector_stats") or {}
+        return int(_safe_float(sector_stats.get("strong_count")))
+
+    @classmethod
+    def _apply_mainline_intensity_bonus(
+        cls,
+        score: float,
+        features: Dict[str, Any],
+    ) -> Dict[str, float]:
+        count = max(0, cls._resolve_mainline_intensity_count(features))
+        multiplier = min(1.30, 1.0 + count * 0.10) if count > 0 else 1.0
+        adjusted_score = _clamp_score_100(score * multiplier)
+        return {
+            "score": round(adjusted_score, 1),
+            "mainline_intensity_count": float(count),
+            "mainline_intensity_multiplier": round(multiplier, 2),
+            "mainline_intensity_bonus": round(adjusted_score - score, 2),
+        }
+
     def _compute_standard_official_score(
         self,
         *,
@@ -2597,11 +2623,15 @@ class MomentumScreenerService:
         v13_profile = features.get("v13_profile") or {}
         if not v13_profile:
             score = base_signal_score * 0.90 + risk_quality_score * 0.10
+            adjusted = self._apply_mainline_intensity_bonus(score, features)
             return {
-                "score": round(_clamp_score_100(score), 1),
+                "score": adjusted["score"],
                 "base_signal_score": round(base_signal_score, 2),
                 "v13_signal_score": round(base_signal_score, 2),
                 "risk_quality_score": round(risk_quality_score, 2),
+                "mainline_intensity_count": adjusted["mainline_intensity_count"],
+                "mainline_intensity_multiplier": adjusted["mainline_intensity_multiplier"],
+                "mainline_intensity_bonus": adjusted["mainline_intensity_bonus"],
             }
 
         v13_signal_score = (
@@ -2613,11 +2643,15 @@ class MomentumScreenerService:
             + self._score_v13_limit_structure_quality(v13_profile) * 0.10
         )
         score = base_signal_score * 0.56 + v13_signal_score * 0.34 + risk_quality_score * 0.10
+        adjusted = self._apply_mainline_intensity_bonus(score, features)
         return {
-            "score": round(_clamp_score_100(score), 1),
+            "score": adjusted["score"],
             "base_signal_score": round(base_signal_score, 2),
             "v13_signal_score": round(v13_signal_score, 2),
             "risk_quality_score": round(risk_quality_score, 2),
+            "mainline_intensity_count": adjusted["mainline_intensity_count"],
+            "mainline_intensity_multiplier": adjusted["mainline_intensity_multiplier"],
+            "mainline_intensity_bonus": adjusted["mainline_intensity_bonus"],
         }
 
     def _compute_aggressive_official_score(
@@ -2640,11 +2674,15 @@ class MomentumScreenerService:
         v13_profile = features.get("v13_profile") or {}
         if not v13_profile:
             score = base_signal_score * 0.88 + risk_quality_score * 0.12
+            adjusted = self._apply_mainline_intensity_bonus(score, features)
             return {
-                "score": round(_clamp_score_100(score), 1),
+                "score": adjusted["score"],
                 "base_signal_score": round(base_signal_score, 2),
                 "v13_signal_score": round(base_signal_score, 2),
                 "risk_quality_score": round(risk_quality_score, 2),
+                "mainline_intensity_count": adjusted["mainline_intensity_count"],
+                "mainline_intensity_multiplier": adjusted["mainline_intensity_multiplier"],
+                "mainline_intensity_bonus": adjusted["mainline_intensity_bonus"],
             }
 
         v13_signal_score = (
@@ -2656,11 +2694,15 @@ class MomentumScreenerService:
             + self._score_v13_kpl_quality(v13_profile) * 0.14
         )
         score = base_signal_score * 0.55 + v13_signal_score * 0.35 + risk_quality_score * 0.10
+        adjusted = self._apply_mainline_intensity_bonus(score, features)
         return {
-            "score": round(_clamp_score_100(score), 1),
+            "score": adjusted["score"],
             "base_signal_score": round(base_signal_score, 2),
             "v13_signal_score": round(v13_signal_score, 2),
             "risk_quality_score": round(risk_quality_score, 2),
+            "mainline_intensity_count": adjusted["mainline_intensity_count"],
+            "mainline_intensity_multiplier": adjusted["mainline_intensity_multiplier"],
+            "mainline_intensity_bonus": adjusted["mainline_intensity_bonus"],
         }
 
     def _score_standard(self, row: pd.Series, features: Dict[str, Any]) -> Dict[str, Any]:
@@ -2696,6 +2738,7 @@ class MomentumScreenerService:
             risk_penalty=risk_penalty,
         )
         official_score = _safe_float(official_signal.get("score"))
+        v13_profile = features.get("v13_profile") or {}
 
         sector_stats = features["sector_stats"]
         leader_rank = sector_stats.get("leader_map", {}).get(row["ts_code"], 999)
@@ -2722,9 +2765,32 @@ class MomentumScreenerService:
             "final_score": round(final_score, 1),
             "rank_score": round(rank_score, 1),
             "official_score": official_score,
+            "mainline_intensity_count": int(_safe_float(official_signal.get("mainline_intensity_count"))),
+            "mainline_intensity_multiplier": round(
+                _safe_float(official_signal.get("mainline_intensity_multiplier"), 1.0),
+                2,
+            ),
+            "mainline_intensity_bonus": round(
+                _safe_float(official_signal.get("mainline_intensity_bonus")),
+                2,
+            ),
             "_official_base_signal_score": round(_safe_float(official_signal.get("base_signal_score")), 2),
             "_official_v13_signal_score": round(_safe_float(official_signal.get("v13_signal_score")), 2),
             "_official_risk_quality_score": round(_safe_float(official_signal.get("risk_quality_score")), 2),
+            "_official_mainline_intensity_count": int(_safe_float(official_signal.get("mainline_intensity_count"))),
+            "_official_mainline_intensity_multiplier": round(
+                _safe_float(official_signal.get("mainline_intensity_multiplier"), 1.0),
+                2,
+            ),
+            "_official_mainline_intensity_bonus": round(
+                _safe_float(official_signal.get("mainline_intensity_bonus")),
+                2,
+            ),
+            "close": round(_safe_float(row.get("close")), 4),
+            "ma20": round(_safe_float(features.get("ma20")), 4),
+            "high_20d": round(_safe_float(features.get("prev_20d_high")), 4),
+            "v13_mainline_candidate_count": int(_safe_float(v13_profile.get("candidate_count"))),
+            "v13_stock_buy_elg_amount": _safe_float(v13_profile.get("stock_fund_buy_elg_amount"), default=None),
             "themes": [features["sector"]],
             "leader_level": leader_level,
             "top_reasons": self._build_top_reasons(breakdown),
@@ -2821,6 +2887,7 @@ class MomentumScreenerService:
             risk_penalty=risk_penalty,
         )
         official_score = _safe_float(official_signal.get("score"))
+        v13_profile = features.get("v13_profile") or {}
 
         sector_stats = features["sector_stats"]
         leader_rank = sector_stats.get("leader_map", {}).get(row["ts_code"], 999)
@@ -2843,9 +2910,32 @@ class MomentumScreenerService:
             "final_score": round(final_score, 1),
             "rank_score": round(rank_score, 1),
             "official_score": official_score,
+            "mainline_intensity_count": int(_safe_float(official_signal.get("mainline_intensity_count"))),
+            "mainline_intensity_multiplier": round(
+                _safe_float(official_signal.get("mainline_intensity_multiplier"), 1.0),
+                2,
+            ),
+            "mainline_intensity_bonus": round(
+                _safe_float(official_signal.get("mainline_intensity_bonus")),
+                2,
+            ),
             "_official_base_signal_score": round(_safe_float(official_signal.get("base_signal_score")), 2),
             "_official_v13_signal_score": round(_safe_float(official_signal.get("v13_signal_score")), 2),
             "_official_risk_quality_score": round(_safe_float(official_signal.get("risk_quality_score")), 2),
+            "_official_mainline_intensity_count": int(_safe_float(official_signal.get("mainline_intensity_count"))),
+            "_official_mainline_intensity_multiplier": round(
+                _safe_float(official_signal.get("mainline_intensity_multiplier"), 1.0),
+                2,
+            ),
+            "_official_mainline_intensity_bonus": round(
+                _safe_float(official_signal.get("mainline_intensity_bonus")),
+                2,
+            ),
+            "close": round(_safe_float(row.get("close")), 4),
+            "ma20": round(_safe_float(features.get("ma20")), 4),
+            "high_20d": round(_safe_float(features.get("prev_20d_high")), 4),
+            "v13_mainline_candidate_count": int(_safe_float(v13_profile.get("candidate_count"))),
+            "v13_stock_buy_elg_amount": _safe_float(v13_profile.get("stock_fund_buy_elg_amount"), default=None),
             "themes": [features["sector"]],
             "leader_level": self._classify_leader_level(leader_rank),
             "top_reasons": self._build_top_reasons(breakdown),

@@ -448,20 +448,37 @@ V1.3 回测不只输出收益结果，还要输出失败归因。
 
 V1.3 回测至少比较：
 
+- 官方 Top3 vs 全候选池基准。
+- 官方 Top3 vs Raw Momentum Top3。
 - 官方 Top3 vs 候选池 Top10。
-- 官方 Top3 vs 原始排序 Top3。
 - 主仓 vs 次仓 / 观察仓。
 - 主线内入选票 vs 主线内未入选高分票。
 - 劝退日 vs 如果强行买入的结果。
 
-其中 `官方 Top3 vs 原始排序 Top3` 在 V1.3 下只用于检查收口层是否过度偏离正式排序前排；当前阶段暂以 `原始排序 Top3` 作为正式排序前排代理，不再解释为“二次决策必须创造 Alpha”。
+其中 `Raw Momentum Top3` 固定使用初筛候选在 T 日可见的 `rank_score` 降序选出，不经过 V1.3 二次决策、主线收口和画像过滤；`全候选池基准` 使用固定入口 `涨幅 >= 4% / 成交额 >= 2亿 / 换手率 >= 2%` 形成的完整候选池。
+
+### 10.2.1 Benchmark Comparison Logic
+
+Stage 2 起，V1.3 回测必须输出三组可交易合格率对比，用来证伪过滤层是否真正有价值：
+
+- Group A（V1.3 Official）：经过 V1.3 主线、画像、二次决策和总闸门收口后的官方 Top3。
+- Group B（Raw Momentum）：只按初始 `rank_score` 选出的 Top3，绕过 Secondary Decision 和 Mainline 检查。
+- Group C（Market Base）：完整候选池平均表现，即固定入口 `涨幅 >= 4% / 成交额 >= 2亿 / 换手率 >= 2%` 的全池样本。
+
+核心结论字段：
+
+- `V1.3 Alpha vs Pool = Group A 可交易合格率 - Group C 可交易合格率`。
+- `Selection Efficiency = Group A 可交易合格率 - Group B 可交易合格率`。
+- 如果 `Group A < Group C`，报告必须标记 `LOGIC FAILURE: Screener is destroying Pool Alpha`，说明筛选器正在破坏候选池本身的 Alpha。
+- 如果 `Group A < Group B`，说明 V1.3 过滤层可能过度主观，需复核主线、画像、封板强度和总闸门参数。
 
 ### 10.3 成功标准
 
 60 个交易日回测中，V1.3 至少需要证明：
 
+- 官方 Top3 的可交易合格率不得低于全候选池基准，否则视为过滤层逻辑失败。
+- 官方 Top3 相对 Raw Momentum Top3 的 `Selection Efficiency` 不得长期为负，否则需要复核二次决策与画像过滤是否错杀强势龙头。
 - 官方 Top3 相对候选池 Top10 至少不弱，或利润窗口更高且回撤不明显恶化。
-- 官方 Top3 不得长期明显弱于正式排序前排代理（当前为原始排序 Top3）。
 - 主线强度高的日期，官方 Top3 表现明显优于主线不清晰日期。
 - `退潮 / 分歧` 日的降级能减少亏损或减少无效出手。
 - 主仓长期不弱于组合内其他角色。

@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [改进] 强势筛选 AI 点评升级为短线交易逻辑审计员，注入 Risk Stack、Mainline Intensity、Adaptive Gate 与 T+1 执行守卫上下文。
+- [改进] 强势筛选二次决策新增 Adaptive Gate：最近总闸门防守成功率超过 80% 时，官方 Top3 自动要求主线池计数不低于 3。
+- [改进] V1.3 回测总闸门审计报告新增 evaluated_gate_days 与最近 5 日防守成功率，支撑动态阈值调优。
+- [文档] 同步 V1.3 第四阶段 Decision Intelligence 与 Adaptive Gate 技术/产品契约。
+- [改进] 强势筛选 V1.3 第三阶段新增 Risk Stack 风险堆叠收口：高位、封板不稳、超大单背离、主线不足累计命中 3 项时剥离官方 Top3，并保留诊断证据。
+- [改进] 强势筛选官方分新增 Mainline Intensity 主线强度加权，按同题材/同主线候选池数量给予最高 1.3x 的有限加分，强化板块共振优先级。
+- [改进] V1.3 回测 summary 新增 gate_justification_report，用 candidate_pool 可交易合格率审计“今日不做”是否为防守成功或误报警告。
+- [文档] 同步 Risk Stack、主线强度加权与总闸门校准逻辑到二次决策规则、技术设计和 V1.3 主线增强技术文档。
+- [改进] 强势筛选 V1.3 回测新增 Strategy Alpha Report，对比官方 Top3、Raw Momentum Top3 与全候选池基准，并在官方可交易合格率低于全池时输出逻辑失败告警。
+- [文档] 同步 V1.3 主线增强与二次决策技术文档的 Alpha 验证、基准比较和 Performance Auditing 口径。
+- [文档] 同步强势筛选 V1.3 二次决策 PRD、Spec 与技术设计，明确可交易获利捕获为回测主目标，弱延续率仅作为辅助参考。
+- [改进] 强势筛选 V1.3 回测落地双层验收合同：保留弱延续合格率作为辅助指标，新增可交易合格率作为主验收标准并在回测摘要、基准和明细中同时展示。
 - [修复] 回测任务 API 在 Tushare 未配置或不可用时仍可读取历史 run、明细和诊断；仅新建/执行回测时要求数据源可用。
 - [修复] 回测 T+1/T+2 结果验证遇到单只股票后续日线缺失或临时抓取失败时降级为样本不足，不再拖垮整个交易日回放。
 - [改进] 强势筛选 V1.3 二次决策接入日线封板强度诊断：基于 `limit_list_d.first_time / fd_amount / amount / open_times` 输出封板质量、买点可参与性和收口修正，一字板仅作为强度确认但会提示“强封但难参与”。
