@@ -10,7 +10,8 @@ API 依赖注入模块
 3. 提供服务层依赖
 """
 
-from typing import TYPE_CHECKING, Generator
+import logging
+from typing import TYPE_CHECKING, Any, Generator
 
 from fastapi import Request
 from sqlalchemy.orm import Session
@@ -26,6 +27,9 @@ from src.services.system_config_service import SystemConfigService
 
 if TYPE_CHECKING:
     from src.services.momentum_screener_ai_commentary_service import MomentumScreenerAICommentaryService
+
+
+logger = logging.getLogger(__name__)
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -107,15 +111,22 @@ def get_momentum_secondary_decision_service(request: Request) -> MomentumSeconda
     return service
 
 
-def get_momentum_backtest_service(request: Request) -> MomentumBacktestService:
-    """Get app-lifecycle shared MomentumBacktestService instance."""
-    service = getattr(request.app.state, "momentum_backtest_service", None)
+def initialize_momentum_backtest_service(
+    app: Any,
+    *,
+    use_shared_screener_service: bool = False,
+) -> MomentumBacktestService:
+    """Initialize the shared backtest worker so queued/running runs resume at startup."""
+    service = getattr(app.state, "momentum_backtest_service", None)
     if service is None:
         try:
-            screener_service = getattr(request.app.state, "momentum_screener_service", None)
+            screener_service = None
+            if use_shared_screener_service:
+                screener_service = getattr(app.state, "momentum_screener_service", None)
             if screener_service is None:
                 screener_service = MomentumScreenerService()
-                request.app.state.momentum_screener_service = screener_service
+            if use_shared_screener_service and not hasattr(app.state, "momentum_screener_service"):
+                app.state.momentum_screener_service = screener_service
             # Backtest needs a dedicated secondary-decision service so its
             # synchronous historical validation mode does not leak into the
             # interactive screener page's shared async/warming instance.
@@ -135,8 +146,14 @@ def get_momentum_backtest_service(request: Request) -> MomentumBacktestService:
             # work. Creating a read-only service keeps list/detail/diagnosis
             # pages available while create/run still fails fast on execution.
             service = MomentumBacktestService(start_worker=False)
-        request.app.state.momentum_backtest_service = service
+            logger.warning("Momentum backtest worker started in read-only mode because TUSHARE_TOKEN is unavailable")
+        app.state.momentum_backtest_service = service
     return service
+
+
+def get_momentum_backtest_service(request: Request) -> MomentumBacktestService:
+    """Get app-lifecycle shared MomentumBacktestService instance."""
+    return initialize_momentum_backtest_service(request.app, use_shared_screener_service=True)
 
 
 def get_momentum_screening_run_service(request: Request) -> MomentumScreeningRunService:

@@ -2,7 +2,9 @@
 """API tests for momentum screener endpoint."""
 
 import sys
+import tempfile
 import types
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -33,13 +35,20 @@ from tests.test_momentum_screener_service import _FakeFetcher
 
 class _IntegrationMomentumScreenerService(MomentumScreenerService):
     def __init__(self):
-        super().__init__(fetcher=_FakeFetcher())
+        cache_root = Path(tempfile.mkdtemp(prefix="momentum-api-test-"))
+        super().__init__(
+            fetcher=_FakeFetcher(),
+            history_cache_dir=cache_root / "histories",
+            trade_snapshot_cache_dir=cache_root / "trade_snapshots",
+            candidate_pool_cache_dir=cache_root / "candidate_pools",
+            screening_result_cache_dir=cache_root / "screening_results",
+        )
 
 
 class _IntegrationMomentumSecondaryDecisionService(MomentumSecondaryDecisionService):
     def __init__(self, screener_service=None, stock_service=None, **kwargs):
         super().__init__(
-            screener_service or MomentumScreenerService(fetcher=_FakeFetcher()),
+            screener_service or _IntegrationMomentumScreenerService(),
             stock_service=stock_service,
             **kwargs,
         )
@@ -73,7 +82,7 @@ class _FakeStockService:
 class _IntegrationMomentumIntradayDecisionService(MomentumSecondaryDecisionService):
     def __init__(self, screener_service=None, stock_service=None, **kwargs):
         super().__init__(
-            screener_service or MomentumScreenerService(fetcher=_FakeFetcher()),
+            screener_service or _IntegrationMomentumScreenerService(),
             stock_service or _FakeStockService(),
             **kwargs,
         )

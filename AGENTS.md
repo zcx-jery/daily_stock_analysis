@@ -64,6 +64,16 @@ python scripts/check_ai_assets.py
 
 ## 4. 常用命令
 
+### 服务器运维
+
+```bash
+ssh openclaw-server
+```
+
+- 需要访问已部署服务器时，优先使用本机 SSH 配置里的 `openclaw-server` alias。
+- 不要从 GitHub Actions secrets 反推服务器连接信息，也不要要求用户重复提供密钥。
+- 如果 alias 不可用，先检查本机 SSH 配置是否存在该 Host，再考虑 GitHub Actions 手动部署 workflow。
+
 ### 运行应用
 
 ```bash

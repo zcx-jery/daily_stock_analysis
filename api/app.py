@@ -17,6 +17,7 @@ FastAPI 应用工厂模块
 
 import mimetypes
 import os
+import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -30,18 +31,35 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from api.v1 import api_v1_router
 from api.middlewares.auth import add_auth_middleware
 from api.middlewares.error_handler import add_error_handlers
+from api.deps import initialize_momentum_backtest_service
 from api.v1.schemas.common import HealthResponse
 from src.services.momentum_screener_service import MomentumScreenerService
 from src.services.system_config_service import SystemConfigService
+
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def app_lifespan(app: FastAPI):
     """Initialize and release shared services for the app lifecycle."""
     app.state.system_config_service = SystemConfigService()
+    if getattr(app.state, "start_momentum_backtest_worker", False):
+        try:
+            initialize_momentum_backtest_service(app, use_shared_screener_service=False)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Momentum backtest worker failed to start during app startup: %s", exc, exc_info=True)
     try:
         yield
     finally:
+        if hasattr(app.state, "momentum_backtest_service"):
+            service = getattr(app.state, "momentum_backtest_service")
+            close = getattr(service, "close", None)
+            if callable(close):
+                close()
+            delattr(app.state, "momentum_backtest_service")
+        if hasattr(app.state, "momentum_screening_run_service"):
+            delattr(app.state, "momentum_screening_run_service")
         if hasattr(app.state, "momentum_screener_ai_commentary_service"):
             delattr(app.state, "momentum_screener_ai_commentary_service")
         if hasattr(app.state, "momentum_screener_service"):
@@ -54,12 +72,13 @@ async def app_lifespan(app: FastAPI):
             delattr(app.state, "system_config_service")
 
 
-def create_app(static_dir: Optional[Path] = None) -> FastAPI:
+def create_app(static_dir: Optional[Path] = None, *, start_backtest_worker: bool = False) -> FastAPI:
     """
     创建并配置 FastAPI 应用实例
     
     Args:
         static_dir: 静态文件目录路径（可选，默认为项目根目录下的 static）
+        start_backtest_worker: 是否在应用启动时自动恢复强势筛选回测队列
         
     Returns:
         配置完成的 FastAPI 应用实例
@@ -83,6 +102,7 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
         version="1.0.0",
         lifespan=app_lifespan,
     )
+    app.state.start_momentum_backtest_worker = bool(start_backtest_worker)
     
     # ============================================================
     # CORS 配置
@@ -217,4 +237,4 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
 
 
 # 默认应用实例（供 uvicorn 直接使用）
-app = create_app()
+app = create_app(start_backtest_worker=True)
