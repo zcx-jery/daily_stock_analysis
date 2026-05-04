@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import MagicMock
 
@@ -332,6 +335,47 @@ class TestMomentumV13DataService(unittest.TestCase):
         fetcher.get_cyq_perf.assert_called_once()
         fetcher.get_cyq_chips.assert_called_once()
         self.assertGreaterEqual(MomentumV13DataService.get_cache_stats()["hit"], 1)
+
+    def test_build_context_reuses_disk_cache_after_memory_reset(self) -> None:
+        with tempfile.TemporaryDirectory() as cache_dir:
+            fetcher = self._make_fetcher()
+            service = MomentumV13DataService(
+                fetcher=fetcher,
+                disk_cache_dir=Path(cache_dir),
+                enable_disk_cache=True,
+            )
+
+            first = service.build_context(trade_date="20260423", ts_codes=["600519"])
+
+            MomentumV13DataService.reset_cache()
+            second_fetcher = self._make_fetcher()
+            second_service = MomentumV13DataService(
+                fetcher=second_fetcher,
+                disk_cache_dir=Path(cache_dir),
+                enable_disk_cache=True,
+            )
+            second = second_service.build_context(trade_date="20260423", ts_codes=["600519"])
+
+            self.assertEqual(second["trade_date"], first["trade_date"])
+            self.assertEqual(second["chip_snapshots"], first["chip_snapshots"])
+            second_fetcher.get_stock_limit_prices.assert_not_called()
+            second_fetcher.get_cyq_chips.assert_not_called()
+            self.assertGreaterEqual(MomentumV13DataService.get_cache_stats()["disk_hit"], 1)
+
+    def test_historical_v13_cache_uses_30_day_ttl(self) -> None:
+        fetcher = self._make_fetcher()
+        service = MomentumV13DataService(fetcher=fetcher, enable_disk_cache=False)
+
+        historical_key = service._cache_key("context", "full", "20000101", "600519.SH")
+        realtime_key = service._cache_key("realtime_quote", "20000101", "600519.SH")
+        current_key = service._cache_key("context", "full", datetime.now().strftime("%Y%m%d"), "600519.SH")
+
+        self.assertEqual(
+            service._effective_cache_ttl(historical_key, 1),
+            MomentumV13DataService._HISTORICAL_RESOURCE_TTL_SECONDS,
+        )
+        self.assertEqual(service._effective_cache_ttl(realtime_key, 60), 60)
+        self.assertEqual(service._effective_cache_ttl(current_key, 1), 1)
 
     def test_build_context_falls_back_to_per_stock_cyq_perf_when_snapshot_missing_code(self) -> None:
         fetcher = self._make_fetcher()

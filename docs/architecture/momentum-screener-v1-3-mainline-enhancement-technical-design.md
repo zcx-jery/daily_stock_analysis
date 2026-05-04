@@ -502,7 +502,9 @@ V1.3 数据应分资源缓存，避免一次缺失拖垮全部能力。
 | 筹码分布 | `momentum:v13:cyq_chips:{trade_date}:{ts_code}` | 逐股缓存，避免重复真查 |
 | 聚合上下文 | `momentum:v13:context:{trade_date}:{hash(ts_codes)}` | 依赖上游资源版本 |
 
-第一版优先使用现有磁盘 / 内存缓存能力；如后续切 Redis，应保持 key 语义不变。
+当前实现采用“内存优先 + 磁盘兜底”的双层缓存：`MomentumV13DataService` 先查进程内 `_shared_resource_cache`，未命中时再查 `data/cache/momentum_v13_resources`，最后才访问 Tushare。带历史 `trade_date` 的 V1.3 资源和聚合上下文统一使用最长 30 天 TTL，覆盖 `cyq_chips` 这类逐股重接口；`realtime_quote` 仍保持短 TTL 且不落磁盘，避免盘中快照污染正式回测。
+
+如后续切 Redis，应保持 key 语义不变。
 
 除了资源级缓存，还应增加阶段产物缓存，避免任务失败、取消或服务重启后整条真值链路从头重算：
 

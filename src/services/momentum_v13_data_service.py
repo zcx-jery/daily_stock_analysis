@@ -3,8 +3,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime, timezone
 import logging
+from pathlib import Path
 import time
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
@@ -102,9 +105,20 @@ class MomentumV13DataService:
     """Build reusable V1.3 data contexts for secondary decision and backtest."""
 
     _shared_resource_cache: Dict[str, Dict[str, Any]] = {}
-    _shared_cache_stats: Dict[str, int] = {"hit": 0, "miss": 0, "expired": 0}
+    _shared_cache_stats: Dict[str, int] = {
+        "hit": 0,
+        "miss": 0,
+        "expired": 0,
+        "disk_hit": 0,
+        "disk_miss": 0,
+        "disk_expired": 0,
+        "disk_error": 0,
+    }
     _SNAPSHOT_PAGE_SIZE = 5000
     _MAX_SNAPSHOT_PAGES = 20
+    _DISK_CACHE_VERSION = "v1"
+    _DISK_CACHE_DIRNAME = "momentum_v13_resources"
+    _HISTORICAL_RESOURCE_TTL_SECONDS = 30 * 24 * 60 * 60
 
     _DEFAULT_RESOURCE_TTLS = {
         "dc_concept": 30 * 60,
@@ -129,15 +143,35 @@ class MomentumV13DataService:
         fetcher: Optional[TushareFetcher] = None,
         *,
         resource_ttls: Optional[Dict[str, int]] = None,
+        disk_cache_dir: Optional[Path] = None,
+        enable_disk_cache: Optional[bool] = None,
     ) -> None:
         self.fetcher = fetcher or TushareFetcher(rate_limit_per_minute=200)
         self._resource_cache = self.__class__._shared_resource_cache
         self._resource_ttls = {**self._DEFAULT_RESOURCE_TTLS, **(resource_ttls or {})}
+        self._disk_cache_dir = (
+            Path(disk_cache_dir)
+            if disk_cache_dir is not None
+            else Path.cwd() / "data" / "cache" / self.__class__._DISK_CACHE_DIRNAME
+        )
+        self._enable_disk_cache = (
+            isinstance(self.fetcher, TushareFetcher)
+            if enable_disk_cache is None
+            else bool(enable_disk_cache)
+        )
 
     @classmethod
     def reset_cache(cls) -> None:
         cls._shared_resource_cache.clear()
-        cls._shared_cache_stats = {"hit": 0, "miss": 0, "expired": 0}
+        cls._shared_cache_stats = {
+            "hit": 0,
+            "miss": 0,
+            "expired": 0,
+            "disk_hit": 0,
+            "disk_miss": 0,
+            "disk_expired": 0,
+            "disk_error": 0,
+        }
 
     @classmethod
     def get_cache_stats(cls) -> Dict[str, int]:
@@ -1010,25 +1044,127 @@ class MomentumV13DataService:
         return datetime.now(timezone.utc).isoformat()
 
     def _cache_get(self, key: str, ttl_seconds: int) -> Optional[Dict[str, Any]]:
+        effective_ttl = self._effective_cache_ttl(key, ttl_seconds)
         entry = self._resource_cache.get(key)
-        if entry is None:
-            self.__class__._shared_cache_stats["miss"] += 1
-            return None
-        age = time.time() - float(entry.get("stored_at", 0))
-        if ttl_seconds >= 0 and age > ttl_seconds:
-            self.__class__._shared_cache_stats["expired"] += 1
-            self._resource_cache.pop(key, None)
-            return None
-        self.__class__._shared_cache_stats["hit"] += 1
-        return entry.get("value")
+        if entry is not None:
+            age = time.time() - float(entry.get("stored_at", 0))
+            if effective_ttl >= 0 and age > effective_ttl:
+                self.__class__._shared_cache_stats["expired"] += 1
+                self._resource_cache.pop(key, None)
+            else:
+                self.__class__._shared_cache_stats["hit"] += 1
+                return entry.get("value")
+
+        disk_entry = self._read_disk_cache_entry(key, effective_ttl)
+        if disk_entry is not None:
+            self._resource_cache[key] = disk_entry
+            self.__class__._shared_cache_stats["hit"] += 1
+            self.__class__._shared_cache_stats["disk_hit"] += 1
+            return disk_entry.get("value")
+
+        self.__class__._shared_cache_stats["miss"] += 1
+        if self._should_use_disk_cache(key):
+            self.__class__._shared_cache_stats["disk_miss"] += 1
+        return None
 
     def _cache_set(self, key: str, value: Dict[str, Any]) -> None:
-        self._resource_cache[key] = {"stored_at": time.time(), "value": value}
+        entry = {"stored_at": time.time(), "value": value}
+        self._resource_cache[key] = entry
+        self._write_disk_cache_entry(key, entry)
 
     @staticmethod
     def _cache_key(resource: str, *parts: str) -> str:
         normalized_parts = [str(part or "").replace("/", "-") for part in parts]
         return ":".join(["momentum", "v13", resource, *normalized_parts])
+
+    def _effective_cache_ttl(self, key: str, ttl_seconds: int) -> int:
+        if self._cache_resource_name(key) == "realtime_quote":
+            return ttl_seconds
+        if self._cache_key_has_historical_trade_date(key):
+            return max(ttl_seconds, self.__class__._HISTORICAL_RESOURCE_TTL_SECONDS)
+        return ttl_seconds
+
+    @staticmethod
+    def _cache_resource_name(key: str) -> str:
+        parts = str(key or "").split(":")
+        return parts[2] if len(parts) >= 3 else ""
+
+    def _cache_key_has_historical_trade_date(self, key: str) -> bool:
+        for part in str(key or "").split(":")[3:]:
+            compact = part.replace("-", "").replace("/", "")
+            if len(compact) != 8 or not compact.isdigit():
+                continue
+            try:
+                trade_day = datetime.strptime(compact, "%Y%m%d").date()
+            except ValueError:
+                continue
+            return trade_day < datetime.now().date()
+        return False
+
+    def _should_use_disk_cache(self, key: str) -> bool:
+        if not self._enable_disk_cache:
+            return False
+        if self._cache_resource_name(key) == "realtime_quote":
+            return False
+        return True
+
+    def _disk_cache_path(self, key: str) -> Path:
+        digest = hashlib.sha1(key.encode("utf-8")).hexdigest()
+        return self._disk_cache_dir / digest[:2] / f"{digest}.json"
+
+    def _read_disk_cache_entry(self, key: str, ttl_seconds: int) -> Optional[Dict[str, Any]]:
+        if not self._should_use_disk_cache(key):
+            return None
+        path = self._disk_cache_path(key)
+        if not path.exists():
+            return None
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except Exception as exc:  # pragma: no cover - corrupted cache should never block screening
+            logger.debug("Momentum V1.3 disk cache read failed for %s: %s", key, exc)
+            self.__class__._shared_cache_stats["disk_error"] += 1
+            return None
+        if payload.get("version") != self.__class__._DISK_CACHE_VERSION or payload.get("key") != key:
+            self.__class__._shared_cache_stats["disk_error"] += 1
+            return None
+        stored_at = float(payload.get("stored_at", 0) or 0)
+        if ttl_seconds >= 0 and time.time() - stored_at > ttl_seconds:
+            self.__class__._shared_cache_stats["disk_expired"] += 1
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            return None
+        value = payload.get("value")
+        if not isinstance(value, dict):
+            self.__class__._shared_cache_stats["disk_error"] += 1
+            return None
+        return {"stored_at": stored_at, "value": value}
+
+    def _write_disk_cache_entry(self, key: str, entry: Dict[str, Any]) -> None:
+        if not self._should_use_disk_cache(key):
+            return
+        path = self._disk_cache_path(key)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = path.with_name(f"{path.name}.{time.time_ns()}.tmp")
+            with tmp_path.open("w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "version": self.__class__._DISK_CACHE_VERSION,
+                        "key": key,
+                        "stored_at": entry.get("stored_at", time.time()),
+                        "value": entry.get("value"),
+                    },
+                    handle,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            tmp_path.replace(path)
+        except Exception as exc:  # pragma: no cover - cache writes are best-effort
+            logger.debug("Momentum V1.3 disk cache write failed for %s: %s", key, exc)
+            self.__class__._shared_cache_stats["disk_error"] += 1
 
     def _load_paginated_resource(
         self,

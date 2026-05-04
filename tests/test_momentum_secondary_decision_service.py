@@ -2063,10 +2063,18 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
             self.assertEqual(result["strategy_health"]["status"], "healthy")
 
     def test_build_runs_with_underlying_screener_service(self) -> None:
-        screener_service = MomentumScreenerService(fetcher=_FakeFetcher())
-        service = MomentumSecondaryDecisionService(screener_service=screener_service)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_root = Path(temp_dir)
+            screener_service = MomentumScreenerService(
+                fetcher=_FakeFetcher(),
+                history_cache_dir=cache_root / "histories",
+                trade_snapshot_cache_dir=cache_root / "trade_snapshots",
+                candidate_pool_cache_dir=cache_root / "candidate_pools",
+                screening_result_cache_dir=cache_root / "screening_results",
+            )
+            service = MomentumSecondaryDecisionService(screener_service=screener_service)
 
-        result = service.build(top_n=2, trade_date="2026-04-10", profile="aggressive")
+            result = service.build(top_n=2, trade_date="2026-04-10", profile="aggressive")
 
         self.assertEqual(result["screening"]["candidate_count"], 2)
         self.assertEqual(result["decision"]["profile"], "aggressive")
