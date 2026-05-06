@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [文档] 新增首页个股分析 Tushare 6000 积分增强产品文档与 SPEC，明确基本面、资金流、板块联动、筹码结构和透明度增强的阶段化落地方案。
 - [改进] V1.3 数据增强层新增 `momentum_v13_resources` 磁盘缓存，历史交易日资源与聚合上下文按 30 天 TTL 复用，降低严格回测中 `cyq_chips` 等重接口的重复请求。
 - [修复] FastAPI 启动时主动初始化强势筛选回测 worker，服务器重启后自动恢复 queued/running 回测任务，不再依赖用户打开前端回测页触发执行。
 - [chore] 手动部署 workflow 支持部署后启动服务器端 V1.3 强势筛选回测任务。
