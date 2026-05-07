@@ -76,7 +76,31 @@ docker-compose -f ./docker/docker-compose.yml exec stock-analyzer bash
 docker-compose -f ./docker/docker-compose.yml exec stock-analyzer python main.py --no-notify
 ```
 
-### 5. Data Persistence
+### 5. Docker Disk Cleanup
+
+Frequent Docker rebuilds can leave old images, build cache, and occasionally unused volumes behind. The repository provides a conservative cleanup helper:
+
+```bash
+bash scripts/docker-cleanup.sh
+```
+
+For servers, run it daily at 03:00 with a systemd timer. By default, the script:
+
+- removes stopped containers older than 24 hours
+- removes unused images older than 72 hours
+- removes unused build cache older than 72 hours
+- removes cache files older than 30 days under `data/cache`
+- prunes unused Docker volumes only when root disk usage reaches 90%
+
+For normal code updates, prefer:
+
+```bash
+bash scripts/deploy-docker.sh rebuild
+```
+
+It prunes dangling images after the rebuild to reduce disk growth from repeated deployments.
+
+### 6. Data Persistence
 
 Data is automatically saved to host directories:
 - `./data/` - Database files

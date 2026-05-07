@@ -297,6 +297,8 @@ class MomentumScreenerAICommentaryService:
 10. 对默认 Top3 的每只股票，都必须扮演一次 Devil's Advocate：至少找出一个背离/瑕疵因子；若没有明显硬风险，也要说明“最接近风险的未确认项”。
 11. 执行守卫必须落到 V1.3 可交易合同：若 T+1 开盘低于 T 日收盘价的 99%，只能放弃/仅观察，不能升级为执行。
 12. 动态止损必须写清：若 T+1 未能突破开盘后 30 分钟高点，必须提示 `Reduce Position` / 降仓，而不是继续等待幻想修复。
+13. 必须检查 `exhaustion_volume_audit`：若状态为 `critical_rejection`，`[Risk Audit]` 必须输出 `CRITICAL_REJECTION_ADVICE`，并解释 A 字顶 / 爆量滞涨风险；若上下文存在 `outcome.t2_max_drawdown_pct` 或近期失败样本最大回撤且超过 `10%`，必须作为回撤证据引用。
+14. 若 `risk_stack` 命中 `exhaustion_risk` / R5，或 `exhaustion_volume_audit` 状态为 `extreme_churn`，必须在摘要开头优先输出：`TRADING WARNING: Extreme Churn Detected (量能过载). Probability of A-top is high; use tight trailing stop.`
 
 本次回答必须使用以下结构：
 {self._build_answer_contract(request.review_type)}
@@ -471,6 +473,14 @@ class MomentumScreenerAICommentaryService:
                     "leader_level": candidate["leader_level"],
                     "top_reasons": candidate["top_reasons"],
                     "risk_tags": candidate["risk_tags"],
+                    "amount": candidate.get("amount"),
+                    "turnover_rate_f": candidate.get("turnover_rate_f"),
+                    "volume_expand_5": candidate.get("volume_expand_5"),
+                    "amount_10d_high": candidate.get("amount_10d_high"),
+                    "price_gain_shrinking": candidate.get("price_gain_shrinking"),
+                    "close_position": candidate.get("close_position"),
+                    "upper_shadow_ratio": candidate.get("upper_shadow_ratio"),
+                    "exhaustion_volume_audit": self._build_exhaustion_volume_audit(candidate),
                     "mainline_intensity": self._build_candidate_mainline_intensity(candidate, slot),
                     "ladder_position": slot.get("v13_ladder_position") if isinstance(slot, dict) else None,
                     "risk_stack": slot.get("risk_stack") if isinstance(slot, dict) else None,
@@ -711,6 +721,7 @@ class MomentumScreenerAICommentaryService:
                     "risk_stack": risk_stack,
                     "risk_stack_triggered_factors": triggered_factors,
                     "devils_advocate_required": True,
+                    "exhaustion_volume_audit": self._build_exhaustion_volume_audit(candidate),
                     "suggested_divergence_factors": self._infer_divergence_factors(
                         portfolio_item=item,
                         candidate=candidate,
@@ -770,6 +781,84 @@ class MomentumScreenerAICommentaryService:
             if isinstance(factor, dict) and factor.get("triggered")
         ]
 
+    @staticmethod
+    def _build_exhaustion_volume_audit(candidate: Dict[str, Any]) -> Dict[str, Any]:
+        def as_float(value: Any) -> Optional[float]:
+            try:
+                if value is None:
+                    return None
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
+        volume_expand_5 = as_float(candidate.get("volume_expand_5"))
+        turnover_rate_f = as_float(candidate.get("turnover_rate_f"))
+        pct_chg = as_float(candidate.get("pct_chg"))
+        close_position = as_float(candidate.get("close_position"))
+        upper_shadow_ratio = as_float(candidate.get("upper_shadow_ratio"))
+        amount_10d_high = bool(candidate.get("amount_10d_high"))
+        price_gain_shrinking = bool(candidate.get("price_gain_shrinking"))
+        risk_tags = [str(item).lower() for item in candidate.get("risk_tags") or []]
+        has_blowoff_tag = any(
+            "blowoff" in item or "爆量" in item or "放量" in item or "滞涨" in item
+            for item in risk_tags
+        )
+        high_volume_divergence = bool(amount_10d_high and price_gain_shrinking)
+        weak_close_with_volume = bool(
+            volume_expand_5 is not None
+            and volume_expand_5 >= 3.0
+            and (
+                close_position is None
+                or close_position < 0.65
+                or (upper_shadow_ratio is not None and upper_shadow_ratio >= 0.25)
+            )
+        )
+        high_volume_no_acceleration = bool(
+            volume_expand_5 is not None
+            and volume_expand_5 > 2.0
+            and pct_chg is not None
+            and pct_chg < 5.0
+        )
+        extreme_churn = bool(turnover_rate_f is not None and turnover_rate_f > 25.0)
+        critical = (
+            high_volume_divergence
+            or weak_close_with_volume
+            or high_volume_no_acceleration
+            or has_blowoff_tag
+            or extreme_churn
+        )
+        evidence = {
+            "volume_expand_5": volume_expand_5,
+            "turnover_rate_f": turnover_rate_f,
+            "pct_chg": pct_chg,
+            "amount_10d_high": amount_10d_high,
+            "price_gain_shrinking": price_gain_shrinking,
+            "close_position": close_position,
+            "upper_shadow_ratio": upper_shadow_ratio,
+            "risk_tags": candidate.get("risk_tags") or [],
+        }
+        if extreme_churn:
+            advice = (
+                "TRADING WARNING: Extreme Churn Detected (量能过载). "
+                "Probability of A-top is high; use tight trailing stop."
+            )
+            status = "extreme_churn"
+        elif critical:
+            advice = (
+                "CRITICAL_REJECTION_ADVICE: 成交额放大但涨幅收缩或收盘承接偏弱，"
+                "按 A 字顶/爆量滞涨风险处理，除非 T+1 强承接重新证伪。"
+            )
+            status = "critical_rejection"
+        else:
+            advice = "未触发爆量滞涨硬审计；仍需用 T+1 开盘溢价和首 30 分钟承接确认。"
+            status = "watch"
+        return {
+            "status": status,
+            "triggered": critical,
+            "advice": advice,
+            "evidence": evidence,
+        }
+
     def _infer_divergence_factors(
         self,
         *,
@@ -781,6 +870,15 @@ class MomentumScreenerAICommentaryService:
         labels = [str(item.get("label")) for item in triggered_factors if item.get("label")]
         if labels:
             factors.append("Risk Stack 已触发：" + "、".join(labels))
+        if any(item.get("key") == "exhaustion_risk" for item in triggered_factors):
+            factors.append(
+                "TRADING WARNING: Extreme Churn Detected (量能过载). "
+                "Probability of A-top is high; use tight trailing stop."
+            )
+
+        exhaustion_audit = self._build_exhaustion_volume_audit(candidate)
+        if exhaustion_audit.get("status") in {"critical_rejection", "extreme_churn"}:
+            factors.append(str(exhaustion_audit.get("advice")))
 
         buy_elg = candidate.get("v13_stock_buy_elg_amount")
         close_price = candidate.get("close")

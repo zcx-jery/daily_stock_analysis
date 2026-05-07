@@ -260,20 +260,23 @@
 
 V1.3 第三阶段在 `src/services/momentum_secondary_decision_service.py` 中新增 `Risk_Stack_Check`，用于把“多个弱信号叠加”从解释层提升为官方 Top3 硬阻断。它不替代单项评分，而是模拟交易员的风险堆叠判断：允许一个瑕疵，但不允许多个瑕疵同时存在。
 
-四个因子与实现字段：
+五个因子与实现字段：
 
 - `R1 Position Risk`：`close > 1.2 * ma20`。
 - `R2 Sealing Risk`：`limit_list_d.first_time > 14:00:00` 或 `first_time != last_time`；`last_time` 透传为 `last_seal_time`。
 - `R3 Divergence Risk`：`close >= high_20d` 且 `v13_stock_buy_elg_amount < 0`。
 - `R4 Mainline Risk`：同主题 / 同主线在当日候选池中的数量 `< 2`，优先使用 `_theme_pool_count`，其次使用 V1.3 主线候选计数；若 `limit_list_d.limit_times` 标记该股为当前市场最高连板且至少 2 板，则视为 `Space Leader` 并豁免 R4。
+- `R5 Exhaustion Risk`：`volume_expand_5 > 2.0` 且 `pct_chg < 5%`，或 `turnover_rate_f > 25%`。`volume_expand_5` 优先来自成交量相对近 5 日均量的放大倍数，缺少成交量字段时可降级使用成交额。
 
 Veto Policy：
 
 ```text
-risk_stack_count >= 3 -> hard_blockers += risk_stack_veto
+risk_stack_count >= 3 OR R5 triggered -> hard_blockers += risk_stack_veto
 ```
 
-命中 `risk_stack_veto` 的股票不得进入 `main / secondary / watch` 官方组合槽位；若全部候选均被 Risk Stack 否决，官方组合允许为空，不再回退选入高风险标的。输出需在 `risk_stack / risk_stack_count / risk_stack_veto` 中保留诊断证据，方便回测和页面复盘。
+命中 `risk_stack_veto` 的股票不得进入 `main / secondary / watch` 官方组合槽位；若全部候选均被 Risk Stack 否决，官方组合允许为空，不再回退选入高风险标的。输出需在 `risk_stack / risk_stack_count / risk_stack_veto / mandatory_veto / mandatory_veto_keys` 中保留诊断证据，方便回测和页面复盘。R5 属于 `MANDATORY_VETO`，即使主线强度较高也不能进入官方 Top3。
+
+主线确认统一口径：二次决策槽位硬阻断中的 `weak_mainline` 必须同时参考 V1.3 `mainline_intensity_count`。当同主题 / 同主线候选计数 `>= 2`，或存在明确 `v13_theme_id / v13_mainline_score >= 70` 时，不能再仅因旧 `theme_score_map` 偏低而判定“主线强度不足”，避免真实板块共振被旧主题分误杀。
 
 ### 6.4 买点清晰判定模块
 

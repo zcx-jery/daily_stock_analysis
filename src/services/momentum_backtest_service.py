@@ -37,7 +37,7 @@ from src.storage import (
 
 logger = logging.getLogger(__name__)
 
-MOMENTUM_BACKTEST_ENGINE_VERSION = "v1_3_elite_protocol_history_tolerant"
+MOMENTUM_BACKTEST_ENGINE_VERSION = "v1_3_exhaustion_veto_history_tolerant"
 MOMENTUM_BACKTEST_OFFICIAL_PROFILE = "standard"
 MOMENTUM_BACKTEST_OFFICIAL_TOP_N = MOMENTUM_DEFAULT_TOP_N
 MOMENTUM_BACKTEST_SCREENING_TRUTH_MODE = MOMENTUM_TRUTH_MODE_FULL
@@ -1098,38 +1098,36 @@ class MomentumBacktestService:
 
         outcome_records = []
         forward_bars_cache: Dict[Tuple[str, date], List[Dict[str, Any]]] = {}
+
+        def append_outcome_record(item: Dict[str, Any], view_scope: str, slot: Optional[str]) -> None:
+            ts_code = str(item.get("ts_code") or "")
+            try:
+                outcome_records.append(
+                    self._build_outcome_record(
+                        trade_dt=trade_dt,
+                        item=item,
+                        view_scope=view_scope,
+                        slot=slot,
+                        forward_bars_cache=forward_bars_cache,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "跳过回测结果验证单股异常样本: trade_date=%s view_scope=%s ts_code=%s error=%s",
+                    trade_dt.isoformat(),
+                    view_scope,
+                    ts_code,
+                    exc,
+                )
+
         for item in ranked_results:
-            outcome_records.append(
-                self._build_outcome_record(
-                    trade_dt=trade_dt,
-                    item=item,
-                    view_scope="candidate_pool",
-                    slot=None,
-                    forward_bars_cache=forward_bars_cache,
-                )
-            )
+            append_outcome_record(item, "candidate_pool", None)
         for item in top_candidates:
-            outcome_records.append(
-                self._build_outcome_record(
-                    trade_dt=trade_dt,
-                    item=item,
-                    view_scope="candidate_top10",
-                    slot=None,
-                    forward_bars_cache=forward_bars_cache,
-                )
-            )
+            append_outcome_record(item, "candidate_top10", None)
         for item in portfolio:
             outcome_item = dict(ranked_by_code.get(str(item.get("ts_code") or "")) or {})
             outcome_item.update(item)
-            outcome_records.append(
-                self._build_outcome_record(
-                    trade_dt=trade_dt,
-                    item=outcome_item,
-                    view_scope="decision_top3",
-                    slot=str(item.get("slot") or ""),
-                    forward_bars_cache=forward_bars_cache,
-                )
-            )
+            append_outcome_record(outcome_item, "decision_top3", str(item.get("slot") or ""))
 
         return _ReplayDayArtifacts(
             screening=screening,
@@ -1950,12 +1948,15 @@ class MomentumBacktestService:
         ]
 
         candidate_rows_by_date: Dict[date, List[MomentumBacktestCandidateRecord]] = {}
+        candidate_pool_rows_by_date: Dict[date, List[MomentumBacktestCandidateRecord]] = {}
         decision_rows_by_date: Dict[date, List[MomentumBacktestDecisionRecord]] = {}
         candidate_outcomes_by_date: Dict[date, List[MomentumBacktestOutcomeRecord]] = {}
         candidate_pool_outcomes_by_date: Dict[date, List[MomentumBacktestOutcomeRecord]] = {}
         decision_outcomes_by_date: Dict[date, List[MomentumBacktestOutcomeRecord]] = {}
         for row in candidate_rows:
             candidate_rows_by_date.setdefault(row.trade_date, []).append(row)
+        for row in candidate_pool_rows:
+            candidate_pool_rows_by_date.setdefault(row.trade_date, []).append(row)
         for row in decision_rows:
             decision_rows_by_date.setdefault(row.trade_date, []).append(row)
         for row in candidate_outcomes:
@@ -1990,6 +1991,15 @@ class MomentumBacktestService:
             raw_momentum_metrics=raw_rank_metrics,
             market_base_metrics=candidate_pool_metrics,
         )
+        ticker_swap_log = self._build_ticker_swap_log(
+            candidate_pool_rows_by_date=candidate_pool_rows_by_date,
+            decision_rows_by_date=decision_rows_by_date,
+            candidate_pool_outcomes_by_date=candidate_pool_outcomes_by_date,
+            decision_outcomes_by_date=decision_outcomes_by_date,
+        )
+        strategy_alpha_report["ticker_swap_underperforming_day_count"] = ticker_swap_log[
+            "underperforming_day_count"
+        ]
         gate_justification_report = self._build_gate_justification_report(
             daily_rows=daily_rows,
             candidate_pool_outcomes_by_date=candidate_pool_outcomes_by_date,
@@ -2055,6 +2065,7 @@ class MomentumBacktestService:
             "decision_top3_avg_t2_max_drawdown_pct": decision_metrics["avg_t2_max_drawdown_pct"],
             "benchmark_comparison": benchmark_comparison,
             "strategy_alpha_report": strategy_alpha_report,
+            "ticker_swap_log": ticker_swap_log,
             "gate_justification_report": gate_justification_report,
             "layer_diagnostics": layer_diagnostics,
             "gate_module_breakdown": gate_module_breakdown,
@@ -2802,6 +2813,7 @@ class MomentumBacktestService:
             "decision_top3_t1_direction_pass_rate",
             "decision_top3_t2_continuation_pass_rate",
             "strategy_alpha_report",
+            "ticker_swap_log",
             "gate_justification_report",
             "market_environment_breakdown",
             "strategy_health_mode",
@@ -2931,6 +2943,192 @@ class MomentumBacktestService:
             "official_top3_avg_t2_profit_window_pct": official_metrics.get("avg_t2_profit_window_pct"),
             "raw_momentum_top3_avg_t2_profit_window_pct": raw_momentum_metrics.get("avg_t2_profit_window_pct"),
             "market_base_avg_t2_profit_window_pct": market_base_metrics.get("avg_t2_profit_window_pct"),
+        }
+
+    def _build_ticker_swap_log(
+        self,
+        *,
+        candidate_pool_rows_by_date: Dict[date, List[MomentumBacktestCandidateRecord]],
+        decision_rows_by_date: Dict[date, List[MomentumBacktestDecisionRecord]],
+        candidate_pool_outcomes_by_date: Dict[date, List[MomentumBacktestOutcomeRecord]],
+        decision_outcomes_by_date: Dict[date, List[MomentumBacktestOutcomeRecord]],
+    ) -> Dict[str, Any]:
+        items: List[Dict[str, Any]] = []
+        trade_dates = sorted(set(candidate_pool_rows_by_date) | set(decision_rows_by_date))
+
+        for trade_dt in trade_dates:
+            raw_rows = sorted(
+                candidate_pool_rows_by_date.get(trade_dt, []),
+                key=self._raw_momentum_candidate_sort_key,
+            )[:3]
+            official_rows = self._sort_official_decision_rows(decision_rows_by_date.get(trade_dt, []))[:3]
+            if not raw_rows or not official_rows:
+                continue
+
+            raw_outcome_by_code = {
+                row.ts_code: row
+                for row in candidate_pool_outcomes_by_date.get(trade_dt, [])
+            }
+            official_outcome_by_code = {
+                row.ts_code: row
+                for row in decision_outcomes_by_date.get(trade_dt, [])
+            }
+            raw_outcomes = [
+                raw_outcome_by_code[row.ts_code]
+                for row in raw_rows
+                if row.ts_code in raw_outcome_by_code
+            ]
+            official_outcomes = [
+                official_outcome_by_code[row.ts_code]
+                for row in official_rows
+                if row.ts_code in official_outcome_by_code
+            ]
+            raw_metrics = self._summarize_outcomes(raw_outcomes)
+            official_metrics = self._summarize_outcomes(official_outcomes)
+            raw_rate = raw_metrics.get("tradable_success_rate_pct")
+            official_rate = official_metrics.get("tradable_success_rate_pct")
+            if raw_rate is None or official_rate is None:
+                continue
+
+            raw_profit = raw_metrics.get("avg_t2_profit_window_pct")
+            official_profit = official_metrics.get("avg_t2_profit_window_pct")
+            rate_underperformed = official_rate < raw_rate
+            profit_underperformed = (
+                official_rate == raw_rate
+                and official_profit is not None
+                and raw_profit is not None
+                and official_profit < raw_profit
+            )
+            if not rate_underperformed and not profit_underperformed:
+                continue
+
+            raw_codes = {row.ts_code for row in raw_rows}
+            official_codes = {row.ts_code for row in official_rows}
+            dropped_rows = [row for row in raw_rows if row.ts_code not in official_codes]
+            inserted_rows = [row for row in official_rows if row.ts_code not in raw_codes]
+
+            items.append(
+                {
+                    "trade_date": trade_dt.isoformat(),
+                    "underperformance_basis": (
+                        "tradable_success_rate"
+                        if rate_underperformed
+                        else "avg_t2_profit_window"
+                    ),
+                    "official_tradable_success_rate_pct": official_rate,
+                    "raw_momentum_tradable_success_rate_pct": raw_rate,
+                    "selection_efficiency_pct": self._delta_pct(official_rate, raw_rate),
+                    "official_avg_t2_profit_window_pct": official_profit,
+                    "raw_momentum_avg_t2_profit_window_pct": raw_profit,
+                    "official_sample_count": official_metrics.get("sample_count", 0),
+                    "raw_momentum_sample_count": raw_metrics.get("sample_count", 0),
+                    "dropped_by_v13": [
+                        self._serialize_candidate_swap_item(row, raw_outcome_by_code.get(row.ts_code))
+                        for row in dropped_rows
+                    ],
+                    "inserted_by_v13": [
+                        self._serialize_decision_swap_item(row, official_outcome_by_code.get(row.ts_code))
+                        for row in inserted_rows
+                    ],
+                    "raw_top3": [
+                        self._serialize_candidate_swap_item(row, raw_outcome_by_code.get(row.ts_code))
+                        for row in raw_rows
+                    ],
+                    "official_top3": [
+                        self._serialize_decision_swap_item(row, official_outcome_by_code.get(row.ts_code))
+                        for row in official_rows
+                    ],
+                }
+            )
+
+        return {
+            "underperforming_day_count": len(items),
+            "items": items,
+            "summary": (
+                "Official Top3 underperformed Raw Momentum Top3 on "
+                f"{len(items)} replay day(s); inspect dropped_by_v13 and inserted_by_v13 "
+                "to identify secondary-decision drift."
+            ),
+        }
+
+    @staticmethod
+    def _sort_official_decision_rows(
+        rows: List[MomentumBacktestDecisionRecord],
+    ) -> List[MomentumBacktestDecisionRecord]:
+        slot_order = {"main": 0, "secondary": 1, "watch": 2}
+        return sorted(
+            rows,
+            key=lambda row: (
+                slot_order.get(str(row.slot or ""), 99),
+                int(row.rank or 999),
+                row.ts_code,
+            ),
+        )
+
+    def _serialize_candidate_swap_item(
+        self,
+        row: MomentumBacktestCandidateRecord,
+        outcome: Optional[MomentumBacktestOutcomeRecord],
+    ) -> Dict[str, Any]:
+        payload = self._load_json(row.candidate_payload_json) or {}
+        diagnostics = payload.get("_decision_diagnostics")
+        return {
+            "ts_code": row.ts_code,
+            "name": row.name,
+            "rank": row.rank,
+            "theme": row.theme,
+            "role": row.role,
+            "raw_rank_score": row.rank_score,
+            "official_score": self._to_float(payload.get("official_score")),
+            "final_score": row.final_score,
+            "risk_score": row.risk_score,
+            "mainline_intensity_count": payload.get("mainline_intensity_count"),
+            "risk_stack_count": (
+                diagnostics.get("risk_stack_count")
+                if isinstance(diagnostics, dict)
+                else payload.get("risk_stack_count")
+            ),
+            "outcome": self._serialize_swap_outcome(outcome),
+        }
+
+    def _serialize_decision_swap_item(
+        self,
+        row: MomentumBacktestDecisionRecord,
+        outcome: Optional[MomentumBacktestOutcomeRecord],
+    ) -> Dict[str, Any]:
+        payload = self._load_json(row.decision_payload_json) or {}
+        return {
+            "ts_code": row.ts_code,
+            "name": row.name,
+            "slot": row.slot,
+            "rank": row.rank,
+            "base_rank": payload.get("base_rank"),
+            "theme": row.theme,
+            "role": row.role,
+            "official_score": self._to_float(payload.get("official_score")),
+            "base_rank_score": self._to_float(payload.get("base_rank_score")),
+            "risk_score": row.risk_score,
+            "buy_point_status": row.buy_point_status,
+            "suggested_action": row.suggested_action,
+            "risk_stack_count": payload.get("risk_stack_count"),
+            "risk_stack_veto": payload.get("risk_stack_veto"),
+            "mainline_intensity_count": payload.get("mainline_intensity_count"),
+            "outcome": self._serialize_swap_outcome(outcome),
+        }
+
+    @staticmethod
+    def _serialize_swap_outcome(
+        outcome: Optional[MomentumBacktestOutcomeRecord],
+    ) -> Dict[str, Any]:
+        if outcome is None:
+            return {"available": False}
+        return {
+            "available": True,
+            "tradable_success_pass": MomentumBacktestService._outcome_tradable_success_pass(outcome),
+            "weak_continuity_pass": MomentumBacktestService._outcome_weak_continuity_pass(outcome),
+            "t2_profit_window_pct": outcome.t2_profit_window_pct,
+            "t2_max_drawdown_pct": outcome.t2_max_drawdown_pct,
+            "real_strength_label": outcome.real_strength_label,
         }
 
     def _build_gate_justification_report(

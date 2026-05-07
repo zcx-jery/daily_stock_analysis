@@ -81,7 +81,31 @@ docker compose --env-file .env -f ./docker/docker-compose.yml exec stock-analyze
 
 > 注意：如果你通过 `.env` 设置了 `API_PORT`，部署命令必须显式带上 `--env-file .env`。否则 Compose 会把 `${API_PORT:-8000}` 解析回默认值 `8000`，很容易和 Nginx 反向代理端口不一致，导致 `502 Bad Gateway`。
 
-### 5. 数据持久化
+### 5. Docker 磁盘清理
+
+频繁重建 Docker 服务后，旧镜像、构建缓存和异常残留卷可能持续占用磁盘。仓库提供了保守清理脚本：
+
+```bash
+bash scripts/docker-cleanup.sh
+```
+
+推荐在服务器上用 systemd timer 每天凌晨 3 点执行该脚本。脚本默认行为：
+
+- 清理 24 小时前停止的容器
+- 清理 72 小时前未使用的镜像
+- 清理 72 小时前未使用的构建缓存
+- 清理 `data/cache` 下 30 天前的缓存文件
+- 仅当根分区使用率达到 90% 时清理未使用 Docker volume
+
+如果只是更新代码并重建服务，优先使用：
+
+```bash
+bash scripts/deploy-docker.sh rebuild
+```
+
+该命令会在重建完成后顺手清理 dangling image，减少重复构建后的磁盘增长。
+
+### 6. 数据持久化
 
 数据自动保存在宿主机目录：
 - `./data/` - 数据库文件

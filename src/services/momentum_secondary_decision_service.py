@@ -4664,14 +4664,27 @@ class MomentumSecondaryDecisionService:
 
         candidate_map = {item["ts_code"]: item for item in candidates}
         item_results: List[Dict[str, Any]] = []
+        skipped_item_count = 0
         for item in actionable_items:
-            evaluated = self._evaluate_strategy_health_portfolio_item(
-                trade_date=historical_trade_date,
-                portfolio_item=item,
-                candidate=candidate_map.get(item["ts_code"]),
-            )
+            try:
+                evaluated = self._evaluate_strategy_health_portfolio_item(
+                    trade_date=historical_trade_date,
+                    portfolio_item=item,
+                    candidate=candidate_map.get(item["ts_code"]),
+                )
+            except Exception as exc:  # noqa: BLE001
+                skipped_item_count += 1
+                logger.warning(
+                    "跳过历史健康度单股验证失败样本: trade_date=%s ts_code=%s error=%s",
+                    historical_trade_date,
+                    _safe_str(item.get("ts_code")),
+                    exc,
+                )
+                continue
             if evaluated is not None:
                 item_results.append(evaluated)
+            else:
+                skipped_item_count += 1
 
         if not item_results:
             return _store_sample_and_return(None)
@@ -4694,6 +4707,7 @@ class MomentumSecondaryDecisionService:
                 "success": combo_success,
                 "profit_window_pct": avg_profit_window_pct,
                 "max_drawdown_pct": avg_max_drawdown_pct,
+                "skipped_item_count": skipped_item_count,
             }
         )
 
@@ -4755,33 +4769,42 @@ class MomentumSecondaryDecisionService:
 
         start_date = analysis_date.strftime("%Y-%m-%d")
         end_date = (analysis_date + timedelta(days=6)).strftime("%Y-%m-%d")
-        history = get_daily_data(stock_code, start_date=start_date, end_date=end_date, days=6)
-        if history is None or getattr(history, "empty", True):
-            return None
+        try:
+            history = get_daily_data(stock_code, start_date=start_date, end_date=end_date, days=6)
+            if history is None or getattr(history, "empty", True):
+                return None
 
-        working = history.copy()
-        date_column = "date" if "date" in working.columns else "trade_date" if "trade_date" in working.columns else None
-        if date_column is None:
-            return None
+            working = history.copy()
+            date_column = "date" if "date" in working.columns else "trade_date" if "trade_date" in working.columns else None
+            if date_column is None:
+                return None
 
-        working[date_column] = pd.to_datetime(working[date_column])
-        working = working.sort_values(date_column).reset_index(drop=True)
-        working["_analysis_date"] = working[date_column].dt.date
-        current_rows = working[working["_analysis_date"] == analysis_date]
-        if current_rows.empty:
-            return None
+            working[date_column] = pd.to_datetime(working[date_column])
+            working = working.sort_values(date_column).reset_index(drop=True)
+            working["_analysis_date"] = working[date_column].dt.date
+            current_rows = working[working["_analysis_date"] == analysis_date]
+            if current_rows.empty:
+                return None
 
-        start_index = int(current_rows.index[0])
-        window = working.iloc[start_index : start_index + 3].copy()
-        if len(window) < 3:
-            return None
+            start_index = int(current_rows.index[0])
+            window = working.iloc[start_index : start_index + 3].copy()
+            if len(window) < 3:
+                return None
 
-        start_price = _safe_float(window.iloc[0].get("close"))
-        highs = [_safe_float(value) for value in window.iloc[1:]["high"].tolist() if _safe_float(value) > 0]
-        lows = [_safe_float(value) for value in window.iloc[1:]["low"].tolist() if _safe_float(value) > 0]
-        if start_price <= 0 or len(highs) < 2 or len(lows) < 2:
+            start_price = _safe_float(window.iloc[0].get("close"))
+            highs = [_safe_float(value) for value in window.iloc[1:]["high"].tolist() if _safe_float(value) > 0]
+            lows = [_safe_float(value) for value in window.iloc[1:]["low"].tolist() if _safe_float(value) > 0]
+            if start_price <= 0 or len(highs) < 2 or len(lows) < 2:
+                return None
+            return start_price, highs, lows
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "跳过 fetcher forward 数据失败的历史健康度单股样本: stock_code=%s analysis_date=%s error=%s",
+                stock_code,
+                analysis_date.isoformat(),
+                exc,
+            )
             return None
-        return start_price, highs, lows
 
     def _summarize_strategy_health_window(
         self,
@@ -5362,7 +5385,21 @@ class MomentumSecondaryDecisionService:
 
     @staticmethod
     def _has_v13_mainline_confirmation(item: Dict[str, Any]) -> bool:
-        return bool(_safe_str(item.get("_v13_theme_id"))) or _safe_float(item.get("_v13_mainline_score")) >= 70.0
+        mainline_count = MomentumSecondaryDecisionService._first_available_int(
+            item,
+            (
+                "_theme_pool_count",
+                "_v13_mainline_pool_count",
+                "v13_mainline_candidate_count",
+                "_official_mainline_intensity_count",
+                "mainline_intensity_count",
+            ),
+        )
+        return (
+            bool(_safe_str(item.get("_v13_theme_id")))
+            or _safe_float(item.get("_v13_mainline_score")) >= 70.0
+            or int(mainline_count or 0) >= 2
+        )
 
     @staticmethod
     def _forward_alpha_score(
@@ -5967,6 +6004,33 @@ class MomentumSecondaryDecisionService:
             if is_space_leader
             else (f"pool_count={mainline_count}" if mainline_count is not None else "缺少主线池计数")
         )
+        volume_expand_5 = self._first_available_float(
+            item,
+            (
+                "volume_expand_5",
+                "_volume_expand_5",
+                "volume_ratio_5d",
+                "amount_expand_5",
+            ),
+        )
+        price_gain = self._first_available_float(item, ("pct_chg", "price_gain", "change_pct", "pct_change"))
+        turnover_rate_f = self._first_available_float(
+            item,
+            (
+                "turnover_rate_f",
+                "free_float_turnover_rate",
+                "free_turnover_rate",
+                "turnover_rate",
+            ),
+        )
+        high_volume_no_acceleration = (
+            volume_expand_5 is not None
+            and volume_expand_5 > 2.0
+            and price_gain is not None
+            and price_gain < 5.0
+        )
+        extreme_churn = turnover_rate_f is not None and turnover_rate_f > 25.0
+        exhaustion_risk = high_volume_no_acceleration or extreme_churn
 
         factors = [
             self._risk_factor_item(
@@ -6001,12 +6065,30 @@ class MomentumSecondaryDecisionService:
                 triggered=mainline_risk,
                 evidence=mainline_evidence,
             ),
+            self._risk_factor_item(
+                key="exhaustion_risk",
+                label="量能竭尽风险",
+                triggered=exhaustion_risk,
+                evidence=(
+                    f"volume_expand_5={volume_expand_5 if volume_expand_5 is not None else '--'}, "
+                    f"pct_chg={price_gain if price_gain is not None else '--'}, "
+                    f"turnover_rate_f={turnover_rate_f if turnover_rate_f is not None else '--'}"
+                ),
+            ),
         ]
         triggered_factors = [factor for factor in factors if factor["triggered"]]
+        mandatory_veto_keys = [
+            factor["key"]
+            for factor in triggered_factors
+            if factor["key"] == "exhaustion_risk"
+        ]
+        mandatory_veto = bool(mandatory_veto_keys)
         result = {
             "factor_count": len(triggered_factors),
-            "veto": len(triggered_factors) >= 3,
+            "veto": mandatory_veto or len(triggered_factors) >= 3,
             "threshold": 3,
+            "mandatory_veto": mandatory_veto,
+            "mandatory_veto_keys": mandatory_veto_keys,
             "factors": factors,
             "triggered_keys": [factor["key"] for factor in triggered_factors],
         }
@@ -6030,10 +6112,11 @@ class MomentumSecondaryDecisionService:
         blockers: List[Dict[str, Any]] = []
         risk_stack = self._risk_stack_check(item)
         if risk_stack["veto"]:
+            mandatory_veto = bool(risk_stack.get("mandatory_veto"))
             blockers.append(
                 self._reason_item(
                     "risk_stack_veto",
-                    "风险堆叠 >= 3",
+                    "量能竭尽一票否决" if mandatory_veto else "风险堆叠 >= 3",
                     detail="、".join(str(factor.get("label")) for factor in risk_stack["factors"] if factor.get("triggered")),
                 )
             )
@@ -6049,10 +6132,11 @@ class MomentumSecondaryDecisionService:
                 )
             )
 
+        has_mainline_confirmation = self._has_v13_mainline_confirmation(item)
         if slot == "main":
             if official_score < 60:
                 blockers.append(self._reason_item("low_official_score", "官方总分偏低"))
-            if theme_score < 58 and v13_mainline_score < 75:
+            if theme_score < 58 and v13_mainline_score < 75 and not has_mainline_confirmation:
                 blockers.append(self._reason_item("weak_mainline", "主线强度不足"))
             if role_key == "back":
                 blockers.append(self._reason_item("back_role_main", "后排角色不做主仓"))

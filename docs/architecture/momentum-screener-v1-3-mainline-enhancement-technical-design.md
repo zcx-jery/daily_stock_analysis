@@ -237,11 +237,18 @@ flowchart TD
 V1.3 第三阶段在 `src/services/momentum_screener_service.py` 中把主线共振从“解释层证据”推进到官方分轻量加权：
 
 ```text
-mainline_intensity_multiplier = min(1.3, 1 + 0.1 * count_in_pool)
+if count_in_pool < 2:
+    mainline_intensity_multiplier = 1.0
+else:
+    mainline_intensity_multiplier = min(1.3, 1 + 0.1 * count_in_pool)
+
+if close > 1.2 * MA20:
+    mainline_intensity_multiplier = min(mainline_intensity_multiplier, 1.1)
+
 official_score = clamp_0_100(base_official_score * mainline_intensity_multiplier)
 ```
 
-`count_in_pool` 优先取 V1.3 题材 / 主线画像中的 `candidate_count`，缺失时回退到旧行业上下文的 `sector_stats.strong_count`。加权上限固定为 `1.3x`，避免强题材密度把单股质量完全淹没。
+`count_in_pool` 优先取 V1.3 题材 / 主线画像中的 `candidate_count`，缺失时回退到旧行业上下文的 `sector_stats.strong_count`。V1.3 第八阶段后，孤立强势票（`count_in_pool < 2`）不再获得主线 bonus；正常加权上限固定为 `1.3x`，若同步触发高位风险（`close > 1.2 * MA20`），则主线加权上限收紧为 `1.1x`，避免主题热度掩盖高位派发风险。
 
 输出字段：
 
@@ -356,7 +363,7 @@ official_score = clamp_0_100(base_official_score * mainline_intensity_multiplier
 | `moneyflow_ths` | 支持按交易日全量；实测支持逗号分隔多股 `ts_code`；支持 `limit / offset` | 默认按交易日分页快照，再按 `ts_code` 过滤 | 单日行数已接近 6000，必须预留分页 |
 | `moneyflow_dc` | 支持按交易日全量；实测支持逗号分隔多股 `ts_code`；支持 `limit / offset` | 默认按交易日分页快照，再按 `ts_code` 过滤 | 同上 |
 | `cyq_perf` | 文档写 `ts_code` 必填，但实测支持 `trade_date + limit / offset` 全市场分页 | 默认按交易日分页快照，再按 `ts_code` 过滤 | 需保留启动 smoke-check 与单股 fallback |
-| `cyq_chips` | 文档和实测均要求 `ts_code`，不支持按日全量 | 保留逐股真查 | 是完整真值链路里的主要重接口 |
+| `cyq_chips` | 文档和实测均要求 `ts_code`，不支持按日全量 | 保留逐股真查；严格回测中按小并发补取并逐股缓存 | 是完整真值链路里的主要重接口，单股失败只降级该股 |
 | `dc_member` | 文档支持按 `trade_date`、`ts_code`、`con_code` 查询；实测支持按日全量分页；多 `con_code` 无效 | 默认按交易日分页快照，再本地反查股票所属板块 | 不再逐股循环 `con_code=单股` |
 | `ths_member` | 文档支持 `ts_code` / `con_code`；实测支持全表分页；多 `ts_code` / 多 `con_code` 无效 | 默认按全表分页快照，再本地反查 | 适合做题材成分总表 |
 | `ths_index` | 文档明确“一次可提取全部数据，请勿循环提取”；实测 `ths_index()` 可返回全表 | 默认全表一次拉全 | 不再逐题材循环查中文名 |
@@ -366,7 +373,7 @@ official_score = clamp_0_100(base_official_score * mainline_intensity_multiplier
 实现原则：
 
 1. **优先快照，不优先串行**：凡是能按日或按全表快照的接口，统一先拉快照再本地过滤。
-2. **保留真值，不偷降级**：`cyq_chips` 这类必须逐股真查的接口，不因耗时长而永久裁剪。
+2. **保留真值，不偷降级**：`cyq_chips` 这类必须逐股真查的接口，不因耗时长而永久裁剪；允许小并发和单股失败降级来吸收网络抖动，但不能把全量严格画像静默缩成前排抽样。
 3. **分页优先于赌上限**：即便当前单日全量仍未触顶，也按 `limit / offset` 实现，避免股票数量增长后再次打满上限。
 4. **文档未明说但实测可用的能力必须带 fallback**：如 `cyq_perf` 的按日分页快照，需保留 smoke-check 和单股回退。
 
@@ -522,7 +529,7 @@ V1.3 数据应分资源缓存，避免一次缺失拖垮全部能力。
 1. 先加载交易日级快照：`dc_concept / moneyflow_ind_dc / dc_index / moneyflow_ths / moneyflow_dc / cyq_perf`
 2. 再加载全表快照：`ths_member / ths_index`
 3. 再加载按交易日分页成分：`dc_member`
-4. 最后补逐股真查：`cyq_chips`
+4. 最后补逐股真查：`cyq_chips`，按受控小并发执行并写入逐股缓存；单股超时 / DNS 失败只标记该股资源降级，不阻断整日回测。
 
 这样可以把“单次任务中的外部请求总数”压到主要由分页快照和少量逐股真查组成，而不是对每只候选重复打完整题材链路。
 

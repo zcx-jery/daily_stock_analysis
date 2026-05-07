@@ -152,10 +152,13 @@ AI 摘要必须优先使用后端结构化上下文，不允许只凭自然语�
 - `risk_stack / risk_stack_count / risk_stack_veto`：说明高位、封板、背离、无主线等风险是否叠加。
 - `mainline_intensity_count / mainline_intensity_multiplier / mainline_intensity_bonus`：说明板块/题材共振如何影响官方排序。
 - `adaptive_gate`：说明是否因最近总闸门防守成功率过高而进入弱市动态收口。
+- `exhaustion_volume_audit`：说明是否出现成交量 / 成交额放大、涨幅收缩、收盘承接偏弱、上影线偏高或 `turnover_rate_f > 25%` 等 A 字顶 / 爆量滞涨信号。
 - `execution_guard`：说明 T+1 不深低开、收阳、首 30 分钟高点突破与 T+2 滑点调整利润缓冲的执行边界。
 
 ### 13.3 验收标准
 
 - AI 输出必须包含 `[Core Logic]`、`[Risk Audit]`、`[Execution Guard]` 三个核心段落。
 - 默认 Top3 的每只股票都必须出现至少一个风险审计点；没有硬风险时，也要说明最接近的未确认项。
+- 当 `exhaustion_volume_audit.status = critical_rejection` 时，`[Risk Audit]` 必须输出 `CRITICAL_REJECTION_ADVICE`，不得只写“注意风险”。
+- 当 `risk_stack` 命中 `R5 Exhaustion Risk` 或 `exhaustion_volume_audit.status = extreme_churn` 时，摘要必须优先输出 `TRADING WARNING: Extreme Churn Detected (量能过载). Probability of A-top is high; use tight trailing stop.`，避免 AI 把量能终结信号淡化成普通提醒。
 - AI 不得把 `今日不做`、`仅观察`、`Risk Stack Veto` 或动态主线阈值不足改写成可执行推荐。

@@ -23,6 +23,10 @@ case "$command_name" in
   rebuild)
     compose build --no-cache "$@"
     compose up -d "$@"
+    docker image prune -f >/dev/null || true
+    ;;
+  cleanup)
+    bash scripts/docker-cleanup.sh
     ;;
   restart)
     compose restart "$@"
@@ -37,7 +41,7 @@ case "$command_name" in
     compose ps "$@"
     ;;
   *)
-    echo "Usage: scripts/deploy-docker.sh [up|rebuild|restart|down|logs|ps] [service...]" >&2
+    echo "Usage: scripts/deploy-docker.sh [up|rebuild|cleanup|restart|down|logs|ps] [service...]" >&2
     exit 1
     ;;
 esac

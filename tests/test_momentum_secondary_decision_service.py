@@ -307,6 +307,16 @@ class _FallbackForwardFetcher:
         )
 
 
+class _FlakyForwardFetcher(_FallbackForwardFetcher):
+    def __init__(self, failing_codes: set[str]):
+        self.failing_codes = failing_codes
+
+    def get_daily_data(self, stock_code: str, start_date=None, end_date=None, days: int = 6):
+        if stock_code in self.failing_codes:
+            raise RuntimeError(f"forward timeout for {stock_code}")
+        return super().get_daily_data(stock_code, start_date=start_date, end_date=end_date, days=days)
+
+
 def _build_historical_strategy_fixture(
     *,
     short_successes: int,
@@ -491,6 +501,93 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         mainline_factor = next(item for item in risk_stack["factors"] if item["key"] == "mainline_risk")
         self.assertFalse(mainline_factor["triggered"])
         self.assertIn("R4 豁免", mainline_factor["evidence"])
+
+    def test_exhaustion_risk_mandatory_veto_blocks_official_slots(self) -> None:
+        service = MomentumSecondaryDecisionService(strategy_health_async=False)
+        candidate = self._selected_candidate_fixture(
+            ts_code="600302.SH",
+            name="量能竭尽样本",
+            theme="化工",
+            role_key="leader",
+            buy_point_status="clear",
+            decision_score=96.0,
+            forward_alpha_score=92.0,
+            official_score=97.0,
+            risk_score=12.0,
+            v13_mainline_score=90.0,
+        )
+        candidate.update(
+            {
+                "close": 10.5,
+                "ma20": 10.0,
+                "pct_chg": 3.8,
+                "volume_expand_5": 2.6,
+                "turnover_rate_f": 12.0,
+                "_theme_pool_count": 4,
+            }
+        )
+
+        risk_stack = service._risk_stack_check(candidate)
+        blockers = service._slot_hard_blocker_items("main", candidate, {"化工": 92.0})
+
+        self.assertTrue(risk_stack["mandatory_veto"])
+        self.assertTrue(risk_stack["veto"])
+        self.assertEqual(risk_stack["factor_count"], 1)
+        self.assertIn("exhaustion_risk", risk_stack["triggered_keys"])
+        self.assertTrue(candidate["_risk_stack_veto"])
+        self.assertTrue(any(item["key"] == "risk_stack_veto" and item["label"] == "量能竭尽一票否决" for item in blockers))
+
+    def test_free_float_turnover_triggers_exhaustion_veto(self) -> None:
+        service = MomentumSecondaryDecisionService(strategy_health_async=False)
+        candidate = self._selected_candidate_fixture(
+            ts_code="600303.SH",
+            name="极端换手样本",
+            theme="有色金属",
+            role_key="leader",
+            buy_point_status="clear",
+            decision_score=91.0,
+            forward_alpha_score=89.0,
+            official_score=93.0,
+            risk_score=10.0,
+            v13_mainline_score=88.0,
+        )
+        candidate.update(
+            {
+                "close": 18.0,
+                "ma20": 17.0,
+                "pct_chg": 9.9,
+                "volume_expand_5": 1.4,
+                "turnover_rate_f": 28.0,
+                "_theme_pool_count": 3,
+            }
+        )
+
+        risk_stack = service._risk_stack_check(candidate)
+
+        self.assertTrue(risk_stack["mandatory_veto"])
+        self.assertTrue(risk_stack["veto"])
+        self.assertEqual(risk_stack["triggered_keys"], ["exhaustion_risk"])
+
+    def test_mainline_intensity_confirmation_suppresses_legacy_weak_mainline_blocker(self) -> None:
+        service = MomentumSecondaryDecisionService(strategy_health_async=False)
+        candidate = self._selected_candidate_fixture(
+            ts_code="601600.SH",
+            name="主线共振样本",
+            theme="铝",
+            role_key="leader",
+            buy_point_status="waiting",
+            decision_score=90.0,
+            forward_alpha_score=86.0,
+            official_score=92.0,
+            risk_score=18.0,
+            entry_range_low=10.0,
+            entry_range_high=10.3,
+        )
+        candidate["_official_mainline_intensity_count"] = 5
+
+        blockers = service._slot_hard_blocker_items("main", candidate, {"铝": 50.0})
+
+        self.assertFalse(any(item["key"] == "weak_mainline" for item in blockers))
 
     def test_adaptive_gate_strict_mainline_threshold_blocks_isolated_candidates(self) -> None:
         service = MomentumSecondaryDecisionService(
@@ -2061,6 +2158,31 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
 
             self.assertEqual(result["strategy_health"]["data_source"], "historical")
             self.assertEqual(result["strategy_health"]["status"], "healthy")
+
+    def test_strategy_health_skips_single_forward_fetch_failure(self) -> None:
+        screening, request_params, screener_service, _ = _build_historical_strategy_fixture(
+            short_successes=14,
+            long_successes=38,
+        )
+        historical_trade_date = sorted(screener_service.screens_by_date.keys())[0]
+        screener_service.fetcher = _FlakyForwardFetcher({"600002.SH"})
+        empty_repo = _FakeStockRepo(start_bars={}, forward_bars={})
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = MomentumSecondaryDecisionService(
+                screener_service=screener_service,
+                stock_repo=empty_repo,
+                strategy_health_async=False,
+                strategy_health_cache_dir=Path(temp_dir),
+            )
+
+            result = service._evaluate_strategy_health_trade_date(
+                historical_trade_date=historical_trade_date,
+                request_params=request_params,
+            )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["selected_count"], 1)
+        self.assertEqual(result["skipped_item_count"], 1)
 
     def test_build_runs_with_underlying_screener_service(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

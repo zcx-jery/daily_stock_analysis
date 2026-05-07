@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [chore] Docker Compose 改为复用统一 `daily-stock-analysis:latest` 镜像，并新增保守磁盘清理脚本，降低频繁重建后旧镜像、构建缓存和异常匿名卷挤满磁盘的风险。
+- [改进] 强势筛选 V1.3 第八阶段新增 R5 量能竭尽一票否决：爆量不加速或自由流通换手率超过 25% 的标的不得进入 Official Top3。
+- [改进] 强势筛选 Mainline Intensity 改为至少 2 只同主线才加分，并在高位风险触发时把主线加权上限收紧到 1.1x。
+- [修复] 二次决策主仓硬阻断的 `weak_mainline` 同步参考 V1.3 主线共振计数，避免旧主题分偏低时误杀铝业这类真实板块共振样本。
+- [改进] 强势筛选候选池日快照批量拉取 `turnover_rate_f` 与成交量字段，AI 点评在极端换手时输出 `TRADING WARNING: Extreme Churn Detected`。
+- [chore] 强势筛选筛选结果、候选池与日快照缓存签名升级到 R5 版本，避免旧缓存缺少量能字段时绕过量能竭尽审计。
+- [改进] V1.3 严格回测的 `cyq_chips` 逐股筹码明细改为受控小并发补取并逐股缓存，单股超时 / DNS 失败只降级该股，不再放大为整日卡顿。
+- [改进] 强势筛选回测 summary 新增 `ticker_swap_log`，逐日记录 Official Top3 弱于 Raw Momentum Top3 时被 V1.3 剔除和插入的股票，用于定位过滤层负贡献。
+- [改进] 强势筛选 AI 点评新增 `exhaustion_volume_audit`，对爆量滞涨 / A 字顶风险触发 `CRITICAL_REJECTION_ADVICE`。
+- [修复] 强势筛选回测 replay 增加单股级容错，候选评分、历史健康度和结果验证中单只股票数据超时/异常会跳过该样本，不再拖垮整个交易日。
 - [文档] 新增首页个股分析 Tushare 6000 积分增强产品文档与 SPEC，明确基本面、资金流、板块联动、筹码结构和透明度增强的阶段化落地方案。
 - [改进] V1.3 数据增强层新增 `momentum_v13_resources` 磁盘缓存，历史交易日资源与聚合上下文按 30 天 TTL 复用，降低严格回测中 `cyq_chips` 等重接口的重复请求。
 - [修复] FastAPI 启动时主动初始化强势筛选回测 worker，服务器重启后自动恢复 queued/running 回测任务，不再依赖用户打开前端回测页触发执行。

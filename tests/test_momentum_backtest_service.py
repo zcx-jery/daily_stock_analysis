@@ -167,6 +167,68 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
         self.assertEqual(record.real_strength_label, "insufficient")
         self.assertIsNone(record.t1_trade_date)
 
+    def test_freeze_trade_date_artifacts_skips_single_outcome_failure(self) -> None:
+        screening = {
+            "candidate_count": 2,
+            "ranked_results": [
+                {
+                    "rank": 1,
+                    "ts_code": "600001.SH",
+                    "name": "测试龙头",
+                    "close": 11.0,
+                    "entry_range_low": 10.8,
+                    "entry_range_high": 11.1,
+                },
+                {
+                    "rank": 2,
+                    "ts_code": "600002.SH",
+                    "name": "异常样本",
+                    "close": 8.65,
+                    "entry_range_low": 8.5,
+                    "entry_range_high": 8.8,
+                },
+            ],
+        }
+        decision = {
+            "action": {"level": "normal_go", "label": "正常出手"},
+            "strategy_health": {"recommendation_cap": "full"},
+            "market_environment": {"level": "strong", "modules": []},
+            "opportunity_quality": {"level": "strong", "modules": []},
+            "historical_validity": {"level": "healthy", "modules": []},
+            "portfolio": [
+                {
+                    "slot": "main",
+                    "rank": 1,
+                    "ts_code": "600001.SH",
+                    "name": "测试龙头",
+                    "theme": "电力设备",
+                    "role": "龙头",
+                    "score": 90.0,
+                    "entry_range_low": 10.8,
+                    "entry_range_high": 11.1,
+                    "suggested_action": "ready",
+                }
+            ],
+            "candidate_diagnostics": [],
+        }
+        original_build = self.service._build_outcome_record
+
+        def flaky_build(*args, **kwargs):
+            item = kwargs.get("item") or {}
+            if item.get("ts_code") == "600002.SH":
+                raise RuntimeError("single stock replay timeout")
+            return original_build(*args, **kwargs)
+
+        with patch.object(self.service, "_build_outcome_record", side_effect=flaky_build):
+            artifacts = self.service._freeze_trade_date_artifacts(
+                trade_dt=pd.Timestamp("2026-04-10").date(),
+                screening=screening,
+                decision=decision,
+            )
+
+        self.assertEqual({record.ts_code for record in artifacts.outcome_records}, {"600001.SH"})
+        self.assertEqual(len(artifacts.candidate_records), 4)
+
     def test_outcome_record_separates_weak_continuity_from_tradable_success(self) -> None:
         bars = [
             {
@@ -341,6 +403,128 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
         self.assertTrue(report["alpha_erosion_triggered"])
         self.assertEqual(report["warning_message"], "ALPHA_EROSION_DETECTED: Refine Secondary Decision Weights")
         self.assertEqual(report["v13_alpha_vs_pool_pct"], 12.0)
+
+    def test_ticker_swap_log_lists_dropped_and_inserted_when_raw_wins(self) -> None:
+        trade_date = pd.Timestamp("2026-04-10").date()
+        raw_rows = [
+            self._build_candidate_record(
+                ts_code="600001.SH",
+                name="RawA",
+                theme="AI",
+                role="leader",
+                rank=1,
+                view_scope="candidate_pool",
+                rank_score=96.0,
+            ),
+            self._build_candidate_record(
+                ts_code="600002.SH",
+                name="RawB",
+                theme="AI",
+                role="front",
+                rank=2,
+                view_scope="candidate_pool",
+                rank_score=92.0,
+            ),
+            self._build_candidate_record(
+                ts_code="600003.SH",
+                name="RawC",
+                theme="机器人",
+                role="front",
+                rank=3,
+                view_scope="candidate_pool",
+                rank_score=88.0,
+            ),
+            self._build_candidate_record(
+                ts_code="600004.SH",
+                name="OfficialD",
+                theme="机器人",
+                role="watch",
+                rank=4,
+                view_scope="candidate_pool",
+                rank_score=70.0,
+            ),
+        ]
+        official_rows = [
+            self._build_decision_record(
+                slot="main",
+                ts_code="600002.SH",
+                name="RawB",
+                theme="AI",
+                role="front",
+            ),
+            self._build_decision_record(
+                slot="secondary",
+                ts_code="600003.SH",
+                name="RawC",
+                theme="机器人",
+                role="front",
+            ),
+            self._build_decision_record(
+                slot="watch",
+                ts_code="600004.SH",
+                name="OfficialD",
+                theme="机器人",
+                role="watch",
+            ),
+        ]
+        candidate_outcomes = [
+            self._build_outcome_record(
+                view_scope="candidate_pool",
+                ts_code="600001.SH",
+                name="RawA",
+                t2_profit_window_pct=3.0,
+                tradable_success_pass=True,
+            ),
+            self._build_outcome_record(
+                view_scope="candidate_pool",
+                ts_code="600002.SH",
+                name="RawB",
+                t2_profit_window_pct=-1.0,
+                tradable_success_pass=False,
+            ),
+            self._build_outcome_record(
+                view_scope="candidate_pool",
+                ts_code="600003.SH",
+                name="RawC",
+                t2_profit_window_pct=-2.0,
+                tradable_success_pass=False,
+            ),
+            self._build_outcome_record(
+                view_scope="candidate_pool",
+                ts_code="600004.SH",
+                name="OfficialD",
+                t2_profit_window_pct=-3.0,
+                tradable_success_pass=False,
+            ),
+        ]
+        decision_outcomes = [
+            self._build_outcome_record(
+                view_scope="decision_top3",
+                slot=row.slot,
+                ts_code=row.ts_code,
+                name=row.name,
+                t2_profit_window_pct=-1.0,
+                tradable_success_pass=False,
+            )
+            for row in official_rows
+        ]
+
+        report = self.service._build_ticker_swap_log(
+            candidate_pool_rows_by_date={trade_date: raw_rows},
+            decision_rows_by_date={trade_date: official_rows},
+            candidate_pool_outcomes_by_date={trade_date: candidate_outcomes},
+            decision_outcomes_by_date={trade_date: decision_outcomes},
+        )
+
+        self.assertEqual(report["underperforming_day_count"], 1)
+        item = report["items"][0]
+        self.assertEqual(item["trade_date"], "2026-04-10")
+        self.assertEqual(item["underperformance_basis"], "tradable_success_rate")
+        self.assertEqual(item["selection_efficiency_pct"], -33.33)
+        self.assertEqual([row["ts_code"] for row in item["dropped_by_v13"]], ["600001.SH"])
+        self.assertEqual([row["ts_code"] for row in item["inserted_by_v13"]], ["600004.SH"])
+        self.assertTrue(item["dropped_by_v13"][0]["outcome"]["tradable_success_pass"])
+        self.assertFalse(item["inserted_by_v13"][0]["outcome"]["tradable_success_pass"])
 
     def _build_daily_summary_fixture(self) -> MomentumBacktestDailySummary:
         trade_date = pd.Timestamp("2026-04-10").date()
@@ -577,6 +761,7 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
         self.assertIn("candidate_pool_tradable_success_rate", summary["summary"])
         self.assertIn("benchmark_comparison", summary["summary"])
         self.assertIn("strategy_alpha_report", summary["summary"])
+        self.assertIn("ticker_swap_log", summary["summary"])
         self.assertIn("gate_justification_report", summary["summary"])
         self.assertIn("layer_diagnostics", summary["summary"])
         self.assertIn("gate_module_breakdown", summary["summary"])
@@ -586,6 +771,10 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
         self.assertTrue({"official_top3", "raw_rank_top3", "market_base"}.issubset(benchmark_keys))
         self.assertIn("v13_alpha_vs_pool_pct", summary["summary"]["strategy_alpha_report"])
         self.assertIn("selection_efficiency_pct", summary["summary"]["strategy_alpha_report"])
+        self.assertIn(
+            "ticker_swap_underperforming_day_count",
+            summary["summary"]["strategy_alpha_report"],
+        )
         self.assertIn("false_alarm_warning_count", summary["summary"]["gate_justification_report"])
         self.assertIn("mainline_quality", summary["summary"]["v13_diagnostics"])
         self.assertIn("theme_concentration", summary["summary"]["v13_diagnostics"])

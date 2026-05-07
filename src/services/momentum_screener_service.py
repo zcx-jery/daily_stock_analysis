@@ -26,7 +26,9 @@ MOMENTUM_EOD_READY_COVERAGE_RATIO = 0.6
 MOMENTUM_MARKET_CLOSE_CUTOFF = "15:00"
 MOMENTUM_ENTRY_BASELINE_VERSION = "v1_4_3_0"
 MOMENTUM_MARKET_SCOPE_VERSION = "v1_a_share_main_chinext_star"
-MOMENTUM_SCREENING_CACHE_VERSION = "v1_4_3_2_decision_intelligence"
+MOMENTUM_TRADE_SNAPSHOT_CACHE_VERSION = "v1_4_4_0_exhaustion_veto"
+MOMENTUM_CANDIDATE_POOL_CACHE_VERSION = "v1_4_4_0_exhaustion_veto"
+MOMENTUM_SCREENING_CACHE_VERSION = "v1_4_4_0_exhaustion_veto"
 MOMENTUM_DEFAULT_TOP_N = 30
 MOMENTUM_V13_PROFILE_MAX_CANDIDATES = 12
 MOMENTUM_TRUTH_MODE_FULL = "full"
@@ -624,12 +626,13 @@ class MomentumScreenerService:
         daily = self._call_tushare(
             "daily",
             trade_date=trade_date,
-            fields="ts_code,trade_date,open,high,low,close,pct_chg,amount",
+            fields="ts_code,trade_date,open,high,low,close,pct_chg,vol,amount",
         )
         daily_basic = self._call_tushare(
             "daily_basic",
             trade_date=trade_date,
-            fields="ts_code,trade_date,turnover_rate,volume_ratio,circ_mv",
+            # R5 uses free-float turnover; keep it in the daily batch instead of per-ticker factor calls.
+            fields="ts_code,trade_date,turnover_rate,turnover_rate_f,volume_ratio,circ_mv",
         )
         moneyflow = self._call_tushare("moneyflow", trade_date=trade_date)
         stk_limit = self._call_tushare(
@@ -641,6 +644,8 @@ class MomentumScreenerService:
 
         if "amount" in daily.columns:
             daily["amount"] = pd.to_numeric(daily["amount"], errors="coerce") * 1000
+        if "vol" in daily.columns:
+            daily["vol"] = pd.to_numeric(daily["vol"], errors="coerce") * 100
         if "circ_mv" in daily_basic.columns:
             daily_basic["circ_mv"] = pd.to_numeric(daily_basic["circ_mv"], errors="coerce") * 10000
 
@@ -854,7 +859,9 @@ class MomentumScreenerService:
             "pct_chg",
             "amount",
             "turnover_rate",
+            "turnover_rate_f",
             "volume_ratio",
+            "vol",
             "open",
             "high",
             "low",
@@ -864,6 +871,10 @@ class MomentumScreenerService:
         ]:
             if column in merged.columns:
                 merged[column] = pd.to_numeric(merged[column], errors="coerce")
+        if "turnover_rate_f" not in merged.columns:
+            merged["turnover_rate_f"] = merged["turnover_rate"]
+        else:
+            merged["turnover_rate_f"] = merged["turnover_rate_f"].fillna(merged["turnover_rate"])
 
         merged["name"] = merged["name"].fillna("")
         merged["symbol"] = merged["symbol"].fillna(merged["ts_code"].str.split(".").str[0])
@@ -1125,30 +1136,30 @@ class MomentumScreenerService:
             ts_code = _safe_str(row.get("ts_code") or row.get("symbol"))
             try:
                 history = self._load_history(ts_code, trade_date)
+                if history.empty:
+                    logger.debug("跳过缺少历史数据的候选股: %s", row["ts_code"])
+                    continue
+
+                sector_name = _safe_str(row.get("sector_name"), _safe_str(row.get("industry"), "未分类"))
+                features = self._build_features(
+                    row,
+                    history,
+                    {
+                        "amount_rank_pct": _safe_float(amount_rank.iloc[index]),
+                        "main_inflow_rank_pct": _safe_float(main_inflow_rank.iloc[index]),
+                        "sector": sector_name,
+                        "sector_stats": sector_stats.get(sector_name, {}),
+                    },
+                )
             except Exception as exc:  # noqa: BLE001
                 skipped_history_errors += 1
                 logger.warning(
-                    "跳过历史数据加载失败的候选股: trade_date=%s ts_code=%s error=%s",
+                    "跳过历史数据或评分画像构建失败的候选股: trade_date=%s ts_code=%s error=%s",
                     trade_date,
                     ts_code,
                     exc,
                 )
                 continue
-            if history.empty:
-                logger.debug("跳过缺少历史数据的候选股: %s", row["ts_code"])
-                continue
-
-            sector_name = _safe_str(row.get("sector_name"), _safe_str(row.get("industry"), "未分类"))
-            features = self._build_features(
-                row,
-                history,
-                {
-                    "amount_rank_pct": _safe_float(amount_rank.iloc[index]),
-                    "main_inflow_rank_pct": _safe_float(main_inflow_rank.iloc[index]),
-                    "sector": sector_name,
-                    "sector_stats": sector_stats.get(sector_name, {}),
-                },
-            )
             prepared_rows.append((row, features))
             processed_rows = len(prepared_rows)
             self._emit_progress(
@@ -1844,6 +1855,7 @@ class MomentumScreenerService:
             "main_board_only": bool(main_board_only),
             "entry_baseline_version": MOMENTUM_ENTRY_BASELINE_VERSION,
             "market_scope_version": MOMENTUM_MARKET_SCOPE_VERSION,
+            "candidate_pool_cache_version": MOMENTUM_CANDIDATE_POOL_CACHE_VERSION,
         }
         return "|".join(f"{key}={value}" for key, value in normalized.items())
 
@@ -1966,7 +1978,9 @@ class MomentumScreenerService:
         self._store_disk_cached_trade_snapshot(trade_date, payload, expires_at)
 
     def _trade_snapshot_cache_path(self, trade_date: str) -> Path:
-        digest = hashlib.sha1(f"snapshot|{trade_date}".encode("utf-8")).hexdigest()
+        digest = hashlib.sha1(
+            f"snapshot|{MOMENTUM_TRADE_SNAPSHOT_CACHE_VERSION}|{trade_date}".encode("utf-8")
+        ).hexdigest()
         return self._trade_snapshot_cache_dir / f"{digest}.json"
 
     def _load_disk_cached_trade_snapshot(self, trade_date: str) -> Optional[Dict[str, pd.DataFrame]]:
@@ -2298,10 +2312,31 @@ class MomentumScreenerService:
         prev_slice_20 = close_series.tail(21).iloc[:-1] if len(close_series) >= 2 else close_series
         prev_slice_60 = close_series.tail(61).iloc[:-1] if len(close_series) >= 2 else close_series
         prev_amount_slice = amount_series.tail(6).iloc[:-1] if len(amount_series) >= 2 else amount_series
+        prev_amount_10d = amount_series.tail(11).iloc[:-1] if len(amount_series) >= 2 else amount_series
+        prev_pct_3d = pct_series.tail(4).iloc[:-1] if len(pct_series) >= 2 else pct_series
+        current_amount = _safe_float(row.get("amount"))
+        current_pct = _safe_float(current.get("pct_chg"))
+        if "volume" in history.columns:
+            volume_series = history["volume"].astype(float).fillna(0)
+        elif "vol" in history.columns:
+            volume_series = history["vol"].astype(float).fillna(0)
+        else:
+            volume_series = amount_series
+        prev_volume_slice = volume_series.tail(6).iloc[:-1] if len(volume_series) >= 2 else volume_series
+        current_volume = _safe_float(row.get("vol"), _safe_float(row.get("volume"), _safe_float(current.get("volume"))))
+        if current_volume <= 0:
+            current_volume = current_amount
+            prev_volume_slice = prev_amount_slice
+        volume_expand_5 = (
+            current_volume / max(float(prev_volume_slice.mean()), 1.0)
+            if not prev_volume_slice.empty
+            else 1.0
+        )
 
         return {
             "prev_open": _safe_float(prev.get("open")),
             "prev_close": _safe_float(prev.get("close")),
+            "close": close_price,
             "close_position": self._compute_close_position(
                 _safe_float(current.get("open")),
                 _safe_float(current.get("high")),
@@ -2332,7 +2367,17 @@ class MomentumScreenerService:
             "up_days_5d": int((pct_series.tail(5) > 0).sum()),
             "strong_days_60d": int((pct_series.tail(60) >= 7).sum()),
             "limit_up_days_60d": int((pct_series.tail(60) >= 9.7).sum()),
-            "volume_expand_5": _safe_float(row.get("amount")) / max(prev_amount_slice.mean(), 1.0) if not prev_amount_slice.empty else 1.0,
+            "volume_expand_5": volume_expand_5,
+            "amount_10d_high": (
+                current_amount > 0
+                and not prev_amount_10d.empty
+                and current_amount >= float(prev_amount_10d.max())
+            ),
+            "price_gain_shrinking": (
+                current_pct > 0
+                and not prev_pct_3d.empty
+                and current_pct < float(prev_pct_3d.max())
+            ),
             "amount_rank_pct": ctx["amount_rank_pct"],
             "main_inflow_rank_pct": ctx["main_inflow_rank_pct"],
             "sector": ctx["sector"],
@@ -2617,13 +2662,23 @@ class MomentumScreenerService:
         features: Dict[str, Any],
     ) -> Dict[str, float]:
         count = max(0, cls._resolve_mainline_intensity_count(features))
-        multiplier = min(1.30, 1.0 + count * 0.10) if count > 0 else 1.0
+        close_price = _safe_float(features.get("close"), default=None)
+        ma20 = _safe_float(features.get("ma20"), default=None)
+        position_risk = (
+            close_price is not None
+            and ma20 is not None
+            and ma20 > 0
+            and close_price > ma20 * 1.2
+        )
+        max_multiplier = 1.10 if position_risk else 1.30
+        multiplier = min(max_multiplier, 1.0 + count * 0.10) if count >= 2 else 1.0
         adjusted_score = _clamp_score_100(score * multiplier)
         return {
             "score": round(adjusted_score, 1),
             "mainline_intensity_count": float(count),
             "mainline_intensity_multiplier": round(multiplier, 2),
             "mainline_intensity_bonus": round(adjusted_score - score, 2),
+            "mainline_intensity_position_cap": float(position_risk),
         }
 
     def _compute_standard_official_score(
@@ -2814,6 +2869,13 @@ class MomentumScreenerService:
             "high_20d": round(_safe_float(features.get("prev_20d_high")), 4),
             "v13_mainline_candidate_count": int(_safe_float(v13_profile.get("candidate_count"))),
             "v13_stock_buy_elg_amount": _safe_float(v13_profile.get("stock_fund_buy_elg_amount"), default=None),
+            "amount": round(_safe_float(row.get("amount")), 2),
+            "turnover_rate_f": round(_safe_float(row.get("turnover_rate_f"), _safe_float(row.get("turnover_rate"))), 4),
+            "volume_expand_5": round(_safe_float(features.get("volume_expand_5"), 1.0), 4),
+            "amount_10d_high": bool(features.get("amount_10d_high")),
+            "price_gain_shrinking": bool(features.get("price_gain_shrinking")),
+            "close_position": round(_safe_float(features.get("close_position")), 4),
+            "upper_shadow_ratio": round(_safe_float(features.get("upper_shadow_ratio")), 4),
             "themes": [features["sector"]],
             "leader_level": leader_level,
             "top_reasons": self._build_top_reasons(breakdown),
@@ -2959,6 +3021,13 @@ class MomentumScreenerService:
             "high_20d": round(_safe_float(features.get("prev_20d_high")), 4),
             "v13_mainline_candidate_count": int(_safe_float(v13_profile.get("candidate_count"))),
             "v13_stock_buy_elg_amount": _safe_float(v13_profile.get("stock_fund_buy_elg_amount"), default=None),
+            "amount": round(_safe_float(row.get("amount")), 2),
+            "turnover_rate_f": round(_safe_float(row.get("turnover_rate_f"), _safe_float(row.get("turnover_rate"))), 4),
+            "volume_expand_5": round(_safe_float(features.get("volume_expand_5"), 1.0), 4),
+            "amount_10d_high": bool(features.get("amount_10d_high")),
+            "price_gain_shrinking": bool(features.get("price_gain_shrinking")),
+            "close_position": round(_safe_float(features.get("close_position")), 4),
+            "upper_shadow_ratio": round(_safe_float(features.get("upper_shadow_ratio")), 4),
             "themes": [features["sector"]],
             "leader_level": self._classify_leader_level(leader_rank),
             "top_reasons": self._build_top_reasons(breakdown),

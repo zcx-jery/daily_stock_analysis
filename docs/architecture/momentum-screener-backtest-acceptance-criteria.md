@@ -201,7 +201,11 @@ Stage 2 起，这一门槛正式用于证伪 V1.3 过滤层是否真的创造价
 | outcome 回填 | 官方 Top3、全候选池、Raw Momentum Top3 和候选池 Top10 的 T+1/T+2 outcome 基本完整 |
 | 版本冻结 | 报告必须记录 `engine_version`、`entry_baseline_version`、`market_scope_version`、`strategy_health_mode` |
 
-单只候选股历史日线、画像或 Tushare 请求临时超时，不应直接判定整日失败；候选评分阶段必须跳过该股票、记录 warning，并继续处理当天剩余候选。若单日被跳过候选过多导致候选池或 outcome 不完整，再在数据完整性诊断中标注该交易日为低置信样本。
+### 7.6 Tick-Level Graceful Degradation
+
+单只候选股历史日线、画像、历史健康度或 T+1/T+2 outcome 回填中的 Tushare / 网络请求临时超时，不应直接判定整日失败。系统必须按单股粒度记录 warning，剔除该股票当次样本，并继续处理当天剩余候选。
+
+若单日被跳过候选过多导致候选池、Official Top3、Raw Momentum Top3 或 outcome 不完整，再在数据完整性诊断中标注该交易日为低置信样本；只有当可用样本不足以计算核心指标时，才将该交易日或本次 run 判为无效样本。
 
 数据完整性不达标时，本次结果不能用于策略可用性判断，只能用于排障。
 
@@ -267,6 +271,14 @@ Stage 2 起，这一门槛正式用于证伪 V1.3 过滤层是否真的创造价
 - 相对候选池 Top10：
 - 相对主仓基准：
 
+## 4.1 Daily Swap Analysis
+
+- ticker_swap_log 覆盖天数：
+- Official 输给 Raw 的交易日：
+- Dropped by V1.3（Raw 选中但 Official 剔除）：
+- Inserted by V1.3（Official 插入但 Raw 未选）：
+- 初步归因：Risk Stack / Mainline Intensity / 封板强度 / 买点收口 / 其他
+
 ## 5. 总闸门诊断
 
 - 放行是否有效：
@@ -298,4 +310,6 @@ Stage 2 起，这一门槛正式用于证伪 V1.3 过滤层是否真的创造价
 - `20/60` 历史窗口用于解释总闸门和风险温度，不是主胜率本身；主胜率以 `tradable_success_rate_pct` / `settlement_pass_rate_pct` 为准。
 - V1.3 Stage 2 起，`Raw Momentum Top3` 是不经过二次决策和主线过滤的初始动量排序基准，用于计算 `Selection Efficiency`。
 - 全候选池基准是固定入口完整样本，用于计算 `V1.3 Alpha vs Pool`；官方 Top3 低于全池时必须优先标记逻辑失败。
+- V1.3 Stage 7 起，回测 summary 必须输出 `ticker_swap_log`：当 Official Top3 单日弱于 Raw Momentum Top3 时，列出 `dropped_by_v13` 与 `inserted_by_v13`，用于定位 Risk Stack、Mainline Intensity 或买点收口是否产生负贡献。
+- `ticker_swap_log` 必须复用回测过程中已经冻结的 `candidate_pool`、`decision_top3` 与 outcome 记录生成，不得为了 Raw Top3 对比重新运行完整 analyzer；T 日快照中的 `moneyflow`、`daily_basic.turnover_rate_f` 等字段按交易日批量拉取并进入缓存，`cyq_chips` 这类必须逐股真查的重接口采用有限并发 + 单股降级缓存，以降低 60 日严格回测的重复 I/O 和 DNS 抖动放大效应。
 - 若回测结果与页面结果不一致，优先检查是否命中旧 run 缓存、是否版本混用、是否仍在使用旧 outcome payload。

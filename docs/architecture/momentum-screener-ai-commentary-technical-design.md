@@ -717,6 +717,8 @@ def generate_screener_session_id(review_type: str, object_id: str, trade_date: s
 
 - `[Core Logic]`：复述规则层结论，并解释主线、强度、角色与 `Mainline_Intensity`。
 - `[Risk Audit]`：列出 `Risk_Stack_Check` 已触发因子，并对每只默认 Top3 执行一次 Devil's Advocate 审计。
+- `[Risk Audit]` 还必须检查 `exhaustion_volume_audit`；当成交量 / 成交额放大、涨幅收缩或收盘承接偏弱触发 `critical_rejection` 时，必须输出 `CRITICAL_REJECTION_ADVICE`，用于拦截 A 字顶 / 爆量滞涨。
+- 当 `risk_stack` 命中 `R5 Exhaustion Risk`，或 `turnover_rate_f > 25%` 使 `exhaustion_volume_audit.status = extreme_churn` 时，AI 摘要必须优先输出 `TRADING WARNING: Extreme Churn Detected (量能过载). Probability of A-top is high; use tight trailing stop.`。
 - `[Execution Guard]`：落到 V1.3 可交易合同，尤其是 `T+1 Open >= T0 Close * 0.99`；不满足时只能放弃或仅观察；若 T+1 未突破首 30 分钟高点，必须输出 `Reduce Position / 降仓` 提醒。
 - `[External Check]`：工具调用只作为外部验证，不能覆盖规则层结论。
 
@@ -724,7 +726,7 @@ def generate_screener_session_id(review_type: str, object_id: str, trade_date: s
 
 `_build_review_context()` 必须注入 `decision_intelligence`：
 
-- `top3_audit[]`：包含每个槽位的 `risk_stack`、触发风险因子、`mainline_intensity`、Devil's Advocate 候选背离项和 `execution_guard`。
+- `top3_audit[]`：包含每个槽位的 `risk_stack`、触发风险因子、`mainline_intensity`、`exhaustion_volume_audit`、Devil's Advocate 候选背离项和 `execution_guard`。
 - `adaptive_gate`：透出动态总闸门状态，说明是否进入弱市收口。
 - `required_output_sections`：给 LLM 明确结构约束，避免生成泛泛摘要。
 
@@ -734,4 +736,5 @@ def generate_screener_session_id(review_type: str, object_id: str, trade_date: s
 
 - Prompt 中包含 `Risk Stack` / `Mainline Intensity` / Devil's Advocate 要求。
 - 规则上下文中能看到 `risk_stack_triggered_factors`。
+- 规则上下文中能看到 `exhaustion_volume_audit`，且触发 `critical_rejection` 时建议项包含 `CRITICAL_REJECTION_ADVICE`；触发 R5 / extreme churn 时建议项包含 `TRADING WARNING: Extreme Churn Detected`。
 - `[Risk Audit]` 与 `T+1 Open >= T0 Close * 0.99` 执行守卫不会从 Prompt 中丢失。

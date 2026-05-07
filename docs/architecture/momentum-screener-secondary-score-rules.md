@@ -202,23 +202,40 @@ risk_score = (risk_penalty_abs / 20) * 100
 
 `risk_score` 仍是单项风险解释分；V1.3 第三阶段新增 `Risk_Stack_Check`，用于判断“多个小瑕疵同时出现时是否必须从官方 Top3 剥离”。它不是硬 Veto 的替代品，而是二次决策收口层的组合风险闸门。
 
-四个风险因子：
+五个风险因子：
 
 - `R1 Position Risk`：`close > 1.2 * MA20`，代表价格已经显著高于 20 日均线，次日承接更依赖情绪继续加速。
 - `R2 Sealing Risk`：`first_seal_time > 14:00:00` 或 `first_seal_time != last_seal_time`，代表尾盘封板或日内开板回封，封板稳定性存疑。
 - `R3 Divergence Risk`：价格处于 20 日新高，且 `buy_elg_amount < 0`，代表创新高时超大单并未同步承接。
 - `R4 Mainline Risk`：同主题 / 同主线在当日候选池中的数量 `< 2`，代表缺少板块共振，单票独涨的次日溢价更不稳定；若 `limit_list_d.limit_times` 显示该股为当前市场 `Space Leader / 空间龙头`（最高连板且至少 2 板），则 R4 豁免，因为最高板本身可以创造主线。
+- `R5 Exhaustion Risk / 量能竭尽风险`：若 `Volume_T0 > 2.0 * Volume_Avg_5D` 且 `Price_Gain < 5%`，代表爆量但没有继续加速；或 `Turnover_Rate_F > 25%`，代表自由流通盘极端换手，存在派发 / A 字顶风险。实现字段优先使用 `volume_expand_5` 与 `turnover_rate_f`；若数据源缺少成交量字段，`volume_expand_5` 可降级使用成交额近 5 日均值。
 
 收口规则：
 
 ```text
-risk_stack_count = triggered(R1, R2, R3, R4)
-risk_stack_veto = risk_stack_count >= 3
+risk_stack_count = triggered(R1, R2, R3, R4, R5)
+risk_stack_veto = risk_stack_count >= 3 OR triggered(R5)
 ```
 
-当 `risk_stack_veto = true` 时，该股无论官方总分多高，都不得进入官方 Top3；系统应在 `hard_blockers`、`candidate_diagnostics` 和落选说明中暴露 `risk_stack` 详情。若仅命中 1-2 项，不做一票否决，继续由主线强度、买点清晰度和封板质量做轻量修正。
+当 `risk_stack_veto = true` 时，该股无论官方总分多高，都不得进入官方 Top3；系统应在 `hard_blockers`、`candidate_diagnostics` 和落选说明中暴露 `risk_stack` 详情。若仅命中 R1-R4 中的 1-2 项，不做一票否决，继续由主线强度、买点清晰度和封板质量做轻量修正；但 R5 属于 `MANDATORY_VETO`，一旦触发即不得进入官方 Top3。
 
-设计原因：短线博弈允许单点瑕疵，例如封板稍晚或题材稍弱；但“高位 + 弱封 + 资金背离 + 无主线”同时出现时，实盘可交易性会断崖式下降，必须优先保护官方组合。
+设计原因：短线博弈允许单点瑕疵，例如封板稍晚或题材稍弱；但“高位 + 弱封 + 资金背离 + 无主线”同时出现时，实盘可交易性会断崖式下降，必须优先保护官方组合。爆量滞涨或自由流通盘极端换手更接近“量能终结”信号，不能只作为 AI 文字提醒，必须升级为评分引擎的一票否决项。
+
+### 7.6 Mainline_Intensity 加分校准
+
+V1.3 第八阶段将主线加分从“计数即加分”改为“簇成立才加分”：
+
+```text
+if count_in_pool < 2:
+    mainline_intensity_multiplier = 1.0
+else:
+    mainline_intensity_multiplier = min(1.3, 1 + 0.1 * count_in_pool)
+
+if R1 Position Risk triggered:
+    mainline_intensity_multiplier = min(mainline_intensity_multiplier, 1.1)
+```
+
+这意味着孤立强势票不能获得主线共振 bonus；若标的已经触发高位风险，即使题材热度很强，也最多只允许 1.1x 的主线加权，避免系统被“伪主线热度”遮蔽高位派发风险。
 
 ## 8. 最终排序分规则
 

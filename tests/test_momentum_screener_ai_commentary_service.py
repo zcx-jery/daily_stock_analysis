@@ -68,6 +68,13 @@ def _build_request(review_type: str):
         ma20=8.0,
         high_20d=10.0,
         v13_stock_buy_elg_amount=-1_000_000.0,
+        amount=820_000_000.0,
+        turnover_rate_f=28.0,
+        volume_expand_5=4.2,
+        amount_10d_high=True,
+        price_gain_shrinking=True,
+        close_position=0.52,
+        upper_shadow_ratio=0.31,
         rank_score=73.2,
         themes=["电子"],
         leader_level="龙头",
@@ -177,6 +184,11 @@ def test_build_review_context_prefers_official_score_and_structured_reasons():
     assert portfolio["mainline_intensity"]["count"] == 3
     top3_audit = context["decision"]["decision_intelligence"]["top3_audit"]
     assert top3_audit[0]["risk_stack_triggered_factors"][0]["key"] == "divergence_risk"
+    assert top3_audit[0]["exhaustion_volume_audit"]["status"] == "extreme_churn"
+    assert any(
+        "TRADING WARNING: Extreme Churn Detected" in item
+        for item in top3_audit[0]["suggested_divergence_factors"]
+    )
     assert service._build_rule_conclusion(request) == "主仓 / 计划明确 / 等待触发"
 
 
@@ -207,5 +219,8 @@ def test_system_prompt_requires_logic_audit_sections_and_risk_stack_context():
     assert "[Risk Audit]" in prompt
     assert "risk_stack" in prompt
     assert "mainline_intensity" in prompt
+    assert "exhaustion_volume_audit" in prompt
+    assert "CRITICAL_REJECTION_ADVICE" in prompt
+    assert "TRADING WARNING: Extreme Churn Detected" in prompt
     assert "T+1 Open >= T0 Close * 0.99" in prompt
     assert "Reduce Position" in prompt

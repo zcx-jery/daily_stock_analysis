@@ -92,6 +92,7 @@ class _FakeFetcher:
                         "ts_code": "600001.SH",
                         "trade_date": "20260410",
                         "turnover_rate": 8.2,
+                        "turnover_rate_f": 9.8,
                         "volume_ratio": 2.0,
                         "circ_mv": 6000000,
                     },
@@ -99,6 +100,7 @@ class _FakeFetcher:
                         "ts_code": "600002.SH",
                         "trade_date": "20260410",
                         "turnover_rate": 4.2,
+                        "turnover_rate_f": 5.1,
                         "volume_ratio": 1.4,
                         "circ_mv": 9000000,
                     },
@@ -316,6 +318,17 @@ class _FakeFetcher:
         return pd.DataFrame(columns=["code", "name"])
 
 
+class _FlakyHistoryFetcher(_FakeFetcher):
+    def __init__(self, failing_codes: set[str]) -> None:
+        super().__init__()
+        self.failing_codes = failing_codes
+
+    def get_daily_data(self, stock_code: str, start_date=None, end_date=None, days: int = 80):
+        if stock_code in self.failing_codes or str(stock_code).split(".")[0] in self.failing_codes:
+            raise RuntimeError(f"history timeout for {stock_code}")
+        return super().get_daily_data(stock_code, start_date=start_date, end_date=end_date, days=days)
+
+
 class MomentumScreenerServiceTestCase(unittest.TestCase):
     def setUp(self) -> None:
         Config.reset_instance()
@@ -341,11 +354,23 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
             70.0,
             {"sector_stats": {"strong_count": 2}},
         )
+        isolated_adjusted = service._apply_mainline_intensity_bonus(
+            70.0,
+            {"v13_profile": {"candidate_count": 1}},
+        )
+        position_capped = service._apply_mainline_intensity_bonus(
+            70.0,
+            {"v13_profile": {"candidate_count": 5}, "close": 13.0, "ma20": 10.0},
+        )
 
         self.assertEqual(adjusted["mainline_intensity_count"], 5.0)
         self.assertEqual(adjusted["mainline_intensity_multiplier"], 1.3)
         self.assertEqual(adjusted["score"], 91.0)
         self.assertEqual(fallback_adjusted["mainline_intensity_multiplier"], 1.2)
+        self.assertEqual(isolated_adjusted["mainline_intensity_multiplier"], 1.0)
+        self.assertEqual(isolated_adjusted["score"], 70.0)
+        self.assertEqual(position_capped["mainline_intensity_multiplier"], 1.1)
+        self.assertEqual(position_capped["score"], 77.0)
 
     def _build_service(self, fetcher: _FakeFetcher | None = None) -> MomentumScreenerService:
         cache_root = Path(self.cache_root_dir.name)
@@ -374,6 +399,7 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
         self.assertIn("_official_base_signal_score", result["results"][0])
         self.assertIn("_official_v13_signal_score", result["results"][0])
         self.assertIn("_official_risk_quality_score", result["results"][0])
+        self.assertEqual(result["results"][0]["turnover_rate_f"], 9.8)
         self.assertIsNotNone(result["results"][0]["entry_range_low"])
         self.assertIsNotNone(result["results"][0]["entry_range_high"])
         self.assertIsNotNone(result["results"][1]["entry_range_low"])
@@ -409,6 +435,15 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
         self.assertIn("event=build_standard_v13_profile_map", output)
         self.assertIn("event=official_candidate_scoring", output)
         self.assertIn("event=official_candidate_scoring_progress", output)
+
+    def test_screen_skips_single_candidate_when_history_fetch_fails(self) -> None:
+        service = self._build_service(_FlakyHistoryFetcher({"600002"}))
+
+        result = service.screen(top_n=2, profile="standard", trade_date="2026-04-10")
+
+        ranked_codes = [item["ts_code"] for item in result["ranked_results"]]
+        self.assertEqual(ranked_codes, ["600001.SH"])
+        self.assertEqual(result["candidate_count"], 2)
 
     def test_full_truth_progress_callback_includes_v13_resource_substeps(self) -> None:
         service = self._build_service()
@@ -1078,7 +1113,7 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
 
         self.assertEqual(result["candidate_count"], 2)
         self.assertEqual([item["ts_code"] for item in result["ranked_results"]], ["600001.SH"])
-        self.assertTrue(any("跳过历史数据加载失败的候选股" in line for line in captured.output))
+        self.assertTrue(any("跳过历史数据或评分画像构建失败的候选股" in line for line in captured.output))
 
 
     def test_history_cache_reuses_disk_snapshot_across_service_instances(self) -> None:

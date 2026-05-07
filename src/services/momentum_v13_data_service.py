@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 import logging
 from pathlib import Path
@@ -119,6 +120,7 @@ class MomentumV13DataService:
     _DISK_CACHE_VERSION = "v1"
     _DISK_CACHE_DIRNAME = "momentum_v13_resources"
     _HISTORICAL_RESOURCE_TTL_SECONDS = 30 * 24 * 60 * 60
+    _PER_STOCK_FETCH_MAX_WORKERS = 4
 
     _DEFAULT_RESOURCE_TTLS = {
         "dc_concept": 30 * 60,
@@ -806,15 +808,28 @@ class MomentumV13DataService:
         rows: List[Dict[str, Any]] = list(_safe_list(filtered_snapshot.get("rows")))
         source_status: Dict[str, str] = {}
         degraded_reasons: List[str] = []
+        missing_codes: List[str] = []
         for ts_code in ts_codes:
             if grouped_snapshot.get(ts_code):
                 source_status[ts_code] = "ok"
-                continue
-            key = self._cache_key("cyq_perf", trade_date, ts_code)
-            cached = self._cache_get(key, self._resource_ttls["cyq_perf"])
-            if cached is None:
-                cached = self._safe_fetch("cyq_perf", lambda code=ts_code: fetch_method(trade_date, ts_code=code))
-                self._cache_set(key, cached)
+            else:
+                missing_codes.append(ts_code)
+
+        fallback_payloads = self._load_per_stock_resource(
+            resource="cyq_perf",
+            trade_date=trade_date,
+            ts_codes=missing_codes,
+            ttl_seconds=self._resource_ttls["cyq_perf"],
+            fetch_fn=lambda code: fetch_method(trade_date, ts_code=code),
+        )
+        for ts_code in missing_codes:
+            cached = fallback_payloads.get(ts_code) or self._payload(
+                source="cyq_perf",
+                trade_date=self._display_trade_date(trade_date),
+                rows=[],
+                status="unavailable",
+                degraded_reasons=["missing_payload"],
+            )
             source_status[ts_code] = str(cached.get("status") or "unknown")
             rows.extend(_safe_list(cached.get("rows")))
             if cached.get("is_degraded"):
@@ -844,12 +859,21 @@ class MomentumV13DataService:
                 status="unavailable",
                 degraded_reasons=["method_not_supported"],
             )
+        payloads_by_code = self._load_per_stock_resource(
+            resource="cyq_chips",
+            trade_date=trade_date,
+            ts_codes=ts_codes,
+            ttl_seconds=self._resource_ttls["cyq_chips"],
+            fetch_fn=lambda code: fetch_method(trade_date, ts_code=code),
+        )
         for ts_code in ts_codes:
-            key = self._cache_key("cyq_chips", trade_date, ts_code)
-            cached = self._cache_get(key, self._resource_ttls["cyq_chips"])
-            if cached is None:
-                cached = self._safe_fetch("cyq_chips", lambda code=ts_code: fetch_method(trade_date, ts_code=code))
-                self._cache_set(key, cached)
+            cached = payloads_by_code.get(ts_code) or self._payload(
+                source="cyq_chips",
+                trade_date=self._display_trade_date(trade_date),
+                rows=[],
+                status="unavailable",
+                degraded_reasons=["missing_payload"],
+            )
             source_status[ts_code] = str(cached.get("status") or "unknown")
             rows.extend(_safe_list(cached.get("rows")))
             if cached.get("is_degraded"):
@@ -866,6 +890,57 @@ class MomentumV13DataService:
             degraded_reasons=degraded_reasons,
             extra={"source_status": source_status},
         )
+
+    def _load_per_stock_resource(
+        self,
+        *,
+        resource: str,
+        trade_date: str,
+        ts_codes: List[str],
+        ttl_seconds: int,
+        fetch_fn,
+    ) -> Dict[str, Dict[str, Any]]:
+        payloads_by_code: Dict[str, Dict[str, Any]] = {}
+        missing_codes: List[str] = []
+        for ts_code in ts_codes:
+            key = self._cache_key(resource, trade_date, ts_code)
+            cached = self._cache_get(key, ttl_seconds)
+            if cached is None:
+                missing_codes.append(ts_code)
+            else:
+                payloads_by_code[ts_code] = cached
+
+        if not missing_codes:
+            return payloads_by_code
+
+        def _fetch_one(code: str) -> Dict[str, Any]:
+            return self._safe_fetch(resource, lambda: fetch_fn(code))
+
+        max_workers = min(self.__class__._PER_STOCK_FETCH_MAX_WORKERS, len(missing_codes))
+        if max_workers <= 1:
+            for ts_code in missing_codes:
+                payloads_by_code[ts_code] = _fetch_one(ts_code)
+        else:
+            with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=f"momentum-{resource}") as executor:
+                future_map = {executor.submit(_fetch_one, ts_code): ts_code for ts_code in missing_codes}
+                for future in as_completed(future_map):
+                    ts_code = future_map[future]
+                    try:
+                        payloads_by_code[ts_code] = future.result()
+                    except Exception as exc:  # pragma: no cover - _safe_fetch should absorb provider errors
+                        logger.warning("V1.3 per-stock data fetch failed for %s:%s: %s", resource, ts_code, exc)
+                        payloads_by_code[ts_code] = self._payload(
+                            source=resource,
+                            trade_date=self._display_trade_date(trade_date),
+                            rows=[],
+                            status="unavailable",
+                            degraded_reasons=[str(exc)],
+                        )
+
+        for ts_code in missing_codes:
+            key = self._cache_key(resource, trade_date, ts_code)
+            self._cache_set(key, payloads_by_code[ts_code])
+        return payloads_by_code
 
     def _load_kpl_list(self, trade_date: str) -> Dict[str, Any]:
         key = self._cache_key("kpl_list", trade_date)
