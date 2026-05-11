@@ -1462,7 +1462,9 @@ def test_backtest_dependency_does_not_override_interactive_secondary_decision_se
             self.decision_service = decision_service
             self.repository = repository
 
-    request = types.SimpleNamespace(app=types.SimpleNamespace(state=types.SimpleNamespace()))
+    request = types.SimpleNamespace(
+        app=types.SimpleNamespace(state=types.SimpleNamespace(start_momentum_backtest_worker=True))
+    )
 
     with (
         patch("api.deps.MomentumScreenerService", side_effect=lambda: types.SimpleNamespace(name="screener")),
