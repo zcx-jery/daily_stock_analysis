@@ -295,10 +295,12 @@ class MomentumScreenerAICommentaryService:
 8. 只用中文回答，避免空泛结论，必须围绕具体股票、主线、风险和触发条件。
 9. 必须显式使用 `decision_intelligence`、`risk_stack`、`mainline_intensity` 和 `adaptive_gate` 上下文。
 10. 对默认 Top3 的每只股票，都必须扮演一次 Devil's Advocate：至少找出一个背离/瑕疵因子；若没有明显硬风险，也要说明“最接近风险的未确认项”。
-11. 执行守卫必须落到 V1.3 可交易合同：若 T+1 开盘低于 T 日收盘价的 99%，只能放弃/仅观察，不能升级为执行。
+11. 执行守卫必须落到 V1.3 双轨制可交易合同：Track A 是 T+1 开盘不低于 T0 收盘价 99% 且收盘强于开盘；Track B 是低开后带量修复、重新站上 T0 收盘价并收盘强于开盘。不得仅因 T+1 低开低于 99% 就强制 Abandon / Caution。
 12. 动态止损必须写清：若 T+1 未能突破开盘后 30 分钟高点，必须提示 `Reduce Position` / 降仓，而不是继续等待幻想修复。
 13. 必须检查 `exhaustion_volume_audit`：若状态为 `critical_rejection`，`[Risk Audit]` 必须输出 `CRITICAL_REJECTION_ADVICE`，并解释 A 字顶 / 爆量滞涨风险；若上下文存在 `outcome.t2_max_drawdown_pct` 或近期失败样本最大回撤且超过 `10%`，必须作为回撤证据引用。
 14. 若 `risk_stack` 命中 `exhaustion_risk` / R5，或 `exhaustion_volume_audit` 状态为 `extreme_churn`，必须在摘要开头优先输出：`TRADING WARNING: Extreme Churn Detected (量能过载). Probability of A-top is high; use tight trailing stop.`
+15. 必须检查 `raw_alpha_shield`：若状态为 `RETAINED_LEADER_DIVERGENCE`，必须使用 `Weak-to-Strong / 弱转强` 术语解释“R2 封板分歧 + R5 爆量换手”为什么可能是分歧转一致；若 Raw Top3 被剔除，必须给出 R1 高位或 R3 资金背离等硬风险证据，不能只说买点不干净。
+16. 对 `RETAINED_LEADER_DIVERGENCE`、`mainline_position_churn` 或潜在 `Mainline_Churn`，允许 `Volatility Gap`：T+1 低开时优先建议观察开盘后 30 分钟是否带量收复 T0 收盘价，而不是开盘即硬丢弃。
 
 本次回答必须使用以下结构：
 {self._build_answer_contract(request.review_type)}
@@ -315,7 +317,7 @@ class MomentumScreenerAICommentaryService:
 ## [Risk Audit]
 - 列出已触发的 Risk Stack 因子，并额外指出至少一个背离或未确认项。
 ## [Execution Guard]
-- 明确 T+1 开盘、承接、放弃条件；若开盘 < T日收盘*0.99，结论必须是放弃或仅观察；若未突破首 30 分钟高点，提示 Reduce Position。
+- 明确 Track A 动量延续与 Track B 低开修复条件；低开本身不是硬放弃理由，若未带量收复 T0 收盘或未突破首 30 分钟高点，提示 Reduce Position / 仅观察。
 ## [External Check]
 - 若调用了工具，总结外部验证；若未调用，明确说明当前以规则快照为主。"""
         if review_type == "decision":
@@ -324,7 +326,7 @@ class MomentumScreenerAICommentaryService:
 ## [Risk Audit]
 - 逐只列出 Risk Stack 触发项；每只 Top3 必须给出至少一个 Devil's Advocate 背离/瑕疵因子。
 ## [Execution Guard]
-- 用 V1.3 可交易合同描述明天的执行守卫；若 T+1 开盘 < T日收盘*0.99，必须放弃或仅观察；若未突破首 30 分钟高点，提示 Reduce Position。
+- 用 V1.3 双轨制可交易合同描述明天的执行守卫；Track A 看不深低开后的阳线确认，Track B 允许低开后带量修复并收复 T0 收盘；若未突破首 30 分钟高点，提示 Reduce Position。
 ## [External Check]
 - 若调用了工具，总结外部验证是否支持当前主线和默认组合。"""
         if review_type == "intraday":
@@ -424,6 +426,7 @@ class MomentumScreenerAICommentaryService:
                         "risk_stack": self._model_value(item, "risk_stack"),
                         "risk_stack_count": self._model_value(item, "risk_stack_count"),
                         "risk_stack_veto": self._model_value(item, "risk_stack_veto"),
+                        "raw_alpha_shield": self._model_value(item, "raw_alpha_shield"),
                         "mainline_intensity": self._build_model_mainline_intensity(item),
                         "ladder_position": self._model_value(item, "v13_ladder_position"),
                         "adaptive_gate": self._model_value(item, "adaptive_gate"),
@@ -486,6 +489,7 @@ class MomentumScreenerAICommentaryService:
                     "risk_stack": slot.get("risk_stack") if isinstance(slot, dict) else None,
                     "risk_stack_count": slot.get("risk_stack_count") if isinstance(slot, dict) else None,
                     "risk_stack_veto": slot.get("risk_stack_veto") if isinstance(slot, dict) else None,
+                    "raw_alpha_shield": slot.get("raw_alpha_shield") if isinstance(slot, dict) else None,
                     "entry_range_low": candidate["entry_range_low"],
                     "entry_range_high": candidate["entry_range_high"],
                 },
@@ -563,6 +567,7 @@ class MomentumScreenerAICommentaryService:
                         "risk_stack": self._model_value(item, "risk_stack"),
                         "risk_stack_count": self._model_value(item, "risk_stack_count"),
                         "risk_stack_veto": self._model_value(item, "risk_stack_veto"),
+                        "raw_alpha_shield": self._model_value(item, "raw_alpha_shield"),
                         "mainline_intensity": self._build_model_mainline_intensity(item),
                         "ladder_position": self._model_value(item, "v13_ladder_position"),
                         "adaptive_gate": self._model_value(item, "adaptive_gate"),
@@ -720,6 +725,7 @@ class MomentumScreenerAICommentaryService:
                     "ladder_position": self._model_value(item, "v13_ladder_position"),
                     "risk_stack": risk_stack,
                     "risk_stack_triggered_factors": triggered_factors,
+                    "raw_alpha_shield": self._model_value(item, "raw_alpha_shield"),
                     "devils_advocate_required": True,
                     "exhaustion_volume_audit": self._build_exhaustion_volume_audit(candidate),
                     "suggested_divergence_factors": self._infer_divergence_factors(
@@ -867,6 +873,29 @@ class MomentumScreenerAICommentaryService:
         triggered_factors: List[Dict[str, Any]],
     ) -> List[str]:
         factors: List[str] = []
+        raw_alpha_shield = self._model_value(portfolio_item, "raw_alpha_shield") or {}
+        if (
+            isinstance(raw_alpha_shield, dict)
+            and raw_alpha_shield.get("status") == "RETAINED_LEADER_DIVERGENCE"
+        ):
+            shield_reason = str(raw_alpha_shield.get("reason") or "")
+            if "mainline_position_churn" in shield_reason:
+                factors.append(
+                    "Mainline_Churn / 主线高位换手：Raw 龙头处于强主线但命中高位换手分歧，"
+                    "允许 Volatility Gap，T+1 低开时先看 30 分钟能否带量收复 T0 收盘。"
+                )
+            else:
+                factors.append(
+                    "Weak-to-Strong / 弱转强：Raw 龙头命中 R2/R5 分歧但未触发 R1/R3 硬风险，"
+                    "按分歧转一致候选保留；允许 Volatility Gap，T+1 先看 30 分钟修复而非开盘硬丢弃。"
+                )
+        elif "mainline_position_churn" in str(
+            getattr(portfolio_item, "leader_resilience_profile", "") or candidate.get("leader_resilience_profile") or ""
+        ):
+            factors.append(
+                "Mainline_Churn / 主线高位换手：强主线换手分歧需要用 30 分钟带量收复确认，"
+                "不能只因低开直接否决。"
+            )
         labels = [str(item.get("label")) for item in triggered_factors if item.get("label")]
         if labels:
             factors.append("Risk Stack 已触发：" + "、".join(labels))
@@ -915,16 +944,26 @@ class MomentumScreenerAICommentaryService:
         except (TypeError, ValueError):
             gap_floor = None
         return {
-            "t1_gap_threshold": "T+1 Open >= T0 Close * 0.99",
+            "dual_track_contract": {
+                "track_a_momentum": "T+1 Open >= T0 Close * 0.99 and T+1 Close > T+1 Open.",
+                "track_b_recovery": "Track B low-open recovery: if T+1 Open < T0 Close * 0.99, wait for volume-backed recovery above T0 Close and a positive candle.",
+            },
+            "t1_gap_threshold": "Track A: T+1 Open >= T0 Close * 0.99; Track B: low-open recovery is valid only after reclaiming T0 Close.",
             "dynamic_stop_loss": "If T+1 fails to break the first 30-min high, trigger Reduce Position warning.",
             "t0_close": close_price,
             "abandon_if": (
-                f"T+1 开盘低于 {gap_floor}，按 V1.3 可交易合同放弃/仅观察。"
+                f"T+1 低开后无法带量收复 T0 收盘价（约 {close_price}）或不能突破首 30 分钟高点，才放弃/仅观察。"
                 if gap_floor is not None
-                else "T+1 开盘低于 T 日收盘价的 99%，按 V1.3 可交易合同放弃/仅观察。"
+                else "T+1 低开后无法带量收复 T0 收盘价或不能突破首 30 分钟高点，才放弃/仅观察。"
+            ),
+            "reversal_entry_if": (
+                f"若 T+1 低开低于 {gap_floor}，观察首 30 分钟是否放量收复 T0 收盘价 {close_price}；"
+                "收复后且收盘强于开盘，才视为 Track B 低开转强有效。"
+                if gap_floor is not None
+                else "若 T+1 低开，观察首 30 分钟是否放量收复 T0 收盘价；收复后且收盘强于开盘，才视为 Track B 低开转强有效。"
             ),
             "reduce_if": "T+1 不能突破开盘后 30 分钟高点，触发 Reduce Position / 降仓提醒。",
-            "confirm_if": "T+1 开盘不深低开，且收盘强于开盘，T+2 滑点调整退出价需提供 >=2% 利润缓冲。",
+            "confirm_if": "Track A 看不深低开后的阳线确认；Track B 看低开后收复 T0 收盘并收阳，T+2 滑点调整退出价仍需提供 >=2% 利润缓冲。",
         }
 
     def _find_candidate(self, request: MomentumScreenerAIReviewRequest) -> Dict[str, Any]:

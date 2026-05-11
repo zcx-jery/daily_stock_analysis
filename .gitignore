@@ -84,5 +84,6 @@ static/
 ai-drawer-state.png
 page-after-login.md
 momentum-v1-prod-runtime.tgz
+.codex-runtime/
 tmp/
 tmp_backtest_run.json

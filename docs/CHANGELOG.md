@@ -8,6 +8,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [改进] 首页个股分析数据追溯区改为面向用户的增强证据解读，板块联动、资金流、筹码结构和数据质量展示中文结论、解释文案与友好数据源名称，避免直接暴露 raw 状态码。
+- [改进] 首页个股分析所属板块展示优先展示行业/概念板块，降低同花顺全A、沪深全A和风格指数等泛板块排序。
+- [改进] 强势筛选 V1.3 第十六阶段新增 King's Guard：Raw #1 且主线强度超过 1.25x 时获得绝对槽位主权，Raw #2/#3 替换门槛提升到 1.40x，并对主线簇内 Raw #1 单一硬风险提高容错。
+- [改进] 强势筛选 V1.3 Raw Top3 主权增加主线回封换手豁免，强主线簇内仅命中 R1 位置风险并叠加 R2/R5 分歧换手、无 R3/R4 的 Raw Top3 可保留为 `mainline_reseal_churn`。
+- [改进] 强势筛选 V1.3 主线上下文采样固定覆盖 Raw Momentum Top3，深位高 `rank_score` 龙头会替换尾部非 Raw 样本，避免缺失主线 / 封板上下文。
+- [修复] 强势筛选 Raw Top3 主权补齐空槽补位逻辑，官方组合不足 3 只时未触发硬否决的 Raw Top3 会先进入空槽，而不是因没有可替换对象被遗漏。
+- [chore] 强势筛选 V1.3 King’s Guard 落地后回测引擎版本升级为 `v1_3_kings_guard_protocol`，避免 Gold 验收复用旧二阶段决策结果。
+- [改进] 首页个股分析真实样本验收后调整增强证据顺序，板块联动优先于龙虎榜获取预算，并将增强数据状态码显示为友好文案。
+- [改进] 首页个股分析 Tushare 增强链路细分 `permission_denied` 与 `stale` 数据状态，避免积分/权限不足或行情滞后被误判为普通空结果。
+- [改进] 强势筛选 AI 执行守卫同步 V1.3 双轨制可交易合同，低开不再自动劝退，支持 Track B 低开修复、主线换手和弱转强样本的 30 分钟反转确认。
+- [改进] 强势筛选 V1.3 第十三阶段新增 Slot Sovereignty：Raw Momentum Top3 按 `rank_score` 获得槽位主权，只有零风险且综合分高出 25% 的挑战者才能替换 Raw 龙头。
+- [改进] 强势筛选 V1.3 对 Raw Top3 新增 `mainline_position_churn` 豁免：强主线高位换手且无封板、资金背离和主线不足风险时，保留为弱转强观察样本。
+- [改进] 强势筛选 V1.3 回测主标签升级为双轨制可交易合格率，支持 Track A 动量延续与 Track B 低开修复，并继续使用滑点调整后的 T+2 2% 出口缓冲。
+- [改进] 强势筛选动作总闸门收紧 `strong_go`：仅当候选池成功率大于 65% 且市场最高板高度大于 5 时允许强烈可做，否则降级为普通可做。
+- [修复] 本地 API 以无 backtest worker 模式启动时，查询回测列表不再自动恢复 running 任务，避免只读前端查看进度时抢占正在执行的独立回测进程。
+- [测试] 补充 Raw `rank_score` 主权、25% 完美挑战者替换、稳定主仓锚点和双轨制低开修复回测标签单测。
+- [改进] 首页个股分析完整性校验新增增强证据必填检查，有增强上下文时会要求 LLM 补齐 `enhanced_evidence` 与 `timeframe_strategy`，避免策略解释字段被漏写。
+- [改进] 强势筛选 V1.3 第十二阶段新增 Weak-to-Strong Protocol：Raw Top3 仅命中 R2/R4/R5 软分歧风险时不再因 Risk Stack >= 3 被剔除，改标记 `RETAINED_LEADER_DIVERGENCE` 并保留在 Official Top3。
+- [改进] 强势筛选 AI 点评新增弱转强解释口径，要求对 Raw 龙头的晚封、爆量换手和分歧回封说明“高风险高弹性”的保留理由，并仅在 R1/R3 硬风险出现时认可剔除。
+- [改进] 首页个股分析报告 JSON 新增可选 `enhanced_evidence` 和 `timeframe_strategy` 结构，区分短线/中线证据权重，并固定“结论 -> 证据 -> 风险 -> 操作边界”输出链路。
+- [改进] 首页个股分析 prompt 新增增强证据决策合同，要求趋势预测和操作建议显式纳入资金流、板块联动、筹码结构与基本面增强证据，并对混合资金流、板块落后和筹码过热场景收紧追买口径。
+- [改进] 强势筛选 V1.3 第十一阶段新增 Alpha Shield Protocol：Raw Top3 默认保留，R5 从一票否决改为 2 点条件风险，并在 Raw #1 主线强度超过 1.2x 时动态回归主仓槽位。
+- [改进] 强势筛选总闸门新增 Market_Pool_Avg_Return 强制收口：上一交易日候选池平均收盘收益低于 -3% 时直接降为“今日不做”，并把 Raw Alpha Shield 上下文注入 AI 点评与 ticker swap 诊断。
+- [修复] 强势筛选 60 日回测在候选明细表局部 I/O 损伤时可从 daily screening 快照重建 candidate records，summary、单日详情与问题诊断不再因单页损坏整体 500。
+- [改进] 首页个股分析第一阶段接入 Tushare 6000 积分增强数据，优先补齐 daily_basic、fina_indicator、dividend、forecast/express、moneyflow_ths/dc、ths_member/ths_index 和筹码快照，并保持 AkShare fallback 与 fail-open。
+- [改进] 首页个股分析详情 API 与 Web 追溯区新增资金流、筹码结构、数据质量和 Tushare 增强状态展示，旧报告缺少增强字段时保持兼容。
+- [改进] 首页个股分析详情 API 与 Web 追溯区补充基本面摘要和板块联动摘要，展示估值、盈利、分红、所属板块相对强弱和领涨/领跌板块线索。
+- [文档] 新增首页个股分析 Tushare 6000 积分增强技术设计，细化 Provider、聚合层、Pipeline、Prompt、API、前端、缓存、降级和测试落地方案。
+- [修复] 强势筛选回测任务写入统一接入 SQLite 写事务重试，避免删除旧任务或后台进度落库时的 `database is locked` 将 60 日回测误判失败。
+- [文档] 更新强势筛选最终发布摘要，补充 V1.3 生产就绪合同、五层决策链路和 60 日 Golden Alpha Rule。
+- [改进] 强势筛选 V1.3 第九阶段新增主线买点兼容：Mainline Intensity 超过 1.2x 的主线标的享有封板时间宽限，并用 5%~8% 自由流通换手识别健康轮动封板。
+- [改进] V1.3 回测 `ticker_swap_log.dropped_by_v13` 新增剔除主因字段，区分买点不清晰、封板偏弱、Risk Stack 否决和普通槽位竞争。
+- [chore] V1.3 主线买点兼容落地后回测引擎版本升级为 `v1_3_entry_diversity_history_tolerant`，避免复用旧二次决策 run。
 - [chore] Docker Compose 改为复用统一 `daily-stock-analysis:latest` 镜像，并新增保守磁盘清理脚本，降低频繁重建后旧镜像、构建缓存和异常匿名卷挤满磁盘的风险。
 - [改进] 强势筛选 V1.3 第八阶段新增 R5 量能竭尽一票否决：爆量不加速或自由流通换手率超过 25% 的标的不得进入 Official Top3。
 - [改进] 强势筛选 Mainline Intensity 改为至少 2 只同主线才加分，并在高位风险触发时把主线加权上限收紧到 1.1x。

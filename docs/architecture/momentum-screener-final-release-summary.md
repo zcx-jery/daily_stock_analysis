@@ -1,5 +1,32 @@
 # Momentum Screener Final Release Summary
 
+## V1.3 Production Readiness Contract
+
+V1.3 的发布目标不再只是“扫描今日强势股”，而是形成可审计的短线决策链路。最终架构按以下层级收口：
+
+```text
+Gate Rules
+-> Raw Scoring
+-> Risk Stacking (R1-R5)
+-> Mainline Privilege
+-> AI Audit
+```
+
+- `Gate Rules`：先判断市场环境、机会质量和 20 日进攻许可，决定今日可做 / 谨慎 / 仅观察 / 不做。
+- `Raw Scoring`：使用原始强势排序与 V1.3 画像字段形成候选池，保留 Raw Momentum Top3 作为不可篡改基准。
+- `Risk Stacking (R1-R5)`：对高位、封板、背离、主线不足和量能竭尽做组合风险审计，R5 保持一票否决。
+- `Mainline Privilege`：当 `Mainline_Intensity > 1.2x` 时，允许主线中军 / 龙头在充分换手后完成封板确认，避免用秒板标准误杀板块共振机会。
+- `AI Audit`：AI 只做逻辑审计和执行守卫解释，不覆盖数值闸门，也不替代回测标签。
+
+Golden Alpha Rule：
+
+```text
+60-day Selection Efficiency = Official Top3 Tradable Success Rate - Raw Momentum Top3 Tradable Success Rate
+Production-ready only if Selection Efficiency > 0
+```
+
+也就是说，Official Top3 只有在 60 日窗口内持续跑赢 Raw Momentum Top3，才说明二次决策、画像过滤、Risk Stack 和主线优先权真实创造了 Alpha；若 Official 低于 Raw，则必须继续调参或降级为观察工具，不得标记为实盘参考摘要。
+
 ## Title
 
 Momentum Screener: next-day strong-stock screening with standard and aggressive profiles

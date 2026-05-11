@@ -83,6 +83,56 @@ class TestAnalysisReportSchema(unittest.TestCase):
             self.assertEqual(pp.current_price, "N/A")
             self.assertEqual(pp.bias_ma5, "2.5")
 
+    def test_schema_accepts_enhanced_evidence_timeframe_strategy(self) -> None:
+        """Schema accepts Phase 3 enhanced evidence fields as optional dashboard data."""
+        data = {
+            "stock_name": "贵州茅台",
+            "sentiment_score": 62,
+            "trend_prediction": "震荡偏强",
+            "operation_advice": "等待回踩确认",
+            "dashboard": {
+                "data_perspective": {
+                    "enhanced_evidence": {
+                        "short_term_weights": {
+                            "technical": "high",
+                            "capital_flow": "medium",
+                        },
+                        "medium_term_weights": {
+                            "fundamentals": "medium",
+                            "valuation": "low",
+                        },
+                        "evidence_chain": [
+                            "结论：等待回踩确认",
+                            "证据：资金流冲突",
+                            "风险：筹码过热",
+                            "操作边界：跌破止损位失效",
+                        ],
+                        "evidence_conflicts": ["THS 与 DC 资金方向冲突"],
+                        "data_gaps": [],
+                    }
+                },
+                "battle_plan": {
+                    "timeframe_strategy": {
+                        "short_term": "短线只做突破后的试错",
+                        "medium_term": "中线等待估值和业绩确认",
+                        "conflict_resolution": "短线强于中线时降低仓位",
+                        "action_boundary": "跌破 1600 元失效",
+                    }
+                },
+            },
+        }
+
+        schema = AnalysisReportSchema.model_validate(data)
+
+        self.assertIsNotNone(schema.dashboard)
+        dp = schema.dashboard and schema.dashboard.data_perspective
+        self.assertIsNotNone(dp and dp.enhanced_evidence)
+        battle = schema.dashboard and schema.dashboard.battle_plan
+        self.assertEqual(
+            battle and battle.timeframe_strategy and battle.timeframe_strategy.action_boundary,
+            "跌破 1600 元失效",
+        )
+
     def test_schema_fails_on_invalid_sentiment_score(self) -> None:
         """Schema validation fails when sentiment_score out of range."""
         data = {

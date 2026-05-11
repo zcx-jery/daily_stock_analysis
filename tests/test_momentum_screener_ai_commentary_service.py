@@ -102,6 +102,10 @@ def _build_request(review_type: str):
         risk_stack=risk_stack,
         risk_stack_count=1,
         risk_stack_veto=False,
+        raw_alpha_shield={
+            "status": "retained_by_raw_top3_sovereignty",
+            "reason": "Raw Top 3 is protected unless Risk Stack reaches the hard-veto threshold.",
+        },
         mainline_intensity_count=3,
         mainline_intensity_multiplier=1.3,
         mainline_intensity_bonus=5.4,
@@ -131,6 +135,10 @@ def _build_request(review_type: str):
         risk_stack=risk_stack,
         risk_stack_count=1,
         risk_stack_veto=False,
+        raw_alpha_shield={
+            "status": "displaced_by_raw_alpha_shield",
+            "reason": "Inserted candidate did not have sovereignty over a non-veto Raw Top 3 candidate.",
+        },
         mainline_intensity_count=2,
         mainline_intensity_multiplier=1.2,
         mainline_intensity_bonus=3.1,
@@ -181,9 +189,11 @@ def test_build_review_context_prefers_official_score_and_structured_reasons():
     assert portfolio["decision_adjustment_reason"] == "题材强度和槽位匹配支持保留主仓。"
     assert portfolio["hard_blockers"][0]["label"] == "买点不清晰"
     assert portfolio["risk_stack_count"] == 1
+    assert portfolio["raw_alpha_shield"]["status"] == "retained_by_raw_top3_sovereignty"
     assert portfolio["mainline_intensity"]["count"] == 3
     top3_audit = context["decision"]["decision_intelligence"]["top3_audit"]
     assert top3_audit[0]["risk_stack_triggered_factors"][0]["key"] == "divergence_risk"
+    assert top3_audit[0]["raw_alpha_shield"]["status"] == "retained_by_raw_top3_sovereignty"
     assert top3_audit[0]["exhaustion_volume_audit"]["status"] == "extreme_churn"
     assert any(
         "TRADING WARNING: Extreme Churn Detected" in item
@@ -205,6 +215,7 @@ def test_build_review_context_for_excluded_candidates_uses_structured_reason_fie
     assert excluded["decision_adjustment_reason"] == "主线内已有更优先的同题材标的。"
     assert excluded["hard_blockers"][0]["label"] == "买点不清晰"
     assert excluded["risk_stack_count"] == 1
+    assert excluded["raw_alpha_shield"]["status"] == "displaced_by_raw_alpha_shield"
     assert "rank_score" not in excluded
 
 
@@ -220,7 +231,24 @@ def test_system_prompt_requires_logic_audit_sections_and_risk_stack_context():
     assert "risk_stack" in prompt
     assert "mainline_intensity" in prompt
     assert "exhaustion_volume_audit" in prompt
+    assert "raw_alpha_shield" in prompt
+    assert "RETAINED_LEADER_DIVERGENCE" in prompt
+    assert "Weak-to-Strong" in prompt
+    assert "Volatility Gap" in prompt
+    assert "Track B" in prompt
+    assert "不得仅因 T+1 低开低于 99% 就强制 Abandon" in prompt
     assert "CRITICAL_REJECTION_ADVICE" in prompt
     assert "TRADING WARNING: Extreme Churn Detected" in prompt
     assert "T+1 Open >= T0 Close * 0.99" in prompt
     assert "Reduce Position" in prompt
+
+
+def test_execution_guard_supports_dual_track_recovery_entry():
+    guard = MomentumScreenerAICommentaryService._build_execution_guard({"close": 10.0})
+
+    assert guard["dual_track_contract"]["track_a_momentum"].startswith("T+1 Open >= T0 Close")
+    assert "low-open recovery" in guard["dual_track_contract"]["track_b_recovery"]
+    assert "Track B" in guard["t1_gap_threshold"]
+    assert "收复 T0 收盘价" in guard["abandon_if"]
+    assert "低开低于 9.9" in guard["reversal_entry_if"]
+    assert "低于 9.9，按 V1.3 可交易合同放弃" not in guard["abandon_if"]

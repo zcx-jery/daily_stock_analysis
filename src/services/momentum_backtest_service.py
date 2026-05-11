@@ -12,6 +12,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from uuid import uuid4
 
 import pandas as pd
+from sqlalchemy.exc import OperationalError
 
 from src.repositories.momentum_backtest_repo import MomentumBacktestRepository
 from src.services.momentum_screener_service import (
@@ -37,7 +38,7 @@ from src.storage import (
 
 logger = logging.getLogger(__name__)
 
-MOMENTUM_BACKTEST_ENGINE_VERSION = "v1_3_exhaustion_veto_history_tolerant"
+MOMENTUM_BACKTEST_ENGINE_VERSION = "v1_3_kings_guard_protocol"
 MOMENTUM_BACKTEST_OFFICIAL_PROFILE = "standard"
 MOMENTUM_BACKTEST_OFFICIAL_TOP_N = MOMENTUM_DEFAULT_TOP_N
 MOMENTUM_BACKTEST_SCREENING_TRUTH_MODE = MOMENTUM_TRUTH_MODE_FULL
@@ -722,7 +723,11 @@ class MomentumBacktestService:
                 run_id,
                 status="failed",
                 processed_trade_dates=processed_count,
-                failed_trade_dates=failed_count or len(trade_dates),
+                failed_trade_dates=(
+                    failed_count
+                    if processed_count > 0 or failed_count > 0
+                    else len(trade_dates)
+                ),
                 error_message=str(exc),
                 current_stage_key="failed",
                 current_stage_label=RUN_STAGE_LABELS["failed"],
@@ -893,7 +898,12 @@ class MomentumBacktestService:
         if daily_row is None:
             raise ValueError(f"Backtest trade date not found: {trade_date}")
 
-        candidate_rows = self.repository.list_candidate_records(run_id, trade_dt, view_scope="candidate_top10")
+        candidate_rows = self._list_candidate_records_or_rebuild(
+            run_id,
+            trade_dt,
+            daily_row,
+            view_scope="candidate_top10",
+        )
         decision_rows = self.repository.list_decision_records(run_id, trade_dt)
         outcome_rows = self.repository.list_outcomes(run_id, trade_date=trade_dt)
         outcome_map = {(row.view_scope, row.ts_code): row for row in outcome_rows}
@@ -941,9 +951,10 @@ class MomentumBacktestService:
         key_breakdown: Dict[str, int] = {}
 
         for daily_row in self.repository.list_daily_summaries(run_id):
-            candidate_rows = self.repository.list_candidate_records(
+            candidate_rows = self._list_candidate_records_or_rebuild(
                 run_id,
                 daily_row.trade_date,
+                daily_row,
                 view_scope="candidate_top10",
             )
             decision_rows = self.repository.list_decision_records(run_id, daily_row.trade_date)
@@ -1040,36 +1051,21 @@ class MomentumBacktestService:
             ),
         )
 
-        def build_candidate_record(item: Dict[str, Any], view_scope: str) -> MomentumBacktestCandidateRecord:
-            return MomentumBacktestCandidateRecord(
-                run_id="",
-                trade_date=trade_dt,
-                view_scope=view_scope,
-                rank=int(item.get("rank") or 0),
-                ts_code=str(item.get("ts_code") or ""),
-                name=str(item.get("name") or ""),
-                theme=self._first_theme(item),
-                role=str(item.get("leader_level") or ""),
-                market_segment=str(item.get("market_segment") or ""),
-                rank_score=self._to_float(item.get("rank_score")),
-                final_score=self._to_float(item.get("final_score")),
-                continuation_score=self._to_float(item.get("continuation_score")),
-                extension_score=self._to_float(item.get("extension_score")),
-                risk_score=self._to_float(item.get("risk_score")),
-                buyability_score=self._to_float(item.get("buyability_score")),
-                candidate_payload_json=self._dump_json(
-                    self._candidate_payload_with_diagnostics(
-                        item,
-                        candidate_diagnostics_by_code.get(str(item.get("ts_code") or "")),
-                    )
-                ),
-            )
-
         candidate_records = [
-            build_candidate_record(item, "candidate_pool")
+            self._build_candidate_record_from_item(
+                trade_dt=trade_dt,
+                item=item,
+                view_scope="candidate_pool",
+                diagnostics=candidate_diagnostics_by_code.get(str(item.get("ts_code") or "")),
+            )
             for item in ranked_results
         ] + [
-            build_candidate_record(item, "candidate_top10")
+            self._build_candidate_record_from_item(
+                trade_dt=trade_dt,
+                item=item,
+                view_scope="candidate_top10",
+                diagnostics=candidate_diagnostics_by_code.get(str(item.get("ts_code") or "")),
+            )
             for item in top_candidates
         ]
 
@@ -1147,6 +1143,120 @@ class MomentumBacktestService:
         if diagnostics:
             payload["_decision_diagnostics"] = dict(diagnostics)
         return payload
+
+    def _build_candidate_record_from_item(
+        self,
+        *,
+        trade_dt: date,
+        item: Dict[str, Any],
+        view_scope: str,
+        diagnostics: Optional[Dict[str, Any]] = None,
+        run_id: str = "",
+    ) -> MomentumBacktestCandidateRecord:
+        return MomentumBacktestCandidateRecord(
+            run_id=run_id,
+            trade_date=trade_dt,
+            view_scope=view_scope,
+            rank=int(item.get("rank") or 0),
+            ts_code=str(item.get("ts_code") or ""),
+            name=str(item.get("name") or ""),
+            theme=self._first_theme(item),
+            role=str(item.get("leader_level") or ""),
+            market_segment=str(item.get("market_segment") or ""),
+            rank_score=self._to_float(item.get("rank_score")),
+            final_score=self._to_float(item.get("final_score")),
+            continuation_score=self._to_float(item.get("continuation_score")),
+            extension_score=self._to_float(item.get("extension_score")),
+            risk_score=self._to_float(item.get("risk_score")),
+            buyability_score=self._to_float(item.get("buyability_score")),
+            candidate_payload_json=self._dump_json(
+                self._candidate_payload_with_diagnostics(item, diagnostics)
+            ),
+        )
+
+    def _candidate_records_from_daily_summary(
+        self,
+        *,
+        run_id: str,
+        daily_row: MomentumBacktestDailySummary,
+        view_scope: str,
+    ) -> List[MomentumBacktestCandidateRecord]:
+        screening = self._load_json(daily_row.screening_payload_json)
+        if not isinstance(screening, dict):
+            return []
+        ranked_results = [
+            item
+            for item in list(screening.get("ranked_results") or screening.get("results") or [])
+            if isinstance(item, dict)
+        ]
+        items = ranked_results[:10] if view_scope == "candidate_top10" else ranked_results
+        decision = self._load_json(daily_row.decision_payload_json)
+        candidate_diagnostics_by_code = {
+            str(item.get("ts_code") or ""): item
+            for item in (decision.get("candidate_diagnostics") if isinstance(decision, dict) else []) or []
+            if isinstance(item, dict) and item.get("ts_code")
+        }
+        return [
+            self._build_candidate_record_from_item(
+                trade_dt=daily_row.trade_date,
+                item=item,
+                view_scope=view_scope,
+                diagnostics=candidate_diagnostics_by_code.get(str(item.get("ts_code") or "")),
+                run_id=run_id,
+            )
+            for item in items
+        ]
+
+    def _list_candidate_records_or_rebuild(
+        self,
+        run_id: str,
+        trade_dt: date,
+        daily_row: MomentumBacktestDailySummary,
+        *,
+        view_scope: str,
+    ) -> List[MomentumBacktestCandidateRecord]:
+        try:
+            return self.repository.list_candidate_records(run_id, trade_dt, view_scope=view_scope)
+        except OperationalError as exc:
+            logger.warning(
+                "候选明细读取失败，使用 daily screening 快照重建: run_id=%s trade_date=%s scope=%s error=%s",
+                run_id,
+                trade_dt.isoformat(),
+                view_scope,
+                exc,
+            )
+            return self._candidate_records_from_daily_summary(
+                run_id=run_id,
+                daily_row=daily_row,
+                view_scope=view_scope,
+            )
+
+    def _list_candidate_records_for_run_or_rebuild(
+        self,
+        run_id: str,
+        daily_rows: List[MomentumBacktestDailySummary],
+        *,
+        view_scope: str,
+    ) -> List[MomentumBacktestCandidateRecord]:
+        try:
+            return self.repository.list_candidate_records_for_run(run_id, view_scope=view_scope)
+        except OperationalError as exc:
+            logger.warning(
+                "候选明细全量读取失败，使用 daily screening 快照重建: run_id=%s scope=%s error=%s",
+                run_id,
+                view_scope,
+                exc,
+            )
+            records: List[MomentumBacktestCandidateRecord] = []
+            for daily_row in daily_rows:
+                records.extend(
+                    self._candidate_records_from_daily_summary(
+                        run_id=run_id,
+                        daily_row=daily_row,
+                        view_scope=view_scope,
+                    )
+                )
+            return records
 
     def _update_stage(
         self,
@@ -1789,6 +1899,25 @@ class MomentumBacktestService:
             and t0_close_price is not None
             and t1_open_price >= t0_close_price * MOMENTUM_BACKTEST_T1_MIN_OPEN_RATIO
         )
+        t1_gap_ratio = (
+            (t1_open_price / t0_close_price) - 1.0
+            if t1_open_price is not None and t0_close_price is not None and t0_close_price > 0
+            else None
+        )
+        track_a_momentum_pass = bool(
+            t1_gap_ratio is not None
+            and t1_gap_ratio >= -0.01
+            and t1_direction_pass
+        )
+        track_b_recovery_pass = bool(
+            t1_gap_ratio is not None
+            and t1_gap_ratio < -0.01
+            and t1_direction_pass
+            and t1_close_price is not None
+            and t0_close_price is not None
+            and t1_close_price > t0_close_price
+        )
+        dual_track_entry_pass = bool(track_a_momentum_pass or track_b_recovery_pass)
         tradable_profit_window_pass = (
             t2_slippage_adjusted_exit_price is not None
             and t1_close_price is not None
@@ -1796,8 +1925,7 @@ class MomentumBacktestService:
         )
         tradable_success_pass = bool(
             t1_buyability_pass
-            and t1_gap_risk_pass
-            and t1_direction_pass
+            and dual_track_entry_pass
             and tradable_profit_window_pass
         )
         settlement_pass = tradable_success_pass
@@ -1842,14 +1970,16 @@ class MomentumBacktestService:
                     "trigger_price": trigger_price,
                     "bars": window_bars,
                     "evaluation_bars": [bar for bar in (evaluation_t1_bar, evaluation_t2_bar) if bar],
-                    "settlement_rule": "v13_tradable_success_v1",
+                    "settlement_rule": "v13_dual_track_tradable_success_v1",
                     "weak_continuity_rule": "t1_close_gt_open_and_t2_high_gt_t1_close",
-                    "tradable_success_rule": "t1_buyable_no_one_word_open_ge_t0_close_0_99_t1_close_gt_open_t2_adjusted_exit_ge_t1_close_1_02",
+                    "tradable_success_rule": "t1_buyable_no_one_word_dual_track_entry_t2_adjusted_exit_ge_t1_close_1_02",
                     "t0_close_price": t0_close_price,
                     "t1_open_price": t1_open_price,
                     "t1_high_price": t1_high_price,
                     "t1_low_price": t1_low_price,
                     "t1_close_price": t1_close_price,
+                    "t1_gap_ratio": round(t1_gap_ratio, 6) if t1_gap_ratio is not None else None,
+                    "t1_gap_pct": round(t1_gap_ratio * 100, 2) if t1_gap_ratio is not None else None,
                     "t2_high_price": t2_high_price,
                     "t2_close_price": t2_close_price,
                     "t2_slippage_adjusted_exit_price": (
@@ -1863,6 +1993,14 @@ class MomentumBacktestService:
                     "t1_one_word_limit": t1_one_word_limit,
                     "t1_buyability_pass": t1_buyability_pass,
                     "t1_gap_risk_pass": t1_gap_risk_pass,
+                    "track_a_momentum_pass": track_a_momentum_pass,
+                    "track_b_recovery_pass": track_b_recovery_pass,
+                    "dual_track_entry_pass": dual_track_entry_pass,
+                    "tradable_success_track": (
+                        "momentum"
+                        if track_a_momentum_pass
+                        else ("recovery" if track_b_recovery_pass else None)
+                    ),
                     "tradable_profit_window_pass": tradable_profit_window_pass,
                     "tradable_success_pass": tradable_success_pass,
                     "settlement_pass": settlement_pass,
@@ -1873,8 +2011,16 @@ class MomentumBacktestService:
     def _build_run_summary(self, run_id: str) -> Dict[str, Any]:
         run = self.repository.get_run(run_id)
         daily_rows = self.repository.list_daily_summaries(run_id)
-        candidate_rows = self.repository.list_candidate_records_for_run(run_id, view_scope="candidate_top10")
-        candidate_pool_rows = self.repository.list_candidate_records_for_run(run_id, view_scope="candidate_pool")
+        candidate_rows = self._list_candidate_records_for_run_or_rebuild(
+            run_id,
+            daily_rows,
+            view_scope="candidate_top10",
+        )
+        candidate_pool_rows = self._list_candidate_records_for_run_or_rebuild(
+            run_id,
+            daily_rows,
+            view_scope="candidate_pool",
+        )
         if not candidate_pool_rows:
             candidate_pool_rows = candidate_rows
         decision_rows = self.repository.list_decision_records_for_run(run_id)
@@ -3023,7 +3169,11 @@ class MomentumBacktestService:
                     "official_sample_count": official_metrics.get("sample_count", 0),
                     "raw_momentum_sample_count": raw_metrics.get("sample_count", 0),
                     "dropped_by_v13": [
-                        self._serialize_candidate_swap_item(row, raw_outcome_by_code.get(row.ts_code))
+                        self._serialize_candidate_swap_item(
+                            row,
+                            raw_outcome_by_code.get(row.ts_code),
+                            include_rejection_reason=True,
+                        )
                         for row in dropped_rows
                     ],
                     "inserted_by_v13": [
@@ -3069,10 +3219,12 @@ class MomentumBacktestService:
         self,
         row: MomentumBacktestCandidateRecord,
         outcome: Optional[MomentumBacktestOutcomeRecord],
+        *,
+        include_rejection_reason: bool = False,
     ) -> Dict[str, Any]:
         payload = self._load_json(row.candidate_payload_json) or {}
         diagnostics = payload.get("_decision_diagnostics")
-        return {
+        result = {
             "ts_code": row.ts_code,
             "name": row.name,
             "rank": row.rank,
@@ -3088,8 +3240,202 @@ class MomentumBacktestService:
                 if isinstance(diagnostics, dict)
                 else payload.get("risk_stack_count")
             ),
+            "raw_alpha_shield": (
+                diagnostics.get("raw_alpha_shield")
+                if isinstance(diagnostics, dict)
+                else payload.get("raw_alpha_shield")
+            ),
             "outcome": self._serialize_swap_outcome(outcome),
         }
+        if include_rejection_reason:
+            primary_rejection_reason = self._candidate_primary_rejection_reason(payload)
+            result.update(
+                {
+                    "primary_rejection_reason": primary_rejection_reason["reason"],
+                    "primary_rejection_label": primary_rejection_reason["label"],
+                    "primary_rejection_detail": primary_rejection_reason["detail"],
+                }
+            )
+        return result
+
+    @classmethod
+    def _candidate_primary_rejection_reason(cls, payload: Dict[str, Any]) -> Dict[str, str]:
+        diagnostics = payload.get("_decision_diagnostics")
+        if not isinstance(diagnostics, dict):
+            diagnostics = {}
+
+        risk_stack = cls._candidate_nested_dict(
+            diagnostics,
+            payload,
+            ("risk_stack", "_risk_stack_check", "risk_stack_check"),
+        )
+        hard_blockers = cls._candidate_nested_list(diagnostics, payload, ("hard_blockers",))
+        first_blocker = next((item for item in hard_blockers if isinstance(item, dict)), None)
+        raw_alpha_shield = cls._candidate_nested_dict(
+            diagnostics,
+            payload,
+            ("raw_alpha_shield", "_raw_alpha_shield"),
+        )
+        triggered_keys = {
+            str(key)
+            for key in (
+                risk_stack.get("triggered_keys")
+                or risk_stack.get("mandatory_veto_keys")
+                or []
+            )
+            if key
+        }
+        raw_alpha_status = str(raw_alpha_shield.get("status") or "")
+        if raw_alpha_status == "dropped_by_hard_veto":
+            hard_risk_keys = {
+                str(key)
+                for key in (
+                    raw_alpha_shield.get("hard_risk_keys")
+                    or risk_stack.get("hard_risk_keys")
+                    or []
+                )
+                if key
+            }
+            if hard_risk_keys:
+                return cls._swap_rejection_reason(
+                    "Raw_Sovereignty_Hard_Risk_Veto",
+                    "原始前三硬风险否决",
+                    raw_alpha_shield.get("reason")
+                    or "Raw Top3 同时命中 R1 高位或 R3 资金背离，原始前三主权失效。",
+                )
+            return cls._swap_rejection_reason(
+                "Raw_Sovereignty_Hard_Veto",
+                "原始前三硬否决",
+                raw_alpha_shield.get("reason") or "Raw Top3 命中 Risk Stack 硬否决，原始前三主权失效。",
+            )
+        if first_blocker and str(first_blocker.get("key") or "") == "risk_stack_veto":
+            mandatory_keys = {str(key) for key in risk_stack.get("mandatory_veto_keys") or [] if key}
+            if "exhaustion_risk" in mandatory_keys or "exhaustion_risk" in triggered_keys:
+                return cls._swap_rejection_reason(
+                    "R5_Exhaustion_Veto",
+                    "R5 量能竭尽否决",
+                    first_blocker.get("detail") or "命中量能竭尽风险，不能进入 Official Top3。",
+                )
+            return cls._swap_rejection_reason(
+                "Risk_Stack_Veto",
+                "风险堆叠否决",
+                first_blocker.get("detail") or "风险因子累计达到 Veto 阈值。",
+            )
+
+        if first_blocker:
+            blocker_key = str(first_blocker.get("key") or "")
+            blocker_reason = {
+                "unclear_buy_point_main": ("Buy_Point_Unclear", "买点不清晰"),
+                "weak_mainline": ("R4_Mainline_Weak", "主线强度不足"),
+                "high_risk_main": ("Risk_Score_High", "主仓风险偏高"),
+                "adaptive_mainline_threshold": ("Adaptive_Mainline_Threshold", "动态主线阈值不足"),
+                "low_official_score": ("Low_Official_Score", "官方总分偏低"),
+                "back_role_main": ("Role_Not_Main_Slot", "后排角色不做主仓"),
+            }.get(blocker_key)
+            if blocker_reason:
+                return cls._swap_rejection_reason(
+                    blocker_reason[0],
+                    blocker_reason[1],
+                    first_blocker.get("detail") or first_blocker.get("label") or blocker_reason[1],
+                )
+
+        buy_point_status = str(
+            diagnostics.get("buy_point_status")
+            or payload.get("_buy_point_status")
+            or payload.get("buy_point_status")
+            or ""
+        )
+        if buy_point_status == "unclear":
+            return cls._swap_rejection_reason(
+                "Buy_Point_Unclear",
+                "买点不清晰",
+                "候选快照中的买点状态为 unclear，未形成可执行入场计划。",
+            )
+
+        sealing_signal = cls._candidate_nested_dict(
+            diagnostics,
+            payload,
+            ("v13_sealing_strength", "_v13_sealing_strength_signal"),
+        )
+        if "sealing_risk" in triggered_keys:
+            first_minutes = cls._parse_swap_time_minutes(sealing_signal.get("first_seal_time"))
+            if first_minutes is not None and first_minutes > 14 * 60:
+                return cls._swap_rejection_reason(
+                    "R2_Sealing_Late",
+                    "R2 封板过晚",
+                    "首次封板晚于 14:00，按尾盘弱封处理。",
+                )
+            return cls._swap_rejection_reason(
+                "R2_Sealing_Reopen",
+                "R2 开板回封",
+                "首次封板与最后封板不一致，封板稳定性存疑。",
+            )
+
+        mainline_count = cls._to_float(payload.get("mainline_intensity_count"))
+        if mainline_count is not None and mainline_count < 2:
+            return cls._swap_rejection_reason(
+                "R4_Mainline_Weak",
+                "主线共振不足",
+                "同主线候选池数量不足，未形成板块共振。",
+            )
+
+        return cls._swap_rejection_reason(
+            "Slot_Competition",
+            "槽位竞优落选",
+            "未命中硬阻断，但在 Official Top3 槽位竞争中优先级低于入选标的。",
+        )
+
+    @staticmethod
+    def _candidate_nested_dict(
+        diagnostics: Dict[str, Any],
+        payload: Dict[str, Any],
+        keys: Tuple[str, ...],
+    ) -> Dict[str, Any]:
+        for source in (diagnostics, payload):
+            for key in keys:
+                value = source.get(key)
+                if isinstance(value, dict):
+                    return value
+        return {}
+
+    @staticmethod
+    def _candidate_nested_list(
+        diagnostics: Dict[str, Any],
+        payload: Dict[str, Any],
+        keys: Tuple[str, ...],
+    ) -> List[Any]:
+        for source in (diagnostics, payload):
+            for key in keys:
+                value = source.get(key)
+                if isinstance(value, list):
+                    return value
+        return []
+
+    @staticmethod
+    def _swap_rejection_reason(reason: str, label: str, detail: Any) -> Dict[str, str]:
+        return {
+            "reason": reason,
+            "label": label,
+            "detail": str(detail or label),
+        }
+
+    @staticmethod
+    def _parse_swap_time_minutes(value: Any) -> Optional[int]:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        digits = "".join(char for char in text if char.isdigit())
+        if len(digits) >= 6:
+            hour = int(digits[:2])
+            minute = int(digits[2:4])
+        elif len(digits) == 4:
+            hour = int(digits[:2])
+            minute = int(digits[2:4])
+        else:
+            return None
+        if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+            return None
+        return hour * 60 + minute
 
     def _serialize_decision_swap_item(
         self,
@@ -3112,6 +3458,7 @@ class MomentumBacktestService:
             "suggested_action": row.suggested_action,
             "risk_stack_count": payload.get("risk_stack_count"),
             "risk_stack_veto": payload.get("risk_stack_veto"),
+            "raw_alpha_shield": payload.get("raw_alpha_shield"),
             "mainline_intensity_count": payload.get("mainline_intensity_count"),
             "outcome": self._serialize_swap_outcome(outcome),
         }

@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import json
+import sqlite3
 import tempfile
 import time
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
 import pandas as pd
+from sqlalchemy.exc import OperationalError
 
 from src.config import Config
 from src.repositories.momentum_backtest_repo import MomentumBacktestRepository
@@ -136,6 +140,122 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
             time.sleep(0.05)
             latest = self.service.get_run(run_id)
         return latest
+
+    def test_repository_backtest_writes_use_sqlite_retry_transaction(self) -> None:
+        repository = MomentumBacktestRepository(self.db_manager)
+        run = MomentumBacktestRun(
+            run_id="momentum_bt_retry_guard",
+            status="queued",
+            profile="standard",
+            engine_version="test",
+            strategy_health_mode="cached_only",
+            entry_baseline_version="test",
+            market_scope_version="test",
+            top_n=30,
+            start_trade_date=date(2026, 1, 28),
+            end_trade_date=date(2026, 1, 28),
+            total_trade_dates=1,
+            processed_trade_dates=0,
+            failed_trade_dates=0,
+        )
+        calls: list[str] = []
+        original = self.db_manager._run_write_transaction
+
+        def spy(operation_name: str, write_operation):
+            calls.append(operation_name)
+            return original(operation_name, write_operation)
+
+        with patch.object(self.db_manager, "_run_write_transaction", side_effect=spy):
+            created = repository.create_run(run)
+            repository.update_run(created.run_id, status="running", processed_trade_dates=1)
+            repository.replace_daily_summary(
+                MomentumBacktestDailySummary(
+                    run_id=created.run_id,
+                    trade_date=date(2026, 1, 28),
+                    action_level="normal_go",
+                    action_label="可做",
+                    recommendation_cap="3",
+                    market_environment_level="strong",
+                    opportunity_quality_level="strong",
+                    historical_validity_level="general",
+                )
+            )
+            repository.replace_candidate_records(
+                run_id=created.run_id,
+                trade_date=date(2026, 1, 28),
+                records=[],
+            )
+            deleted = repository.delete_run(created.run_id)
+
+        self.assertTrue(deleted)
+        self.assertIsNone(repository.get_run("momentum_bt_retry_guard"))
+        self.assertIn("momentum_backtest.create_run", calls)
+        self.assertIn("momentum_backtest.update_run", calls)
+        self.assertIn("momentum_backtest.replace_daily_summary", calls)
+        self.assertTrue(
+            any(call.startswith("momentum_backtest.replace_momentum_backtest_candidate_records") for call in calls)
+        )
+        self.assertIn("momentum_backtest.delete_run", calls)
+
+    def test_candidate_records_rebuild_from_daily_snapshot_on_sqlite_read_error(self) -> None:
+        daily_row = MomentumBacktestDailySummary(
+            run_id="momentum_bt_snapshot_rebuild",
+            trade_date=date(2026, 4, 17),
+            action_level="normal_go",
+            action_label="可做",
+            recommendation_cap="3",
+            market_environment_level="strong",
+            opportunity_quality_level="strong",
+            historical_validity_level="general",
+            screening_payload_json=json.dumps(
+                {
+                    "ranked_results": [
+                        {
+                            "rank": index + 1,
+                            "ts_code": f"60000{index}.SH",
+                            "name": f"测试股{index}",
+                            "themes": ["测试主线"],
+                            "leader_level": "龙头",
+                            "rank_score": 90 - index,
+                            "final_score": 88 - index,
+                        }
+                        for index in range(12)
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            decision_payload_json=json.dumps(
+                {
+                    "candidate_diagnostics": [
+                        {"ts_code": "600000.SH", "risk_stack_count": 1}
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+        )
+        read_error = OperationalError(
+            "select candidate records",
+            {},
+            sqlite3.OperationalError("disk I/O error"),
+        )
+
+        with patch.object(
+            self.service.repository,
+            "list_candidate_records_for_run",
+            side_effect=read_error,
+        ):
+            rows = self.service._list_candidate_records_for_run_or_rebuild(
+                "momentum_bt_snapshot_rebuild",
+                [daily_row],
+                view_scope="candidate_top10",
+            )
+
+        self.assertEqual(len(rows), 10)
+        self.assertEqual(rows[0].run_id, "momentum_bt_snapshot_rebuild")
+        self.assertEqual(rows[0].trade_date, date(2026, 4, 17))
+        self.assertEqual(rows[0].ts_code, "600000.SH")
+        self.assertEqual(rows[0].theme, "测试主线")
+        self.assertIn("risk_stack_count", rows[0].candidate_payload_json)
 
     def _slow_down_freeze(self, delay_seconds: float = 0.05) -> None:
         original = self.service._freeze_trade_date_artifacts
@@ -267,6 +387,46 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
         self.assertFalse(payload["tradable_success_pass"])
         self.assertFalse(payload["settlement_pass"])
         self.assertEqual(record.real_strength_label, "weak_continuity")
+
+    def test_outcome_record_accepts_dual_track_recovery_success(self) -> None:
+        bars = [
+            {
+                "date": "2026-04-11",
+                "open": 9.85,
+                "high": 10.30,
+                "low": 9.80,
+                "close": 10.20,
+            },
+            {
+                "date": "2026-04-14",
+                "open": 10.22,
+                "high": 10.70,
+                "low": 10.05,
+                "close": 10.50,
+            },
+        ]
+
+        with patch.object(self.service, "_load_forward_bars", return_value=bars):
+            record = self.service._build_outcome_record(
+                trade_dt=pd.Timestamp("2026-04-10").date(),
+                item={
+                    "ts_code": "600002.SH",
+                    "name": "低开修复样本",
+                    "close": 10.10,
+                    "entry_range_low": 9.80,
+                    "entry_range_high": 10.00,
+                },
+                view_scope="decision_top3",
+                slot="secondary",
+            )
+
+        payload = json.loads(record.outcome_payload_json)
+        self.assertFalse(payload["track_a_momentum_pass"])
+        self.assertTrue(payload["track_b_recovery_pass"])
+        self.assertTrue(payload["dual_track_entry_pass"])
+        self.assertTrue(payload["tradable_success_pass"])
+        self.assertEqual(payload["tradable_success_track"], "recovery")
+        self.assertEqual(record.real_strength_label, "strong")
 
     def test_summarize_outcomes_uses_tradable_success_as_primary_rate(self) -> None:
         rows = [
@@ -415,6 +575,18 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
                 rank=1,
                 view_scope="candidate_pool",
                 rank_score=96.0,
+                candidate_payload={
+                    "_decision_diagnostics": {
+                        "buy_point_status": "unclear",
+                        "hard_blockers": [
+                            {
+                                "key": "unclear_buy_point_main",
+                                "label": "主仓买点不清晰",
+                                "detail": "等待换手确认。",
+                            }
+                        ],
+                    }
+                },
             ),
             self._build_candidate_record(
                 ts_code="600002.SH",
@@ -523,6 +695,8 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
         self.assertEqual(item["selection_efficiency_pct"], -33.33)
         self.assertEqual([row["ts_code"] for row in item["dropped_by_v13"]], ["600001.SH"])
         self.assertEqual([row["ts_code"] for row in item["inserted_by_v13"]], ["600004.SH"])
+        self.assertEqual(item["dropped_by_v13"][0]["primary_rejection_reason"], "Buy_Point_Unclear")
+        self.assertEqual(item["dropped_by_v13"][0]["primary_rejection_label"], "买点不清晰")
         self.assertTrue(item["dropped_by_v13"][0]["outcome"]["tradable_success_pass"])
         self.assertFalse(item["inserted_by_v13"][0]["outcome"]["tradable_success_pass"])
 
@@ -559,6 +733,7 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
         rank_score: float | None = None,
         final_score: float | None = None,
         trade_date: pd.Timestamp | None = None,
+        candidate_payload: dict | None = None,
     ) -> MomentumBacktestCandidateRecord:
         return MomentumBacktestCandidateRecord(
             run_id="momentum_bt_diag",
@@ -571,6 +746,9 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
             role=role,
             rank_score=rank_score,
             final_score=final_score,
+            candidate_payload_json=(
+                json.dumps(candidate_payload, ensure_ascii=False) if candidate_payload else None
+            ),
         )
 
     def _build_decision_record(
@@ -633,9 +811,9 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
             t2_close_return_pct=t2_profit_window_pct / 2,
             outcome_payload_json=self.service._dump_json(
                 {
-                    "settlement_rule": "v13_tradable_success_v1",
+                    "settlement_rule": "v13_dual_track_tradable_success_v1",
                     "weak_continuity_rule": "t1_close_gt_open_and_t2_high_gt_t1_close",
-                    "tradable_success_rule": "t1_buyable_no_one_word_open_ge_t0_close_0_99_t1_close_gt_open_t2_adjusted_exit_ge_t1_close_1_02",
+                    "tradable_success_rule": "t1_buyable_no_one_word_dual_track_entry_t2_adjusted_exit_ge_t1_close_1_02",
                     "t1_direction_pass": t1_direction_pass,
                     "t2_continuation_pass": t2_continuation_pass,
                     "weak_continuity_pass": resolved_weak_continuity_pass,

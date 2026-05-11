@@ -496,7 +496,7 @@ class DataFetcherManager:
         self._stock_name_cache: Dict[str, str] = {}
         self._stock_name_cache_lock = RLock()
         
-        if fetchers:
+        if fetchers is not None:
             # 按优先级排序
             self._fetchers = sorted(fetchers, key=lambda f: f.priority)
         else:
@@ -1869,12 +1869,86 @@ class DataFetcherManager:
         return True
 
     @staticmethod
+    def _extract_block_data_status(payload: Any) -> Optional[str]:
+        if not isinstance(payload, dict):
+            return None
+        statuses: List[str] = []
+        for key in ("data_status", "_data_status"):
+            status = str(payload.get(key) or "").strip().lower()
+            if status:
+                statuses.append(status)
+        for value in payload.values():
+            nested_status = DataFetcherManager._extract_block_data_status(value)
+            if nested_status:
+                statuses.append(nested_status)
+        for status in ("permission_denied", "failed", "stale"):
+            if status in statuses:
+                return status
+        return None
+
+    @staticmethod
     def _infer_block_status(payload: Any, fallback_status: str) -> str:
+        status_hint = DataFetcherManager._extract_block_data_status(payload)
+        if status_hint:
+            return status_hint
+        if fallback_status == "stale":
+            return fallback_status
         if DataFetcherManager._has_meaningful_payload(payload):
             return "ok"
-        if fallback_status in ("failed", "partial", "not_supported"):
+        if fallback_status in ("permission_denied", "failed", "partial", "not_supported", "stale"):
             return fallback_status
         return "partial"
+
+    @classmethod
+    def _merge_fundamental_payloads(
+        cls,
+        primary: Optional[Dict[str, Any]],
+        fallback: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """
+        Merge two normalized payload dicts with field-level priority.
+
+        Values from ``primary`` win when they are meaningful; missing primary
+        fields are filled from ``fallback``. Nested dicts are merged recursively.
+        """
+        primary = primary if isinstance(primary, dict) else {}
+        fallback = fallback if isinstance(fallback, dict) else {}
+        merged: Dict[str, Any] = dict(fallback)
+        for key, value in primary.items():
+            if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                merged[key] = cls._merge_fundamental_payloads(value, merged.get(key))
+                continue
+            if cls._has_meaningful_payload(value) or key not in merged:
+                merged[key] = value
+        return merged
+
+    @staticmethod
+    def _quote_price(quote_payload: Any) -> Optional[float]:
+        if isinstance(quote_payload, dict):
+            latest_price_raw = quote_payload.get("price")
+        else:
+            latest_price_raw = getattr(quote_payload, "price", None) if quote_payload else None
+        if latest_price_raw is None:
+            return None
+        try:
+            latest_price = float(latest_price_raw)
+        except (TypeError, ValueError):
+            return None
+        return latest_price if latest_price > 0 else None
+
+    def _get_tushare_fetcher(self) -> Optional[BaseFetcher]:
+        """Return the configured Tushare fetcher when available."""
+        for fetcher in self._get_fetchers_snapshot():
+            if getattr(fetcher, "name", "") != "TushareFetcher":
+                continue
+            is_available = getattr(fetcher, "is_available", None)
+            try:
+                if callable(is_available) and not is_available():
+                    continue
+            except Exception:
+                continue
+            return fetcher
+        return None
 
     @staticmethod
     def _should_cache_fundamental_context(context: Any) -> bool:
@@ -1887,12 +1961,14 @@ class DataFetcherManager:
             return False
         for block in (
             "valuation",
+            "profitability",
             "growth",
             "earnings",
             "institution",
             "capital_flow",
             "dragon_tiger",
             "boards",
+            "chip",
         ):
             payload = context.get(block, {})
             if isinstance(payload, dict) and DataFetcherManager._has_meaningful_payload(payload.get("data")):
@@ -1903,6 +1979,12 @@ class DataFetcherManager:
         blocks = {
             "valuation": self._build_fundamental_block(
                 "partial" if market == "etf" else "not_supported",
+                {},
+                [{"provider": "fundamental_pipeline", "result": "not_supported", "duration_ms": 0}],
+                [reason],
+            ),
+            "profitability": self._build_fundamental_block(
+                "not_supported",
                 {},
                 [{"provider": "fundamental_pipeline", "result": "not_supported", "duration_ms": 0}],
                 [reason],
@@ -1943,6 +2025,12 @@ class DataFetcherManager:
                 [{"provider": "fundamental_pipeline", "result": "not_supported", "duration_ms": 0}],
                 [reason],
             ),
+            "chip": self._build_fundamental_block(
+                "not_supported",
+                {},
+                [{"provider": "fundamental_pipeline", "result": "not_supported", "duration_ms": 0}],
+                [reason],
+            ),
         }
         return {
             "market": market,
@@ -1960,12 +2048,14 @@ class DataFetcherManager:
         market = _market_tag(stock_code)
         block_names = (
             "valuation",
+            "profitability",
             "growth",
             "earnings",
             "institution",
             "capital_flow",
             "dragon_tiger",
             "boards",
+            "chip",
         )
         blocks = {
             block: self._build_fundamental_block(
@@ -2017,6 +2107,12 @@ class DataFetcherManager:
         stage_timeout = max(0.0, stage_timeout)
         fetch_timeout = float(config.fundamental_fetch_timeout_seconds)
         fetch_timeout = max(0.0, fetch_timeout)
+        tushare_fetcher = None
+        if not is_etf:
+            tushare_fetcher = self._get_tushare_fetcher()
+            if tushare_fetcher is not None and hasattr(tushare_fetcher, "get_tushare_fundamental_bundle"):
+                stage_timeout = max(stage_timeout, 12.0)
+                fetch_timeout = max(fetch_timeout, 8.0)
 
         cache_ttl = int(config.fundamental_cache_ttl_seconds)
         cache_max_entries = max(0, int(getattr(config, "fundamental_cache_max_entries", 256)))
@@ -2033,13 +2129,16 @@ class DataFetcherManager:
         remaining_seconds = stage_timeout
         result_ctx: Dict[str, Any] = {
             "market": market,
+            "enhanced_by_tushare": False,
             "valuation": {},
+            "profitability": {},
             "growth": {},
             "earnings": {},
             "institution": {},
             "capital_flow": {},
             "dragon_tiger": {},
             "boards": {},
+            "chip": {},
             "coverage": {},
             "source_chain": [],
             "errors": [],
@@ -2051,8 +2150,53 @@ class DataFetcherManager:
             nonlocal remaining_seconds
             remaining_seconds = max(0.0, remaining_seconds - consumed_ms / 1000.0)
 
+        tushare_bundle_payload: Dict[str, Any] = {}
+        tushare_bundle_status = "not_supported"
+        tushare_bundle_errors: List[str] = []
+        tushare_bundle_chain: List[Dict[str, Any]] = []
+        tushare_bundle_ms = 0
+        if tushare_fetcher is not None and hasattr(tushare_fetcher, "get_tushare_fundamental_bundle"):
+            if remaining_seconds <= 0:
+                tushare_bundle_status = "failed"
+                tushare_bundle_errors = ["fundamental stage timeout"]
+            else:
+                tushare_timeout = min(fetch_timeout, remaining_seconds)
+                tushare_payload, tushare_err_msg, tushare_bundle_ms = self._run_with_retry(
+                    lambda: tushare_fetcher.get_tushare_fundamental_bundle(
+                        stock_code,
+                        latest_price=None,
+                    ),
+                    tushare_timeout,
+                    "tushare_fundamental_bundle",
+                )
+                _consume_budget(tushare_bundle_ms)
+                if isinstance(tushare_payload, dict):
+                    tushare_bundle_payload = tushare_payload
+                    tushare_bundle_status = str(tushare_payload.get("status", "not_supported"))
+                    tushare_bundle_errors = list(tushare_payload.get("errors", []))
+                    if tushare_err_msg:
+                        tushare_bundle_errors.append(tushare_err_msg)
+                else:
+                    tushare_bundle_status = "failed"
+                    tushare_bundle_errors = [tushare_err_msg or "tushare_fundamental_bundle failed"]
+
+            tushare_bundle_chain = self._normalize_source_chain(
+                tushare_bundle_payload.get("source_chain", []),
+                "tushare_fundamental_bundle",
+                tushare_bundle_status,
+                tushare_bundle_ms,
+            )
+
+        tushare_valuation_payload = (
+            tushare_bundle_payload.get("valuation", {})
+            if isinstance(tushare_bundle_payload, dict)
+            else {}
+        )
+
         valuation_timeout = min(fetch_timeout, remaining_seconds)
-        if valuation_timeout > 0:
+        if self._has_meaningful_payload(tushare_valuation_payload):
+            quote_payload, valuation_err, valuation_ms = None, None, 0
+        elif valuation_timeout > 0:
             quote_payload, valuation_err, valuation_ms = self._run_with_retry(
                 lambda: self.get_realtime_quote(stock_code),
                 valuation_timeout,
@@ -2086,8 +2230,45 @@ class DataFetcherManager:
             [valuation_err] if valuation_err else [],
         )
 
-        # growth / earnings / institution (one AkShare call)
-        if remaining_seconds <= 0:
+        if isinstance(tushare_valuation_payload, dict) and self._has_meaningful_payload(tushare_valuation_payload):
+            valuation_payload = self._merge_fundamental_payloads(tushare_valuation_payload, valuation_payload)
+            valuation_status = self._infer_block_status(valuation_payload, "partial")
+            result_ctx["enhanced_by_tushare"] = True
+            result_ctx["valuation"] = self._build_fundamental_block(
+                valuation_status,
+                valuation_payload,
+                result_ctx["valuation"].get("source_chain", []) + tushare_bundle_chain,
+                list(result_ctx["valuation"].get("errors", [])) + list(tushare_bundle_errors),
+            )
+
+        # growth / earnings / institution: use AkShare only as fallback when
+        # Tushare did not already provide the core homepage evidence.
+        if isinstance(tushare_bundle_payload, dict):
+            _tushare_profitability = tushare_bundle_payload.get("profitability", {})
+            _tushare_growth = tushare_bundle_payload.get("growth", {})
+            _tushare_earnings = tushare_bundle_payload.get("earnings", {})
+            tushare_core_available = (
+                self._has_meaningful_payload(_tushare_profitability)
+                and isinstance(_tushare_growth, dict)
+                and self._has_meaningful_payload(_tushare_growth.get("revenue_yoy"))
+                and self._has_meaningful_payload(_tushare_growth.get("net_profit_yoy"))
+                and self._has_meaningful_payload(_tushare_earnings)
+            )
+        else:
+            tushare_core_available = False
+        if tushare_core_available:
+            bundle_status = "not_supported"
+            bundle_payload = {
+                "status": "not_supported",
+                "growth": {},
+                "earnings": {},
+                "institution": {},
+                "source_chain": [],
+                "errors": [],
+            }
+            bundle_errors = []
+            bundle_ms = 0
+        elif remaining_seconds <= 0:
             bundle_status = "failed"
             bundle_payload: Dict[str, Any] = {}
             bundle_errors = ["fundamental stage timeout"]
@@ -2137,6 +2318,49 @@ class DataFetcherManager:
         else:
             institution_payload = dict(institution_payload)
 
+        tushare_profitability_payload = (
+            tushare_bundle_payload.get("profitability", {})
+            if isinstance(tushare_bundle_payload, dict)
+            else {}
+        )
+        tushare_growth_payload = (
+            tushare_bundle_payload.get("growth", {})
+            if isinstance(tushare_bundle_payload, dict)
+            else {}
+        )
+        tushare_earnings_payload = (
+            tushare_bundle_payload.get("earnings", {})
+            if isinstance(tushare_bundle_payload, dict)
+            else {}
+        )
+        tushare_institution_payload = (
+            tushare_bundle_payload.get("institution", {})
+            if isinstance(tushare_bundle_payload, dict)
+            else {}
+        )
+        if not isinstance(tushare_profitability_payload, dict):
+            tushare_profitability_payload = {}
+        if not isinstance(tushare_growth_payload, dict):
+            tushare_growth_payload = {}
+        if not isinstance(tushare_earnings_payload, dict):
+            tushare_earnings_payload = {}
+        if not isinstance(tushare_institution_payload, dict):
+            tushare_institution_payload = {}
+
+        growth_payload = self._merge_fundamental_payloads(tushare_growth_payload, growth_payload)
+        earnings_payload = self._merge_fundamental_payloads(tushare_earnings_payload, earnings_payload)
+        institution_payload = self._merge_fundamental_payloads(tushare_institution_payload, institution_payload)
+        if any(
+            self._has_meaningful_payload(payload)
+            for payload in (
+                tushare_profitability_payload,
+                tushare_growth_payload,
+                tushare_earnings_payload,
+                tushare_institution_payload,
+            )
+        ):
+            result_ctx["enhanced_by_tushare"] = True
+
         # Derive TTM dividend yield from already-fetched quote price; avoid extra quote calls.
         earnings_extra_errors: List[str] = []
         dividend_payload = earnings_payload.get("dividend")
@@ -2149,18 +2373,9 @@ class DataFetcherManager:
                     ttm_cash = float(ttm_cash_raw)
                 except (TypeError, ValueError):
                     earnings_extra_errors.append("invalid_ttm_cash_dividend_per_share")
-            if isinstance(quote_payload, dict):
-                latest_price_raw = quote_payload.get("price")
-            else:
-                latest_price_raw = getattr(quote_payload, "price", None) if quote_payload else None
-            latest_price = None
-            if latest_price_raw is not None:
-                try:
-                    latest_price = float(latest_price_raw)
-                except (TypeError, ValueError):
-                    latest_price = None
-            ttm_yield = None
-            if ttm_cash is not None:
+            ttm_yield = dividend_payload.get("ttm_dividend_yield_pct")
+            if ttm_yield is None and ttm_cash is not None:
+                latest_price = self._quote_price(quote_payload)
                 if latest_price is not None and latest_price > 0:
                     ttm_yield = round(ttm_cash / latest_price * 100.0, 4)
                 else:
@@ -2173,31 +2388,44 @@ class DataFetcherManager:
 
         adapter_errors = list(bundle_payload.get("errors", [])) if isinstance(bundle_payload, dict) else []
         adapter_errors.extend(bundle_errors)
-        growth_errors = list(adapter_errors)
-        earnings_errors = list(adapter_errors)
+        combined_bundle_chain = tushare_bundle_chain + bundle_chain
+        combined_adapter_errors = list(tushare_bundle_errors) + list(adapter_errors)
+        profitability_errors = list(tushare_bundle_errors)
+        growth_errors = list(combined_adapter_errors)
+        earnings_errors = list(combined_adapter_errors)
         earnings_errors.extend(earnings_extra_errors)
-        institution_errors = list(adapter_errors)
+        institution_errors = list(combined_adapter_errors)
 
+        profitability_status = self._infer_block_status(
+            tushare_profitability_payload,
+            tushare_bundle_status,
+        )
         growth_status = self._infer_block_status(growth_payload, bundle_status)
         earnings_status = self._infer_block_status(earnings_payload, bundle_status)
         institution_status = self._infer_block_status(institution_payload, bundle_status)
 
+        result_ctx["profitability"] = self._build_fundamental_block(
+            profitability_status,
+            tushare_profitability_payload,
+            tushare_bundle_chain,
+            profitability_errors,
+        )
         result_ctx["growth"] = self._build_fundamental_block(
             growth_status,
             growth_payload,
-            bundle_chain,
+            combined_bundle_chain,
             growth_errors,
         )
         result_ctx["earnings"] = self._build_fundamental_block(
             earnings_status,
             earnings_payload,
-            bundle_chain,
+            combined_bundle_chain,
             earnings_errors,
         )
         result_ctx["institution"] = self._build_fundamental_block(
             institution_status,
             institution_payload,
-            bundle_chain,
+            combined_bundle_chain,
             institution_errors,
         )
 
@@ -2231,6 +2459,14 @@ class DataFetcherManager:
             )
             _consume_budget(int((time.time() - capital_flow_start) * 1000))
 
+            boards_budget = min(fetch_timeout, remaining_seconds)
+            boards_start = time.time()
+            result_ctx["boards"] = self.get_board_context(
+                stock_code,
+                budget_seconds=boards_budget,
+            )
+            _consume_budget(int((time.time() - boards_start) * 1000))
+
             dragon_tiger_budget = min(fetch_timeout, remaining_seconds)
             dragon_tiger_start = time.time()
             result_ctx["dragon_tiger"] = self.get_dragon_tiger_context(
@@ -2239,29 +2475,36 @@ class DataFetcherManager:
             )
             _consume_budget(int((time.time() - dragon_tiger_start) * 1000))
 
-            result_ctx["boards"] = self.get_board_context(
-                stock_code,
-                budget_seconds=min(fetch_timeout, remaining_seconds),
+        if not result_ctx.get("chip"):
+            result_ctx["chip"] = self._build_fundamental_block(
+                "not_supported",
+                {},
+                [{"provider": "fundamental_pipeline", "result": "not_supported", "duration_ms": 0}],
+                [],
             )
 
         block_statuses = {
             "valuation": result_ctx["valuation"].get("status", "not_supported"),
+            "profitability": result_ctx["profitability"].get("status", "not_supported"),
             "growth": result_ctx["growth"].get("status", "not_supported"),
             "earnings": result_ctx["earnings"].get("status", "not_supported"),
             "institution": result_ctx["institution"].get("status", "not_supported"),
             "capital_flow": result_ctx["capital_flow"].get("status", "not_supported"),
             "dragon_tiger": result_ctx["dragon_tiger"].get("status", "not_supported"),
             "boards": result_ctx["boards"].get("status", "not_supported"),
+            "chip": result_ctx["chip"].get("status", "not_supported"),
         }
         result_ctx["coverage"] = block_statuses
         for block in (
             "valuation",
+            "profitability",
             "growth",
             "earnings",
             "institution",
             "capital_flow",
             "dragon_tiger",
             "boards",
+            "chip",
         ):
             result_ctx["errors"].extend(result_ctx[block].get("errors", []))
             result_ctx["source_chain"].extend(result_ctx[block].get("source_chain", []))
@@ -2288,6 +2531,120 @@ class DataFetcherManager:
             self._prune_fundamental_cache(cache_ttl, cache_max_entries)
         return result_ctx
 
+    @staticmethod
+    def _capital_flow_direction(value: Any) -> str:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return "missing"
+        if numeric > 0:
+            return "inflow"
+        if numeric < 0:
+            return "outflow"
+        return "flat"
+
+    @classmethod
+    def _classify_capital_flow_signal(
+        cls,
+        ths_row: Dict[str, Any],
+        dc_row: Dict[str, Any],
+    ) -> Tuple[str, Optional[str]]:
+        ths_dir = cls._capital_flow_direction(ths_row.get("net_amount"))
+        dc_dir = cls._capital_flow_direction(dc_row.get("net_amount"))
+        available = [value for value in (ths_dir, dc_dir) if value != "missing"]
+        if not available:
+            return "missing", "THS/DC moneyflow unavailable"
+        if ths_dir == dc_dir == "inflow":
+            return "inflow_confirmed", None
+        if ths_dir == dc_dir == "outflow":
+            return "outflow_confirmed", None
+        if "inflow" in available and "outflow" in available:
+            return "mixed_signal", f"THS={ths_dir}, DC={dc_dir}"
+        if available[0] in {"inflow", "outflow", "flat"} and len(available) == 1:
+            return f"{available[0]}_single_source", "only one Tushare moneyflow source available"
+        return "neutral", f"THS={ths_dir}, DC={dc_dir}"
+
+    def _build_tushare_capital_flow_payload(self, stock_code: str) -> Dict[str, Any]:
+        fetcher = self._get_tushare_fetcher()
+        if fetcher is None:
+            return {
+                "status": "not_supported",
+                "stock_flow": {},
+                "sector_rankings": {"top": [], "bottom": []},
+                "source_chain": [{"provider": "tushare.moneyflow", "result": "not_supported", "duration_ms": 0}],
+                "errors": ["tushare fetcher unavailable"],
+            }
+        required_methods = ("get_trade_time", "get_stock_moneyflow_ths", "get_stock_moneyflow_dc")
+        if not all(hasattr(fetcher, method) for method in required_methods):
+            return {
+                "status": "not_supported",
+                "stock_flow": {},
+                "sector_rankings": {"top": [], "bottom": []},
+                "source_chain": [{"provider": "tushare.moneyflow", "result": "not_supported", "duration_ms": 0}],
+                "errors": ["tushare moneyflow methods unavailable"],
+            }
+
+        trade_date = fetcher.get_trade_time(early_time="00:00", late_time="15:30")
+        if not trade_date:
+            return {
+                "status": "partial",
+                "stock_flow": {},
+                "sector_rankings": {"top": [], "bottom": []},
+                "source_chain": [{"provider": "tushare.moneyflow", "result": "partial", "duration_ms": 0}],
+                "errors": ["trade date unavailable"],
+            }
+
+        source_chain: List[Dict[str, Any]] = []
+        errors: List[str] = []
+        ths_row: Dict[str, Any] = {}
+        dc_row: Dict[str, Any] = {}
+
+        for provider, method_name in (
+            ("tushare.moneyflow_ths", "get_stock_moneyflow_ths"),
+            ("tushare.moneyflow_dc", "get_stock_moneyflow_dc"),
+        ):
+            try:
+                payload = getattr(fetcher, method_name)(trade_date, ts_code=stock_code)
+                status = str(payload.get("status", "partial")) if isinstance(payload, dict) else "failed"
+                source_chain.append({"provider": provider, "result": status, "duration_ms": 0})
+                if isinstance(payload, dict):
+                    for reason in payload.get("degraded_reasons", []) or []:
+                        errors.append(f"{provider}:{reason}")
+                    row = payload.get("rows", [None])[0] if payload.get("rows") else None
+                    if isinstance(row, dict):
+                        if method_name.endswith("_ths"):
+                            ths_row = row
+                        else:
+                            dc_row = row
+            except Exception as exc:
+                errors.append(f"{provider}:{type(exc).__name__}:{exc}")
+                source_chain.append({"provider": provider, "result": "failed", "duration_ms": 0})
+
+        signal, mixed_reason = self._classify_capital_flow_signal(ths_row, dc_row)
+        primary_row = ths_row if ths_row else dc_row
+        stock_flow = {
+            "main_net_inflow": primary_row.get("net_amount"),
+            "net_d5_amount": ths_row.get("net_d5_amount"),
+            "net_amount_rate": dc_row.get("net_amount_rate"),
+            "large_order_net_inflow": primary_row.get("buy_lg_amount"),
+            "large_order_net_inflow_rate": primary_row.get("buy_lg_amount_rate"),
+            "trade_date": primary_row.get("trade_date"),
+            "provider": primary_row.get("data_source"),
+        } if primary_row else {}
+
+        has_flow = self._has_meaningful_payload(stock_flow) or self._has_meaningful_payload(ths_row) or self._has_meaningful_payload(dc_row)
+        return {
+            "status": "ok" if has_flow else "not_supported",
+            "stock_flow": stock_flow,
+            "sector_rankings": {"top": [], "bottom": []},
+            "ths": ths_row,
+            "dc": dc_row,
+            "signal": signal,
+            "mixed_reason": mixed_reason,
+            "source_chain": source_chain,
+            "errors": errors,
+        }
+
     def get_capital_flow_context(self, stock_code: str, budget_seconds: Optional[float] = None) -> Dict[str, Any]:
         """资金流向块（fail-open）。"""
         from src.config import get_config
@@ -2310,11 +2667,57 @@ class DataFetcherManager:
                 [{"provider": "fundamental_pipeline", "result": "failed", "duration_ms": 0}],
                 ["fundamental stage timeout"],
             )
-        payload, err, cost_ms = self._run_with_retry(
-            lambda: self._fundamental_adapter.get_capital_flow(stock_code),
-            timeout,
-            "capital_flow",
-        )
+
+        payload: Optional[Dict[str, Any]] = None
+        err: Optional[str] = None
+        cost_ms = 0
+        tushare_fetcher = self._get_tushare_fetcher()
+        if tushare_fetcher is not None:
+            payload_candidate, err, cost_ms = self._run_with_retry(
+                lambda: self._build_tushare_capital_flow_payload(stock_code),
+                timeout,
+                "tushare_capital_flow",
+            )
+            if isinstance(payload_candidate, dict) and self._has_meaningful_payload(
+                payload_candidate.get("stock_flow")
+            ):
+                payload = payload_candidate
+
+        if payload is None:
+            remaining_timeout = max(0.0, timeout - cost_ms / 1000.0)
+            payload_candidate, fallback_err, fallback_ms = self._run_with_retry(
+                lambda: self._fundamental_adapter.get_capital_flow(stock_code),
+                remaining_timeout if remaining_timeout > 0 else timeout,
+                "capital_flow",
+            )
+            cost_ms += fallback_ms
+            if fallback_err:
+                err = fallback_err if not err else f"{err}; {fallback_err}"
+            payload = payload_candidate if isinstance(payload_candidate, dict) else None
+
+        if (
+            isinstance(payload, dict)
+            and payload.get("ths")
+            and not payload.get("sector_rankings", {}).get("top")
+            and timeout - cost_ms / 1000.0 > 0
+        ):
+            fallback_payload, fallback_err, fallback_ms = self._run_with_retry(
+                lambda: self._fundamental_adapter.get_capital_flow(stock_code),
+                max(0.0, timeout - cost_ms / 1000.0),
+                "capital_flow_sector_fallback",
+            )
+            cost_ms += fallback_ms
+            if isinstance(fallback_payload, dict):
+                fallback_rankings = fallback_payload.get("sector_rankings")
+                if isinstance(fallback_rankings, dict):
+                    payload["sector_rankings"] = fallback_rankings
+                payload["source_chain"] = list(payload.get("source_chain", [])) + list(
+                    fallback_payload.get("source_chain", [])
+                )
+                payload["errors"] = list(payload.get("errors", [])) + list(fallback_payload.get("errors", []))
+            if fallback_err:
+                err = fallback_err if not err else f"{err}; {fallback_err}"
+
         if not isinstance(payload, dict):
             return self._build_fundamental_block(
                 "failed",
@@ -2342,6 +2745,10 @@ class DataFetcherManager:
             {
                 "stock_flow": payload.get("stock_flow", {}),
                 "sector_rankings": payload.get("sector_rankings", {}),
+                "ths": payload.get("ths", {}),
+                "dc": payload.get("dc", {}),
+                "signal": payload.get("signal"),
+                "mixed_reason": payload.get("mixed_reason"),
             },
             self._normalize_source_chain(
                 payload.get("source_chain", []),
@@ -2402,6 +2809,40 @@ class DataFetcherManager:
             list(payload.get("errors", [])) + ([err] if err else []),
         )
 
+    @staticmethod
+    def _classify_board_relative_strength(
+        belong_boards: List[Dict[str, Any]],
+        top_boards: List[Dict[str, Any]],
+        bottom_boards: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        belong_names = {
+            str(item.get("name", "")).strip()
+            for item in belong_boards
+            if isinstance(item, dict) and str(item.get("name", "")).strip()
+        }
+        if not belong_names:
+            return {"status": "isolated", "matched_board": None, "reason": "no belong_boards"}
+
+        def _match(candidates: List[Dict[str, Any]]) -> Optional[str]:
+            for candidate in candidates:
+                if not isinstance(candidate, dict):
+                    continue
+                candidate_name = str(candidate.get("name", "")).strip()
+                if not candidate_name:
+                    continue
+                for belong_name in belong_names:
+                    if belong_name == candidate_name or belong_name in candidate_name or candidate_name in belong_name:
+                        return candidate_name
+            return None
+
+        top_match = _match(top_boards)
+        if top_match:
+            return {"status": "aligned", "matched_board": top_match, "reason": "belong board in top rankings"}
+        bottom_match = _match(bottom_boards)
+        if bottom_match:
+            return {"status": "lagging", "matched_board": bottom_match, "reason": "belong board in bottom rankings"}
+        return {"status": "isolated", "matched_board": None, "reason": "belong boards not in top/bottom rankings"}
+
     def get_board_context(self, stock_code: str, budget_seconds: Optional[float] = None) -> Dict[str, Any]:
         """板块榜单块（fail-open）。"""
         from src.config import get_config
@@ -2429,11 +2870,34 @@ class DataFetcherManager:
             return self._get_sector_rankings_with_meta(5)
 
         rankings, err, cost_ms = self._run_with_retry(task, timeout, "boards")
+        def _build_belong_boards_only(reason: str, chain: Optional[List[Dict[str, Any]]] = None) -> Optional[Dict[str, Any]]:
+            belong_boards = self.get_belong_boards(stock_code)
+            if not belong_boards:
+                return None
+            relative_strength = self._classify_board_relative_strength(belong_boards, [], [])
+            return self._build_fundamental_block(
+                "partial",
+                {
+                    "top": [],
+                    "bottom": [],
+                    "belong_boards": belong_boards,
+                    "relative_strength": relative_strength,
+                },
+                chain if chain else [{"provider": "sector_rankings", "result": "partial", "duration_ms": cost_ms}],
+                [reason],
+            )
+
         if isinstance(rankings, tuple) and len(rankings) == 4:
             top, bottom, chain, chain_error = rankings
             if chain_error and not err:
                 err = chain_error
             if not top and not bottom:
+                belong_only = _build_belong_boards_only(
+                    err or "boards rankings empty from all sources",
+                    chain if chain else [{"provider": "sector_rankings", "result": "empty", "duration_ms": cost_ms}],
+                )
+                if belong_only is not None:
+                    return belong_only
                 return self._build_fundamental_block(
                     "failed",
                     {},
@@ -2441,9 +2905,20 @@ class DataFetcherManager:
                     [err or "boards empty from all sources"],
                 )
             board_status = "ok" if top and bottom else "partial"
+            belong_boards = self.get_belong_boards(stock_code)
+            relative_strength = self._classify_board_relative_strength(
+                belong_boards,
+                top or [],
+                bottom or [],
+            )
             return self._build_fundamental_block(
                 board_status,
-                {"top": top or [], "bottom": bottom or []},
+                {
+                    "top": top or [],
+                    "bottom": bottom or [],
+                    "belong_boards": belong_boards,
+                    "relative_strength": relative_strength,
+                },
                 chain if chain else self._normalize_source_chain(
                     ["sector_rankings"],
                     "boards",
@@ -2452,6 +2927,10 @@ class DataFetcherManager:
                 ),
                 [err] if err else [],
             )
+
+        belong_only = _build_belong_boards_only(err or "boards failed")
+        if belong_only is not None:
+            return belong_only
 
         return self._build_fundamental_block(
             "failed",

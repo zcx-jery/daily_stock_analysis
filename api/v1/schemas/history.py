@@ -154,8 +154,14 @@ class ReportDetails(BaseModel):
     context_snapshot: Optional[Any] = Field(None, description="分析时上下文快照（JSON）")
     financial_report: Optional[Any] = Field(None, description="结构化财报摘要（来自 fundamental_context）")
     dividend_metrics: Optional[Any] = Field(None, description="结构化分红指标（含 TTM 口径）")
+    fundamental_metrics: Optional[Any] = Field(None, description="结构化估值、盈利和成长指标摘要")
     belong_boards: Optional[Any] = Field(None, description="关联板块列表")
     sector_rankings: Optional[Any] = Field(None, description="板块涨跌榜（结构 {top, bottom}）")
+    board_linkage: Optional[Any] = Field(None, description="个股所属板块相对强弱摘要")
+    capital_flow_metrics: Optional[Any] = Field(None, description="结构化资金流指标（THS/DC 与冲突信号）")
+    chip_metrics: Optional[Any] = Field(None, description="结构化筹码指标（胜率、成本区间、筹码信号）")
+    data_quality: Optional[Any] = Field(None, description="增强数据覆盖、来源、错误和降级状态")
+    tushare_enhancement: Optional[Any] = Field(None, description="Tushare 增强命中情况")
 
 
 class AnalysisReport(BaseModel):

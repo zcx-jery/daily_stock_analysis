@@ -81,6 +81,75 @@ export interface SectorRankings {
   bottom?: SectorRankingItem[];
 }
 
+export interface SourceChainItem {
+  provider: string;
+  result?: string;
+  durationMs?: number;
+  error?: string;
+}
+
+export interface CapitalFlowMetrics {
+  status?: string;
+  signal?: string;
+  mixedReason?: string;
+  tradeDate?: string;
+  stockFlow?: Record<string, unknown>;
+  ths?: Record<string, unknown>;
+  dc?: Record<string, unknown>;
+  sourceChain?: SourceChainItem[];
+  errors?: string[];
+}
+
+export interface ChipMetrics {
+  status?: string;
+  chipStatus?: string;
+  chipSignal?: string;
+  source?: string;
+  asOf?: string;
+  data?: Record<string, unknown>;
+  sourceChain?: SourceChainItem[];
+  errors?: string[];
+}
+
+export interface DataQualityBlock {
+  status?: string;
+  sourceChain?: SourceChainItem[];
+  errors?: string[];
+}
+
+export interface DataQuality {
+  status?: string;
+  market?: string;
+  enhancedByTushare?: boolean;
+  coverage?: Record<string, string>;
+  blocks?: Record<string, DataQualityBlock>;
+  sourceChain?: SourceChainItem[];
+  errors?: string[];
+  elapsedMs?: number;
+}
+
+export interface TushareEnhancement {
+  enabled?: boolean;
+  blocks?: string[];
+  sourceChain?: SourceChainItem[];
+  coverage?: Record<string, string>;
+}
+
+export interface FundamentalMetrics {
+  valuation?: Record<string, unknown>;
+  profitability?: Record<string, unknown>;
+  growth?: Record<string, unknown>;
+  statuses?: Record<string, string>;
+  sourceChain?: SourceChainItem[];
+  errors?: string[];
+}
+
+export interface BoardLinkage {
+  status?: string;
+  matchedBoard?: string | null;
+  reason?: string;
+}
+
 /** Details section */
 export interface ReportDetails {
   newsContent?: string;
@@ -88,8 +157,14 @@ export interface ReportDetails {
   contextSnapshot?: Record<string, unknown>;
   financialReport?: Record<string, unknown>;
   dividendMetrics?: Record<string, unknown>;
+  fundamentalMetrics?: FundamentalMetrics;
   belongBoards?: RelatedBoard[];
   sectorRankings?: SectorRankings;
+  boardLinkage?: BoardLinkage;
+  capitalFlowMetrics?: CapitalFlowMetrics;
+  chipMetrics?: ChipMetrics;
+  dataQuality?: DataQuality;
+  tushareEnhancement?: TushareEnhancement;
 }
 
 /** Full analysis report */

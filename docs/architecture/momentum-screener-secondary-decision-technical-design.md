@@ -98,10 +98,10 @@
 
 - 回填窗口：`evaluation_t1_bar = bars[0]`，`evaluation_t2_bar = bars[1]`，始终相对 T 日固定，不随买点触发日漂移。
 - 辅助层：`weak_continuity_pass = (T+1 close > T+1 open) AND (T+2 high > T+1 close)`。
-- 主验收层：`settlement_rule = v13_tradable_success_v1`，`settlement_pass` 等同于 `tradable_success_pass`。
+- 主验收层：`settlement_rule = v13_dual_track_tradable_success_v1`，`settlement_pass` 等同于 `tradable_success_pass`。
 - Buyability：`T+1` 不能是一字板，代码使用 `open/high/low/close` 四价相等判断 `t1_one_word_limit`。
-- Gap_Filter：`T+1 open >= T0 close * 0.99`。
-- Confirmation：`T+1 close > T+1 open`。
+- Track A / Momentum：`T+1 gap >= -1%` 且 `T+1 close > T+1 open`。
+- Track B / Recovery：`T+1 gap < -1%`、`T+1 close > T+1 open` 且 `T+1 close > T0 close`。
 - Profit_Buffer：`(T+2 high + T+2 close) / 2 >= T1 close * 1.02`，即用滑点调整退出价确认至少 `2%` 可成交退出缓冲。
 - 汇总字段：`weak_continuity_pass_rate_pct` 单独展示弱延续率，`tradable_success_rate_pct` 是 V1.3 主验收胜率；`positive_t2_rate_pct` 与 `settlement_pass_rate_pct` 在新结果中保持兼容映射到可交易合格率。
 
@@ -256,6 +256,17 @@
 - 若默认组合内已有跨主题但明显更稳的执行锚点，可在不重写正式排序的前提下，把主仓职责回摆给更适合作为组合锚点的标的
 - 观察仓不只承担“同主题补位”职责；若存在带 `V1.3` 主线标签、且正式优先级差距不大的候选，可允许其替代普通同主题观察位，用于补足主线确认
 
+#### 6.3.0 Slot Sovereignty 与主仓锚点
+
+Stage 13 起，`momentum_secondary_decision_service.py` 在组合收口前会先按 `rank_score` 标记 `_raw_momentum_rank`，Raw Momentum Top3 以该口径拥有槽位主权，避免用页面展示 `rank` 误判 Raw 基准。
+
+- `_build_decision_candidate_pool` 必须把 Raw Momentum Top3 合并回二次决策候选池，即使其 `official_score` 未进入默认决策池 Top12。
+- `_apply_raw_alpha_shield` 只允许 `Perfect Profile` 挑战者替换 Raw Leader：挑战者不得触发 R1-R5 任一风险，且 `Composite_Score >= Raw Composite_Score * 1.25`。
+- Raw Top3 若仅触发 R2/R4/R5 软风险，应保留为 `RETAINED_LEADER_DIVERGENCE`；只有 R1/R3 等硬风险参与的有效 veto 才能解除主权。
+- Raw Top3 若触发 `R1 + R5`，但没有 R2 封板风险、没有 R3 资金背离、没有 R4 主线不足，且 `_theme_pool_count / _v13_mainline_pool_count >= 3`，视为 `mainline_position_churn`，保留为强主线高位换手样本；该豁免不适用于普通候选或带资金背离的样本。
+- `_apply_stable_main_slot` 不再强制 Raw #1 进入主仓，而是在已选组合内按 `Mainline_Intensity`、主线池计数、Risk Stack 和主仓优先级选择最稳定的主仓锚点。
+- `Strong_Go` 需要同时满足 `Pool_Success_Rate > 65%` 与 `Leader_Board_Height > 5`；否则动作从 `strong_go` 降为 `normal_go` 并写入 `strong_go_guard`。
+
 #### 6.3.1 Risk Stack 收口合同
 
 V1.3 第三阶段在 `src/services/momentum_secondary_decision_service.py` 中新增 `Risk_Stack_Check`，用于把“多个弱信号叠加”从解释层提升为官方 Top3 硬阻断。它不替代单项评分，而是模拟交易员的风险堆叠判断：允许一个瑕疵，但不允许多个瑕疵同时存在。
@@ -271,10 +282,11 @@ V1.3 第三阶段在 `src/services/momentum_secondary_decision_service.py` 中�
 Veto Policy：
 
 ```text
-risk_stack_count >= 3 OR R5 triggered -> hard_blockers += risk_stack_veto
+risk_stack_points = triggered(R1, R2, R3, R4) * 1 + triggered(R5) * 2
+risk_stack_points >= 3 -> hard_blockers += risk_stack_veto
 ```
 
-命中 `risk_stack_veto` 的股票不得进入 `main / secondary / watch` 官方组合槽位；若全部候选均被 Risk Stack 否决，官方组合允许为空，不再回退选入高风险标的。输出需在 `risk_stack / risk_stack_count / risk_stack_veto / mandatory_veto / mandatory_veto_keys` 中保留诊断证据，方便回测和页面复盘。R5 属于 `MANDATORY_VETO`，即使主线强度较高也不能进入官方 Top3。
+命中 `risk_stack_veto` 的股票不得进入 `main / secondary / watch` 官方组合槽位；若全部候选均被 Risk Stack 否决，官方组合允许为空，不再回退选入高风险标的。输出需在 `risk_stack / risk_stack_count / risk_stack_veto / mandatory_veto / mandatory_veto_keys` 中保留诊断证据，方便回测和页面复盘。R5 从 Stage 11 起属于 `Conditional Risk`：单独触发只贡献 2 点，不再一票否决；只有叠加其他风险达到 3 点时才形成 veto，且 Raw Top3 还需经过 Slot Sovereignty 豁免检查。
 
 主线确认统一口径：二次决策槽位硬阻断中的 `weak_mainline` 必须同时参考 V1.3 `mainline_intensity_count`。当同主题 / 同主线候选计数 `>= 2`，或存在明确 `v13_theme_id / v13_mainline_score >= 70` 时，不能再仅因旧 `theme_score_map` 偏低而判定“主线强度不足”，避免真实板块共振被旧主题分误杀。
 
@@ -340,10 +352,27 @@ risk_stack_count >= 3 OR R5 triggered -> hard_blockers += risk_stack_veto
 
 评分建议：
 
-- 首封时间：`first_time <= 10:00:00` 记高分，`10:00:00 ~ 11:00:00` 记中高分，`11:00:00 ~ 14:00:00` 记中分，`14:00:00` 后只记低分
+- 首封时间：普通标的 `first_time <= 10:30:00` 记高分，`10:30:00 ~ 11:30:00` 开始明显衰减；主线优先权标的按 `6.4.2` 的宽限窗口处理，`14:00:00` 后仍只记低分
 - 封单强度：`seal_amount_ratio` 越高，封板强度越高，但必须设置上限，避免单日异常封单把整体判断拉爆
 - 开板稳定性：`open_times == 0` 加分，`open_times >= 3` 明显扣分
 - 最终 `sealing_strength_score` 统一压到 `0 ~ 100`
+
+#### 6.4.2 v1.3_Entry_Diversity 主线买点兼容
+
+V1.3 第九阶段将买点判定从“越早封越好”的单线模型升级为“秒板确认 + 主线换手确认”双路径：
+
+- 普通标的仍以早封为主，`first_time <= 10:30:00` 视为封板时间合格，之后开始明显衰减。
+- 命中 `Mainline_Intensity > 1.2x` 的主线标的享有 `Mainline Privilege`：封板时间评分衰减起点后移到 `11:00`，`11:30:00` 前不做重罚。
+- 若主线标的晚封但 `turnover_rate_f` 处于 `5% ~ 8%`，视为 `healthy_rotation`，代表充分换手后的封板确认；此类信号不会自动把 `waiting` 买点降为 `unclear`。
+- 若晚封同时伴随 `first_time > 14:00:00`、炸板、极低封单或 R5 量能竭尽，仍按弱封 / 风险堆叠处理，不享受主线宽限。
+
+输出字段：
+
+- `v13_sealing_strength.is_mainline_privileged`
+- `v13_sealing_strength.turnover_rate_f_at_seal_proxy`
+- `v13_sealing_strength.churn_to_seal_ratio`
+- `v13_sealing_strength.churn_to_seal_health`
+- `v13_sealing_strength.execution_bias = healthy_rotation`
 
 收口规则：
 
@@ -796,7 +825,7 @@ risk_stack_count >= 3 OR R5 triggered -> hard_blockers += risk_stack_veto
 官方回测报告必须同时展示 `弱延续率` 与 `可交易合格率`，但二者职责不同。
 
 - `弱延续率`：用于判断系统是否捕捉到短线方向偏置，规则为 `T+1 close > T+1 open` 且 `T+2 high > T+1 close`。
-- `可交易合格率`：用于判断是否真的具备可执行获利窗口，规则为 `T+1 非一字板`、`T+1 open >= 0.99 * T0 close`、`T+1 close > T+1 open`、`(T+2 high + T+2 close) / 2 >= 1.02 * T1 close`。
+- `可交易合格率`：用于判断是否真的具备可执行获利窗口，规则为 `T+1 非一字板`、`Track A 动量延续或 Track B 低开修复至少一项通过`、`(T+2 high + T+2 close) / 2 >= 1.02 * T1 close`。
 - 报告主结论、Benchmark、Regime、每日诊断和明细表的主胜率使用 `tradable_success_rate_pct`；弱延续只作为旁路参考，不能覆盖主标签。
 
 ### 9.2 Performance Auditing
@@ -813,6 +842,7 @@ Stage 2 起，官方回测必须同时输出 `strategy_alpha_report`，用于证
 - `Selection Efficiency = Group A 可交易合格率 - Group B 可交易合格率`。
 - 如果 `Group A < Group C`，必须输出 `LOGIC FAILURE: Screener is destroying Pool Alpha`。
 - 如果 `Group A < Group B` 但仍高于全池，优先进入参数复核，不直接判定链路失败。
+- `ticker_swap_log.dropped_by_v13` 必须输出 `primary_rejection_reason / primary_rejection_label / primary_rejection_detail`，用于追踪 Raw 选中但 Official 剔除的主因，重点区分 `R2_Sealing_Late`、`Buy_Point_Unclear`、`R5_Exhaustion_Veto` 与普通槽位竞争。
 
 实现约束：
 

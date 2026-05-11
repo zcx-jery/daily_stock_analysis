@@ -10,12 +10,14 @@
 
 - [首页个股分析 Tushare 6000 积分增强产品文档](home-stock-analysis-tushare-enhancement-product-design.md)
 - [首页个股分析 Tushare 6000 积分增强 SPEC](home-stock-analysis-tushare-enhancement-spec.md)
+- [首页个股分析 Tushare 6000 积分增强技术设计](home-stock-analysis-tushare-enhancement-technical-design.md)
 
 用途：
 
 - 记录首页个股分析在 Tushare 6000 积分能力下的产品增强范围
 - 记录基本面、资金流、板块联动、筹码结构和透明度增强的工程落点
 - 记录第一阶段“少改前端，先增强 LLM 上下文和追踪快照”的实施边界
+- 记录 Provider、聚合层、Pipeline、Prompt、API、前端和测试的技术落地方案
 
 ### 1. 产品方案与版本规划
 

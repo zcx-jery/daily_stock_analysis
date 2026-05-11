@@ -357,6 +357,14 @@
 
 ### 3.9 官方入口与 Aggressive 补充观察层
 
+- Stage 13 起，默认组合执行 `Slot Sovereignty` / `槽位主权制`：Raw Momentum Top3 以 `rank_score` 口径拥有槽位主权，而不是页面展示 `rank` 口径。
+- Raw Momentum Top3 只有在命中 R1/R3 硬风险并形成有效 Risk Stack veto 时才自动失去主权；仅命中 R2/R4/R5 软分歧时应保留为弱转强候选。
+- 对 Raw Momentum Top3 的 `R1 + R5` 组合采用细分口径：若仅触发高位风险与极端换手，且没有 R2 封板风险、没有 R3 资金背离、没有 R4 主线不足，同时主线池计数 `>= 3`，则标记为 `mainline_position_churn` 并继续保留；若叠加资金背离、弱封或无主线，仍按硬风险剥离。
+- Secondary / Waiting 挑战者替换 Raw Leader 必须同时满足两个条件：`Composite_Score >= Raw Composite_Score * 1.25`，且画像为 `Perfect Profile`。
+- `Perfect Profile` 定义为未触发 R1-R5 任一风险因子，即 Risk Stack `risk_points = 0` 且 `triggered_keys` 为空；只要存在软风险，就不能凭“买点更干净”挤掉 Raw Top3。
+- 主仓不再强制归属于 Raw #1；主仓锚点由 `Mainline_Intensity` 更高且 `Risk_Stack` 更低的候选承担，进攻弹性由次仓 / 观察仓承接。
+- `ticker_swap_log` 必须能够解释 Raw Top3 是被硬风险剔除、被 25% 完美挑战者替换，还是被主权保护留在 Official Top3。
+
 - `Top30` 只是官方页面展示、导出与回测对齐基线；二次决策本身始终基于 `完整排序集`，而不是基于页面当前展示数量继续挑票。
 - `Standard` 负责官方 `今日出手级别`、官方 `主仓 / 次仓 / 观察仓`、官方行动清单与官方回测。
 - `Aggressive` 默认放入折叠区，只有在补出 `不在 Standard 官方 Top3 内的新票`，且该票同时满足 `高进攻度 + 买点相对清晰 + 不推翻 Standard 总闸门` 时，页面才提示可展开查看。
@@ -452,15 +460,15 @@
 
 ### 6.1 Evaluation Labeling Logic
 
-V1.3 第一阶段后，回测验收采用双层标签，主标签必须与 `src/services/momentum_backtest_service.py` 中的 `v13_tradable_success_v1` 完全一致。
+V1.3 第十三阶段后，回测验收采用双层标签与双轨制主标签，主标签必须与 `src/services/momentum_backtest_service.py` 中的 `v13_dual_track_tradable_success_v1` 完全一致。
 
 - `Weak Continuity` / `弱延续` 降级为辅助参考：`T+1 close > T+1 open` 且 `T+2 high > T+1 close`。
 - `Tradable Profit Capture` / `可交易获利捕获` 是主标签，输出为 `tradable_success_pass = true` 时才计入 V1.3 主胜率。
 - Buyability：`T+1` 不能是一字板，即不能出现 `open == high == low == close`。
-- Gap_Filter：`T+1 open >= 0.99 * T0 close`，用于过滤严重低开导致的不可控风险。
-- Confirmation：`T+1 close > T+1 open`，用于确认次日实际收阳。
+- Track A / Momentum：`T+1 gap >= -1%` 且 `T+1 close > T+1 open`，用于确认顺势高开或轻微低开后的动量延续。
+- Track B / Recovery：当 `T+1 gap < -1%` 时，若 `T+1 close > T+1 open` 且 `T+1 close > T0 close`，视为低开修复合格，用于捕捉弱转强日内收回。
 - Profit_Buffer：`(T+2 high + T+2 close) / 2 >= 1.02 * T1 close`，用于确认至少 `2%` 的滑点调整可执行退出缓冲。
-- 主标签布尔表达式：`tradable_success_pass = buyability_pass AND gap_filter_pass AND confirmation_pass AND profit_buffer_pass`。
+- 主标签布尔表达式：`tradable_success_pass = buyability_pass AND (track_a_momentum_pass OR track_b_recovery_pass) AND profit_buffer_pass`。
 - 兼容字段：`positive_t2_rate_pct` 与 `settlement_pass_rate_pct` 在 V1.3 新结果中等同于 `tradable_success_rate_pct`；旧的弱延续结果只能作为历史兼容或辅助观察。
 
 - 用户在一页内就能回答 5 个问题：
@@ -501,7 +509,7 @@ V1.3 第一阶段后，回测验收采用双层标签，主标签必须与 `src/
 - 当真实板块强度 Provider 不可用时，强势筛选主链路仍应返回结果，并明确显示主线识别降级。
 - V1.3 盘中模块必须明确标注 `快照辅助` 与置信度，不能输出分钟级承接已确认或建议买入类表达。
 - V1.3 推荐卡片和落选说明必须能解释封板质量对买点清晰度的影响，例如早封强封、尾盘弱封、多次开板和一字难参与，但不得把封板强度等同于可买性。
-- V1.3 起，回测主胜率统一为 `可交易合格率`：必须同时满足 `T+1 非一字可买`、`T+1 open >= 0.99 * T0 close`、`T+1 close > T+1 open`、`(T+2 high + T+2 close) / 2 >= 1.02 * T1 close`。
+- V1.3 Stage 13 起，回测主胜率统一为 `双轨制可交易合格率`：必须同时满足 `T+1 非一字可买`、`Track A 动量延续或 Track B 低开修复至少一项通过`、`(T+2 high + T+2 close) / 2 >= 1.02 * T1 close`。
 - `弱延续率`、`T+2 利润窗口`、`T+2 最大回撤`、`买点触发率` 保留为方向、执行质量与风险指标，不再单独作为主胜率定义。
 - 用户层的核心北极星之一是：
   - `用户在开盘后 60 分钟内做出明确“买 / 不买”决定的天数明显上升`

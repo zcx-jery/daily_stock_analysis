@@ -119,6 +119,10 @@ def initialize_momentum_backtest_service(
     """Initialize the shared backtest worker so queued/running runs resume at startup."""
     service = getattr(app.state, "momentum_backtest_service", None)
     if service is None:
+        if not bool(getattr(app.state, "start_momentum_backtest_worker", False)):
+            service = MomentumBacktestService(start_worker=False)
+            app.state.momentum_backtest_service = service
+            return service
         try:
             screener_service = None
             if use_shared_screener_service:

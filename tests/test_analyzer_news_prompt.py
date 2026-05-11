@@ -143,6 +143,68 @@ class AnalyzerNewsPromptTestCase(unittest.TestCase):
         self.assertNotIn("超过5%必须标注\"严禁追高\"", prompt)
         self.assertNotIn("MA5>MA10>MA20为多头", prompt)
 
+    def test_format_prompt_adds_enhanced_evidence_decision_contract(self) -> None:
+        with patch.object(GeminiAnalyzer, "_init_litellm", return_value=None):
+            analyzer = GeminiAnalyzer()
+
+        context = {
+            "code": "600519",
+            "stock_name": "贵州茅台",
+            "date": "2026-05-08",
+            "today": {"close": 1688.88},
+            "fundamental_context": {
+                "coverage": {
+                    "capital_flow": "ok",
+                    "boards": "ok",
+                    "chip": "ok",
+                    "valuation": "ok",
+                    "profitability": "partial",
+                    "growth": "ok",
+                },
+                "capital_flow": {
+                    "data": {
+                        "signal": "mixed_signal",
+                        "mixed_reason": "THS outflow conflicts with DC inflow",
+                        "stock_flow": {"trade_date": "2026-05-07", "main_net_inflow": -120000000},
+                    }
+                },
+                "boards": {
+                    "data": {
+                        "belong_boards": [{"name": "白酒", "type": "行业"}],
+                        "relative_strength": {
+                            "status": "lagging",
+                            "matched_board": "白酒",
+                            "reason": "belong board in bottom rankings",
+                        },
+                    }
+                },
+                "chip": {
+                    "data": {
+                        "chip_signal": "overheated",
+                        "date": "2026-05-07",
+                        "profit_ratio": 0.93,
+                        "concentration_90": 0.12,
+                    }
+                },
+            },
+        }
+
+        prompt = analyzer._format_prompt(context, "贵州茅台", news_context=None)
+
+        self.assertIn("enhanced_evidence_contract", prompt)
+        self.assertIn("capital_flow.signal=mixed_signal", prompt)
+        self.assertIn("board_linkage.status=lagging", prompt)
+        self.assertIn("chip_signal=overheated", prompt)
+        self.assertIn("不得给出无条件追买", prompt)
+        self.assertIn("不得描述为板块带动的强突破", prompt)
+        self.assertIn("不得把短线强势包装成中线投资建议", prompt)
+        self.assertIn("dashboard.data_perspective.enhanced_evidence.short_term_weights", prompt)
+        self.assertIn("dashboard.data_perspective.enhanced_evidence.medium_term_weights", prompt)
+        self.assertIn("dashboard.battle_plan.timeframe_strategy", prompt)
+        self.assertIn("结论 -> 证据 -> 风险 -> 操作边界", prompt)
+        self.assertTrue(analyzer._requires_enhanced_evidence_integrity(context))
+        self.assertFalse(analyzer._requires_enhanced_evidence_integrity({"code": "600519", "today": {}}))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Iterable, List, Optional, Sequence
+from typing import Any, Callable, Iterable, List, Optional, Sequence, TypeVar
 
 from sqlalchemy import and_, delete, desc, func, select
 
@@ -16,6 +16,8 @@ from src.storage import (
     MomentumBacktestRun,
 )
 
+T = TypeVar("T")
+
 
 class MomentumBacktestRepository:
     """Database access layer for V1 momentum screener backtests."""
@@ -23,12 +25,31 @@ class MomentumBacktestRepository:
     def __init__(self, db_manager: Optional[DatabaseManager] = None) -> None:
         self.db = db_manager or DatabaseManager.get_instance()
 
-    def create_run(self, run: MomentumBacktestRun) -> MomentumBacktestRun:
+    def _run_write(self, operation_name: str, write_operation: Callable[[Any], T]) -> T:
+        """Run write-side backtest mutations through SQLite lock retry handling."""
+        run_write_transaction = getattr(self.db, "_run_write_transaction", None)
+        if callable(run_write_transaction):
+            return run_write_transaction(operation_name, write_operation)
+
         with self.db.get_session() as session:
+            try:
+                result = write_operation(session)
+                session.commit()
+                return result
+            except Exception:
+                session.rollback()
+                raise
+
+    def create_run(self, run: MomentumBacktestRun) -> MomentumBacktestRun:
+        def write(session) -> str:
             session.add(run)
-            session.commit()
-            session.refresh(run)
-            return run
+            return run.run_id
+
+        run_id = self._run_write("momentum_backtest.create_run", write)
+        created = self.get_run(run_id)
+        if created is None:
+            raise RuntimeError(f"Backtest run was not persisted: {run_id}")
+        return created
 
     def get_run(self, run_id: str) -> Optional[MomentumBacktestRun]:
         with self.db.get_session() as session:
@@ -161,7 +182,7 @@ class MomentumBacktestRepository:
             return count
 
     def update_run(self, run_id: str, **fields) -> Optional[MomentumBacktestRun]:
-        with self.db.get_session() as session:
+        def write(session) -> Optional[str]:
             run = session.execute(
                 select(MomentumBacktestRun)
                 .where(MomentumBacktestRun.run_id == run_id)
@@ -172,12 +193,13 @@ class MomentumBacktestRepository:
             for key, value in fields.items():
                 setattr(run, key, value)
             run.updated_at = datetime.now()
-            session.commit()
-            session.refresh(run)
-            return run
+            return run.run_id
+
+        updated_run_id = self._run_write("momentum_backtest.update_run", write)
+        return self.get_run(updated_run_id) if updated_run_id else None
 
     def delete_run(self, run_id: str) -> bool:
-        with self.db.get_session() as session:
+        def write(session) -> bool:
             run = session.execute(
                 select(MomentumBacktestRun)
                 .where(MomentumBacktestRun.run_id == run_id)
@@ -198,11 +220,12 @@ class MomentumBacktestRepository:
                 delete(MomentumBacktestDailySummary).where(MomentumBacktestDailySummary.run_id == run_id)
             )
             session.delete(run)
-            session.commit()
             return True
 
+        return self._run_write("momentum_backtest.delete_run", write)
+
     def replace_daily_summary(self, summary: MomentumBacktestDailySummary) -> None:
-        with self.db.get_session() as session:
+        def write(session) -> None:
             session.execute(
                 delete(MomentumBacktestDailySummary).where(
                     and_(
@@ -212,7 +235,8 @@ class MomentumBacktestRepository:
                 )
             )
             session.add(summary)
-            session.commit()
+
+        self._run_write("momentum_backtest.replace_daily_summary", write)
 
     def replace_candidate_records(
         self,
@@ -371,7 +395,7 @@ class MomentumBacktestRepository:
             return list(rows)
 
     def _replace_records(self, *, model, run_id: str, trade_date: date, records: list) -> int:
-        with self.db.get_session() as session:
+        def write(session) -> int:
             session.execute(
                 delete(model).where(
                     and_(
@@ -382,5 +406,6 @@ class MomentumBacktestRepository:
             )
             if records:
                 session.add_all(records)
-            session.commit()
             return len(records)
+
+        return self._run_write(f"momentum_backtest.replace_{model.__tablename__}", write)

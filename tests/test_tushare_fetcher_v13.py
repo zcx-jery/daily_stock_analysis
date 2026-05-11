@@ -160,6 +160,225 @@ class TestTushareFetcherV13Adapters(unittest.TestCase):
         self.assertEqual(row["member_count"], 477)
         self.assertEqual(row["list_date"], "2024-10-21")
 
+    def test_get_belong_board_uses_ths_member_and_index_name(self) -> None:
+        fetcher = self._make_fetcher()
+        fetcher._api.ths_member.return_value = pd.DataFrame(
+            {
+                "ts_code": ["885800.TI"],
+                "con_code": ["300750.SZ"],
+                "con_name": ["宁德时代"],
+                "weight": [None],
+                "in_date": ["20200101"],
+                "out_date": [None],
+                "is_new": ["Y"],
+            }
+        )
+        fetcher._api.ths_index.return_value = pd.DataFrame(
+            {
+                "ts_code": ["885800.TI"],
+                "name": ["动力电池"],
+                "count": [80],
+                "exchange": ["A"],
+                "list_date": ["20200101"],
+                "type": ["概念"],
+            }
+        )
+
+        with patch.object(fetcher, "_check_rate_limit"), patch.object(fetcher, "_get_china_now", self._fixed_now):
+            boards = fetcher.get_belong_board("300750")
+
+        self.assertEqual(boards[0]["name"], "动力电池")
+        self.assertEqual(boards[0]["code"], "885800.TI")
+        self.assertEqual(boards[0]["source"], "tushare.ths_member")
+
+    def test_get_belong_board_prioritizes_industry_over_generic_indexes(self) -> None:
+        fetcher = self._make_fetcher()
+        member_payload = {
+            "rows": [
+                {"theme_code": "881001.TI", "in_date": "2020-01-01"},
+                {"theme_code": "881002.TI", "in_date": "2020-01-01"},
+                {"theme_code": "885001.TI", "in_date": "2020-01-01"},
+            ]
+        }
+        index_rows = {
+            "881001.TI": {
+                "theme_name": "\u540c\u82b1\u987a\u5168A(\u52a0\u6743)",
+                "type": "S",
+            },
+            "881002.TI": {
+                "theme_name": "\u540c\u82b1\u987a\u6caa\u6df1\u5168A",
+                "type": "BB",
+            },
+            "885001.TI": {
+                "theme_name": "\u5316\u5b66\u5236\u54c1(A\u80a1)",
+                "type": "I",
+            },
+        }
+
+        def lookup_index(**kwargs):
+            return {"rows": [index_rows[kwargs["ts_code"]]]}
+
+        with (
+            patch.object(fetcher, "get_ths_members", return_value=member_payload),
+            patch.object(fetcher, "get_ths_index", side_effect=lookup_index),
+        ):
+            boards = fetcher.get_belong_board("002407")
+
+        self.assertEqual(boards[0]["name"], "\u5316\u5b66\u5236\u54c1(A\u80a1)")
+        self.assertEqual(boards[0]["code"], "885001.TI")
+        self.assertEqual(boards[-1]["name"], "\u540c\u82b1\u987a\u6caa\u6df1\u5168A")
+
+    def test_get_daily_basic_metrics_normalizes_latest_row(self) -> None:
+        fetcher = self._make_fetcher()
+        fetcher._api.daily_basic.return_value = pd.DataFrame(
+            {
+                "ts_code": ["600519.SH", "600519.SH"],
+                "trade_date": ["20260422", "20260424"],
+                "close": [1500.0, 1600.0],
+                "turnover_rate": [0.7, 0.8],
+                "turnover_rate_f": [1.2, 1.3],
+                "volume_ratio": [0.9, 1.1],
+                "pe": [20.0, 21.0],
+                "pe_ttm": [22.0, 23.0],
+                "pb": [8.0, 8.5],
+                "ps": [10.0, 10.5],
+                "ps_ttm": [9.0, 9.5],
+                "dv_ratio": [1.1, 1.2],
+                "dv_ttm": [1.3, 1.4],
+                "total_share": [1000.0, 1000.0],
+                "float_share": [900.0, 900.0],
+                "free_share": [800.0, 800.0],
+                "total_mv": [15000000.0, 16000000.0],
+                "circ_mv": [12000000.0, 13000000.0],
+            }
+        )
+
+        with patch.object(fetcher, "_check_rate_limit"), patch.object(fetcher, "_get_china_now", self._fixed_now):
+            payload = fetcher.get_daily_basic_metrics("600519", trade_date="2026-04-24")
+
+        args = fetcher._api.daily_basic.call_args.kwargs
+        self.assertEqual(args["ts_code"], "600519.SH")
+        self.assertEqual(args["end_date"], "20260424")
+        row = payload["rows"][0]
+        self.assertEqual(row["trade_date"], "2026-04-24")
+        self.assertEqual(row["pe_ratio"], 21.0)
+        self.assertEqual(row["pb_ratio"], 8.5)
+        self.assertEqual(row["dividend_yield_pct"], 1.4)
+        self.assertEqual(row["total_mv_wan"], 16000000.0)
+
+    def test_get_daily_basic_metrics_marks_stale_when_latest_row_lags_requested(self) -> None:
+        fetcher = self._make_fetcher()
+        fetcher._api.daily_basic.return_value = pd.DataFrame(
+            {
+                "ts_code": ["600519.SH"],
+                "trade_date": ["20260422"],
+                "close": [1500.0],
+                "turnover_rate": [0.7],
+                "turnover_rate_f": [1.2],
+                "volume_ratio": [0.9],
+                "pe": [20.0],
+                "pe_ttm": [22.0],
+                "pb": [8.0],
+                "ps": [10.0],
+                "ps_ttm": [9.0],
+                "dv_ratio": [1.1],
+                "dv_ttm": [1.3],
+                "total_share": [1000.0],
+                "float_share": [900.0],
+                "free_share": [800.0],
+                "total_mv": [15000000.0],
+                "circ_mv": [12000000.0],
+            }
+        )
+
+        with patch.object(fetcher, "_check_rate_limit"), patch.object(fetcher, "_get_china_now", self._fixed_now):
+            payload = fetcher.get_daily_basic_metrics("600519", trade_date="2026-04-24")
+
+        self.assertEqual(payload["status"], "stale")
+        self.assertTrue(payload["is_degraded"])
+        self.assertEqual(payload["trade_date"], "2026-04-22")
+        self.assertIn("stale_result:2026-04-22<expected:2026-04-24", payload["degraded_reasons"])
+
+    def test_v13_api_error_classifies_permission_denied(self) -> None:
+        fetcher = self._make_fetcher()
+        fetcher._api.daily_basic.side_effect = Exception("permission denied: need 6000 points")
+
+        with patch.object(fetcher, "_check_rate_limit"), patch.object(fetcher, "_get_china_now", self._fixed_now):
+            payload = fetcher.get_daily_basic_metrics("600519", trade_date="2026-04-24")
+
+        self.assertEqual(payload["status"], "permission_denied")
+        self.assertTrue(payload["is_degraded"])
+        self.assertIn("permission denied", payload["degraded_reasons"][0])
+
+    def test_get_tushare_fundamental_bundle_maps_homepage_blocks(self) -> None:
+        fetcher = self._make_fetcher()
+        with patch.object(fetcher, "get_daily_basic_metrics", return_value={
+            "source": "tushare.daily_basic",
+            "status": "ok",
+            "rows": [{
+                "trade_date": "2026-04-24",
+                "close": 50.0,
+                "pe_ratio": 12.0,
+                "pe_ttm": 13.0,
+                "pb_ratio": 2.1,
+                "dividend_yield_pct": 3.0,
+                "turnover_rate": 1.2,
+            }],
+            "degraded_reasons": [],
+        }), patch.object(fetcher, "get_financial_indicator_summary", return_value={
+            "source": "tushare.fina_indicator",
+            "status": "ok",
+            "rows": [{
+                "ann_date": "2026-04-20",
+                "report_period": "2026-03-31",
+                "roe": 18.0,
+                "gross_margin": 55.0,
+                "revenue_yoy": 12.0,
+                "net_profit_yoy": 10.0,
+                "eps": 2.0,
+            }],
+            "degraded_reasons": [],
+        }), patch.object(fetcher, "get_dividend_summary", return_value={
+            "source": "tushare.dividend",
+            "status": "ok",
+            "rows": [],
+            "summary": {"ttm_event_count": 1, "ttm_cash_dividend_per_share": 2.5, "events": []},
+            "degraded_reasons": [],
+        }), patch.object(fetcher, "get_performance_event_summary", return_value={
+            "source": "tushare.performance_events",
+            "status": "ok",
+            "rows": [],
+            "forecast_events": [{"summary": "预增", "ann_date": "2026-04-01"}],
+            "express_events": [{"revenue": 100.0, "net_profit_parent": 20.0}],
+            "degraded_reasons": [],
+        }):
+            bundle = fetcher.get_tushare_fundamental_bundle("600519", latest_price=50.0)
+
+        self.assertEqual(bundle["status"], "partial")
+        self.assertEqual(bundle["valuation"]["pe_ratio"], 12.0)
+        self.assertEqual(bundle["profitability"]["roe"], 18.0)
+        self.assertEqual(bundle["growth"]["revenue_yoy"], 12.0)
+        self.assertAlmostEqual(bundle["earnings"]["dividend"]["ttm_dividend_yield_pct"], 5.0)
+        self.assertEqual(bundle["earnings"]["forecast_summary"], "预增")
+
+    def test_get_tushare_fundamental_bundle_preserves_permission_denied_status(self) -> None:
+        fetcher = self._make_fetcher()
+        permission_payload = {
+            "source": "tushare.mock",
+            "status": "permission_denied",
+            "rows": [],
+            "degraded_reasons": ["permission denied"],
+        }
+        with patch.object(fetcher, "get_daily_basic_metrics", return_value={**permission_payload, "source": "tushare.daily_basic"}), \
+                patch.object(fetcher, "get_financial_indicator_summary", return_value={**permission_payload, "source": "tushare.fina_indicator"}), \
+                patch.object(fetcher, "get_dividend_summary", return_value={**permission_payload, "source": "tushare.dividend"}), \
+                patch.object(fetcher, "get_performance_event_summary", return_value={**permission_payload, "source": "tushare.performance_events"}):
+            bundle = fetcher.get_tushare_fundamental_bundle("600519", latest_price=50.0)
+
+        self.assertEqual(bundle["status"], "permission_denied")
+        self.assertEqual(bundle["source_chain"][0]["result"], "permission_denied")
+        self.assertTrue(any(error.endswith("permission denied") for error in bundle["errors"]))
+
     def test_get_ths_hot_parses_concept_list(self) -> None:
         fetcher = self._make_fetcher()
         fetcher._api.ths_hot.return_value = pd.DataFrame(
@@ -455,14 +674,14 @@ class TestTushareFetcherV13Adapters(unittest.TestCase):
         self.assertEqual(payload["degraded_reasons"], ["empty_result"])
         self.assertEqual(payload["rows"], [])
 
-    def test_api_error_returns_unavailable_payload(self) -> None:
+    def test_api_permission_error_returns_permission_denied_payload(self) -> None:
         fetcher = self._make_fetcher()
         fetcher._api.limit_list_d.side_effect = Exception("permission denied")
 
         with patch.object(fetcher, "_check_rate_limit"), patch.object(fetcher, "_get_china_now", self._fixed_now):
             payload = fetcher.get_limit_list("20260423")
 
-        self.assertEqual(payload["status"], "unavailable")
+        self.assertEqual(payload["status"], "permission_denied")
         self.assertTrue(payload["is_degraded"])
         self.assertIn("permission denied", payload["degraded_reasons"][0])
 

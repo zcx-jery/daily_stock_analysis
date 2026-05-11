@@ -69,6 +69,16 @@ class ChipStructure(BaseModel):
     chip_health: Optional[str] = None
 
 
+class EnhancedEvidencePerspective(BaseModel):
+    """Enhanced Tushare/fallback evidence used by the LLM decision."""
+
+    short_term_weights: Optional[Dict[str, Union[int, float, str]]] = None
+    medium_term_weights: Optional[Dict[str, Union[int, float, str]]] = None
+    evidence_chain: Optional[List[str]] = None
+    evidence_conflicts: Optional[List[str]] = None
+    data_gaps: Optional[List[str]] = None
+
+
 class DataPerspective(BaseModel):
     """Data perspective block."""
 
@@ -76,6 +86,7 @@ class DataPerspective(BaseModel):
     price_position: Optional[PricePosition] = None
     volume_analysis: Optional[VolumeAnalysis] = None
     chip_structure: Optional[ChipStructure] = None
+    enhanced_evidence: Optional[EnhancedEvidencePerspective] = None
 
 
 class Intelligence(BaseModel):
@@ -105,12 +116,22 @@ class PositionStrategy(BaseModel):
     risk_control: Optional[str] = None
 
 
+class TimeframeStrategy(BaseModel):
+    """Short-term and medium-term strategy separation."""
+
+    short_term: Optional[str] = None
+    medium_term: Optional[str] = None
+    conflict_resolution: Optional[str] = None
+    action_boundary: Optional[str] = None
+
+
 class BattlePlan(BaseModel):
     """Battle plan block."""
 
     sniper_points: Optional[SniperPoints] = None
     position_strategy: Optional[PositionStrategy] = None
     action_checklist: Optional[List[str]] = None
+    timeframe_strategy: Optional[TimeframeStrategy] = None
 
 
 class Dashboard(BaseModel):

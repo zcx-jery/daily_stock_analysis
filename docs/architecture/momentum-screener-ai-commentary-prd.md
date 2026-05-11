@@ -6,8 +6,8 @@
 - 英文名称：Momentum Screener AI Commentary
 - 所属系统：`daily_stock_analysis`
 - 文档类型：完整需求文档 / PRD
-- 当前状态：`draft v1.1`
-- 最后更新：`2026-04-15`
+- 当前状态：`v1.3.0-gold candidate`
+- 最后更新：`2026-05-10`
 - 关联文档：
   - [技术开发文档](./momentum-screener-ai-commentary-technical-design.md)
   - [原始强势筛选 PRD](./momentum-screener-prd.md)
@@ -82,8 +82,22 @@ V1 虽然保留四个入口，但用户主路径应明确聚焦在：
 | **独立会话** | 每个点评对象的对话独立持久化，不混合 |
 | **盘中边界更硬** | AI 盘中解读不能重排昨晚顺序、不能推翻 `今日不做`、不能为“偏离过大”给出追入建议 |
 | **先看旧结论，再决定重跑** | 重开面板时默认回到上次会话，用户主动点击“基于最新数据重新分析”才触发新一轮点评 |
+| **双轨执行统一** | AI 执行守卫必须和 V1.3 双轨制验收合同一致，低开不是自动劝退理由，必须结合日内修复确认 |
 
 ---
+
+### 2.4 Recovery Support（Track B Support）
+
+V1.3 Gold 版本开始，AI 点评必须正式支持双轨制可交易合同，避免出现“回测承认低开修复，但 AI 仍按旧口径劝退”的认知冲突。
+
+AI 执行守卫必须遵守：
+
+1. **Track A 动量延续**：`T+1 Open >= T0 Close * 0.99` 且 `T+1 Close > T+1 Open`，属于正常开盘承接确认。
+2. **Track B 低开修复**：若 `T+1 Open < T0 Close * 0.99`，AI 不能仅因低开给出强制 `Abandon` / `Caution`；应提示观察开盘后 30 分钟是否出现带量反转并重新站上 `T0 Close`。
+3. **Reversal Entry 引导**：低开场景下，只有当分时强度收复 `T0 Close`、收盘强于开盘且后续仍满足滑点调整后的 T+2 退出缓冲时，才可描述为“低开转强观察有效”。
+4. **无效修复边界**：若低开后无法收回 `T0 Close`，或开盘后 30 分钟高点始终无法突破，AI 应提示 `Reduce Position` / 降仓或继续仅观察。
+
+对 `RETAINED_LEADER_DIVERGENCE`、`mainline_position_churn`、潜在 `Mainline_Churn` 标的，AI 必须允许 **Volatility Gap（波动缺口）**，优先给出“先看 30 分钟承接与带量反转”的执行提示，而不是旧版“一低开就放弃”的硬口径。
 
 ## 3. 目标用户
 

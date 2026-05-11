@@ -204,16 +204,24 @@ class ChipDistribution:
     
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
+        def _json_float(value: Any) -> float:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return 0.0
+
         return {
             'code': self.code,
             'date': self.date,
             'source': self.source,
-            'profit_ratio': self.profit_ratio,
-            'avg_cost': self.avg_cost,
-            'cost_90_low': self.cost_90_low,
-            'cost_90_high': self.cost_90_high,
-            'concentration_90': self.concentration_90,
-            'concentration_70': self.concentration_70,
+            'profit_ratio': _json_float(self.profit_ratio),
+            'avg_cost': _json_float(self.avg_cost),
+            'cost_90_low': _json_float(self.cost_90_low),
+            'cost_90_high': _json_float(self.cost_90_high),
+            'concentration_90': _json_float(self.concentration_90),
+            'cost_70_low': _json_float(self.cost_70_low),
+            'cost_70_high': _json_float(self.cost_70_high),
+            'concentration_70': _json_float(self.concentration_70),
         }
     
     def get_chip_status(self, current_price: float) -> str:

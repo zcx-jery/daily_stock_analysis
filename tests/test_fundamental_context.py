@@ -38,6 +38,84 @@ class _DummyBoardFetcher:
         return self._boards
 
 
+class _DummyTushareFundamentalFetcher:
+    name = "TushareFetcher"
+    priority = -1
+
+    def is_available(self):
+        return True
+
+    def get_tushare_fundamental_bundle(self, _stock_code: str, latest_price=None):
+        return {
+            "status": "partial",
+            "valuation": {
+                "pe_ratio": 11.0,
+                "pb_ratio": 1.8,
+                "total_mv": 1.0e11,
+                "source": "tushare.daily_basic",
+            },
+            "profitability": {"roe": 20.0, "gross_margin": 60.0, "source": "tushare.fina_indicator"},
+            "growth": {"revenue_yoy": 15.0, "source": "tushare.fina_indicator"},
+            "earnings": {
+                "dividend": {
+                    "ttm_cash_dividend_per_share": 2.0,
+                    "ttm_dividend_yield_pct": 4.0,
+                }
+            },
+            "institution": {},
+            "source_chain": [{"provider": "tushare.daily_basic", "result": "ok", "duration_ms": 0}],
+            "errors": [],
+        }
+
+
+class _DummyTushareMoneyflowFetcher:
+    name = "TushareFetcher"
+    priority = -1
+
+    def is_available(self):
+        return True
+
+    def get_trade_time(self, early_time="00:00", late_time="15:30"):
+        return "20260424"
+
+    def get_stock_moneyflow_ths(self, _trade_date: str, *, ts_code=None):
+        return {
+            "source": "tushare.moneyflow_ths",
+            "status": "ok",
+            "rows": [{
+                "trade_date": "2026-04-24",
+                "net_amount": 120000000.0,
+                "net_d5_amount": 300000000.0,
+                "buy_lg_amount": 80000000.0,
+                "buy_lg_amount_rate": 8.0,
+                "data_source": "tushare.moneyflow_ths",
+            }],
+            "degraded_reasons": [],
+        }
+
+    def get_stock_moneyflow_dc(self, _trade_date: str, *, ts_code=None):
+        return {
+            "source": "tushare.moneyflow_dc",
+            "status": "ok",
+            "rows": [{
+                "trade_date": "2026-04-24",
+                "net_amount": 90000000.0,
+                "net_amount_rate": 5.0,
+                "data_source": "tushare.moneyflow_dc",
+            }],
+            "degraded_reasons": [],
+        }
+
+
+class _DummyBoardAndRankingFetcher(_DummyBoardFetcher):
+    def __init__(self, name: str, priority: int, boards=None, rankings=None):
+        super().__init__(name, priority, boards=boards)
+        self._rankings = rankings
+
+    def get_sector_rankings(self, _n: int = 5):
+        return self._rankings
+
+
 class TestFundamentalContext(unittest.TestCase):
     def test_non_cn_market_returns_not_supported(self) -> None:
         manager = DataFetcherManager(fetchers=[])
@@ -153,6 +231,47 @@ class TestFundamentalContext(unittest.TestCase):
         self.assertIn("growth", ctx)
         self.assertIn("capital_flow", ctx)
         self.assertIn("dragon_tiger", ctx)
+
+    def test_fundamental_context_prefers_tushare_and_keeps_akshare_fallback_fields(self) -> None:
+        manager = DataFetcherManager(fetchers=[_DummyTushareFundamentalFetcher()])
+        cfg = SimpleNamespace(
+            enable_fundamental_pipeline=True,
+            fundamental_cache_ttl_seconds=120,
+            fundamental_stage_timeout_seconds=1.5,
+            fundamental_fetch_timeout_seconds=0.8,
+            fundamental_retry_max=1,
+        )
+        quote = SimpleNamespace(
+            price=50.0,
+            pe_ratio=30.0,
+            pb_ratio=5.0,
+            total_mv=1.0e11,
+            circ_mv=7.0e10,
+            source=SimpleNamespace(value="tencent"),
+        )
+        with patch("src.config.get_config", return_value=cfg), \
+                patch.object(manager, "get_realtime_quote", return_value=quote), \
+                patch("data_provider.fundamental_adapter.AkshareFundamentalAdapter.get_fundamental_bundle", return_value={
+                    "status": "partial",
+                    "growth": {"net_profit_yoy": 8.5},
+                    "earnings": {"forecast_summary": "AkShare预增"},
+                    "institution": {"institution_holding_change": 1.2},
+                    "source_chain": ["growth:akshare"],
+                    "errors": [],
+                }), \
+                patch.object(manager, "get_capital_flow_context", return_value={"status": "not_supported", "source_chain": [], "errors": [], "data": {}}), \
+                patch.object(manager, "get_dragon_tiger_context", return_value={"status": "not_supported", "source_chain": [], "errors": [], "data": {}}), \
+                patch.object(manager, "get_board_context", return_value={"status": "not_supported", "source_chain": [], "errors": [], "data": {}}):
+            ctx = manager.get_fundamental_context("600519", budget_seconds=1.5)
+
+        self.assertTrue(ctx["enhanced_by_tushare"])
+        self.assertEqual(ctx["valuation"]["data"]["pe_ratio"], 11.0)
+        self.assertEqual(ctx["valuation"]["data"]["total_mv"], 1.0e11)
+        self.assertEqual(ctx["profitability"]["data"]["roe"], 20.0)
+        self.assertEqual(ctx["growth"]["data"]["revenue_yoy"], 15.0)
+        self.assertEqual(ctx["growth"]["data"]["net_profit_yoy"], 8.5)
+        self.assertEqual(ctx["earnings"]["data"]["forecast_summary"], "AkShare预增")
+        self.assertEqual(ctx["earnings"]["data"]["dividend"]["ttm_dividend_yield_pct"], 4.0)
 
     def test_fundamental_context_derives_ttm_dividend_yield_from_quote_price(self) -> None:
         manager = DataFetcherManager(fetchers=[])
@@ -334,6 +453,20 @@ class TestFundamentalContext(unittest.TestCase):
             ),
             "ok",
         )
+        self.assertEqual(
+            DataFetcherManager._infer_block_status(
+                {"pe_ratio": 12.0, "data_status": "stale"},
+                "partial",
+            ),
+            "stale",
+        )
+        self.assertEqual(
+            DataFetcherManager._infer_block_status(
+                {"data_status": "permission_denied"},
+                "partial",
+            ),
+            "permission_denied",
+        )
 
     def test_valuation_all_none_fields_should_not_be_ok(self) -> None:
         manager = DataFetcherManager(fetchers=[])
@@ -416,6 +549,79 @@ class TestFundamentalContext(unittest.TestCase):
                 ):
             ctx = manager.get_capital_flow_context("600519", budget_seconds=0.5)
         self.assertEqual(ctx["status"], "not_supported")
+
+    def test_capital_flow_prefers_tushare_moneyflow_and_keeps_signal(self) -> None:
+        manager = DataFetcherManager(fetchers=[_DummyTushareMoneyflowFetcher()])
+        cfg = SimpleNamespace(
+            enable_fundamental_pipeline=True,
+            fundamental_cache_ttl_seconds=120,
+            fundamental_stage_timeout_seconds=1.5,
+            fundamental_fetch_timeout_seconds=0.8,
+            fundamental_retry_max=1,
+        )
+        with patch("src.config.get_config", return_value=cfg), \
+                patch(
+                    "data_provider.fundamental_adapter.AkshareFundamentalAdapter.get_capital_flow",
+                    return_value={
+                        "status": "partial",
+                        "stock_flow": {},
+                        "sector_rankings": {"top": [{"name": "白酒"}], "bottom": []},
+                        "source_chain": ["capital_sector:akshare"],
+                        "errors": [],
+                    },
+                ):
+            ctx = manager.get_capital_flow_context("600519", budget_seconds=0.5)
+
+        self.assertEqual(ctx["status"], "ok")
+        self.assertEqual(ctx["data"]["signal"], "inflow_confirmed")
+        self.assertEqual(ctx["data"]["stock_flow"]["main_net_inflow"], 120000000.0)
+        self.assertEqual(ctx["data"]["ths"]["net_d5_amount"], 300000000.0)
+        self.assertEqual(ctx["data"]["sector_rankings"]["top"][0]["name"], "白酒")
+
+    def test_board_context_adds_belong_boards_and_relative_strength(self) -> None:
+        fetcher = _DummyBoardAndRankingFetcher(
+            "EfinanceFetcher",
+            priority=0,
+            boards=[{"name": "白酒", "type": "行业"}],
+            rankings=([{"name": "白酒", "change_pct": 3.0}], [{"name": "煤炭", "change_pct": -2.0}]),
+        )
+        manager = DataFetcherManager(fetchers=[fetcher])
+        cfg = SimpleNamespace(
+            enable_fundamental_pipeline=True,
+            fundamental_cache_ttl_seconds=120,
+            fundamental_stage_timeout_seconds=1.5,
+            fundamental_fetch_timeout_seconds=0.8,
+            fundamental_retry_max=1,
+        )
+        with patch("src.config.get_config", return_value=cfg):
+            ctx = manager.get_board_context("600519", budget_seconds=0.5)
+
+        self.assertEqual(ctx["status"], "ok")
+        self.assertEqual(ctx["data"]["belong_boards"][0]["name"], "白酒")
+        self.assertEqual(ctx["data"]["relative_strength"]["status"], "aligned")
+
+    def test_board_context_keeps_belong_boards_when_rankings_fail(self) -> None:
+        fetcher = _DummyBoardFetcher(
+            "TushareFetcher",
+            priority=0,
+            boards=[{"name": "鐧介厭", "type": "琛屼笟"}],
+        )
+        manager = DataFetcherManager(fetchers=[fetcher])
+        cfg = SimpleNamespace(
+            enable_fundamental_pipeline=True,
+            fundamental_cache_ttl_seconds=120,
+            fundamental_stage_timeout_seconds=1.5,
+            fundamental_fetch_timeout_seconds=0.8,
+            fundamental_retry_max=1,
+        )
+        with patch("src.config.get_config", return_value=cfg), \
+                patch.object(manager, "_get_sector_rankings_with_meta", return_value=([], [], [], "rankings timeout")):
+            ctx = manager.get_board_context("600519", budget_seconds=0.5)
+
+        self.assertEqual(ctx["status"], "partial")
+        self.assertEqual(ctx["data"]["belong_boards"][0]["name"], "鐧介厭")
+        self.assertEqual(ctx["data"]["relative_strength"]["status"], "isolated")
+        self.assertIn("rankings timeout", ctx["errors"])
 
     def test_get_belong_boards_from_capability_probe(self) -> None:
         fetcher = _DummyBoardFetcher(

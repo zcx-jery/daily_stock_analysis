@@ -107,8 +107,11 @@ V1.3 起，官方回测采用双层验收：`弱延续合格率` 只作为方向
 | `weak_continuity_rule` | 弱延续辅助规则，固定为 `t1_close_gt_open_and_t2_high_gt_t1_close` |
 | `weak_continuity_pass` | 是否满足弱延续辅助规则 |
 | `weak_continuity_pass_rate_pct` | 弱延续合格率 |
-| `settlement_rule` | 当前主验收规则，固定为 `v13_tradable_success_v1` |
-| `tradable_success_rule` | 可交易合格主规则，当前为 `t1_buyable_no_one_word_open_ge_t0_close_0_99_t1_close_gt_open_t2_adjusted_exit_ge_t1_close_1_02` |
+| `settlement_rule` | 当前主验收规则，固定为 `v13_dual_track_tradable_success_v1` |
+| `tradable_success_rule` | 可交易合格主规则，当前为 `t1_buyable_no_one_word_dual_track_entry_t2_adjusted_exit_ge_t1_close_1_02` |
+| `track_a_momentum_pass` | `T+1 gap >= -1%` 且 `T+1 close > T+1 open` 的动量延续轨道 |
+| `track_b_recovery_pass` | `T+1 gap < -1%`、`T+1 close > T+1 open` 且 `T+1 close > T0 close` 的低开修复轨道 |
+| `dual_track_entry_pass` | Track A 或 Track B 至少一项通过 |
 | `tradable_success_pass` / `settlement_pass` | 是否满足可交易合格主规则 |
 | `tradable_success_rate_pct` / `settlement_pass_rate_pct` | 可交易合格率 |
 
@@ -207,6 +210,10 @@ Stage 2 起，这一门槛正式用于证伪 V1.3 过滤层是否真的创造价
 
 若单日被跳过候选过多导致候选池、Official Top3、Raw Momentum Top3 或 outcome 不完整，再在数据完整性诊断中标注该交易日为低置信样本；只有当可用样本不足以计算核心指标时，才将该交易日或本次 run 判为无效样本。
 
+回测任务元数据、每日摘要、候选/决策/outcome 明细落库必须走 SQLite 写事务重试与 `busy_timeout` 保护；删除旧任务、刷新进度或后台 worker 心跳遇到短暂 `database is locked` 时应等待重试，不应把策略回放误判为失败。
+
+summary、单日详情和问题诊断读取候选明细时，若 `momentum_backtest_candidate_records` 出现局部 SQLite I/O 损伤，应优先从对应交易日的 `screening_payload_json` 快照重建 candidate records 继续出报告；只有 daily summary 与 outcome 同时不可用时，才将该交易日视为不可恢复样本。
+
 数据完整性不达标时，本次结果不能用于策略可用性判断，只能用于排障。
 
 ## 8. 最终验收结论分级
@@ -278,6 +285,7 @@ Stage 2 起，这一门槛正式用于证伪 V1.3 过滤层是否真的创造价
 - Dropped by V1.3（Raw 选中但 Official 剔除）：
 - Inserted by V1.3（Official 插入但 Raw 未选）：
 - 初步归因：Risk Stack / Mainline Intensity / 封板强度 / 买点收口 / 其他
+- V1.3 Stage 9 起，`dropped_by_v13` 中每只股票必须带 `primary_rejection_reason`、`primary_rejection_label` 与 `primary_rejection_detail`，用于判断该剔除是有效排雷还是主线买点误杀。
 
 ## 5. 总闸门诊断
 

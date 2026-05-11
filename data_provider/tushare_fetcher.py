@@ -433,16 +433,668 @@ class TushareFetcher(BaseFetcher):
             "rows": rows or [],
         }
 
+    @staticmethod
+    def _is_tushare_permission_error(reason: Any) -> bool:
+        text = str(reason or "").strip().lower()
+        if not text:
+            return False
+        patterns = (
+            "permission denied",
+            "no permission",
+            "not have permission",
+            "without permission",
+            "forbidden",
+            "unauthorized",
+            "not authorized",
+            "privilege",
+            "invalid token",
+            "token invalid",
+            "积分",
+            "权限",
+            "无权限",
+            "没有权限",
+            "权限不足",
+            "访问权限",
+            "未开通",
+            "抱歉",
+        )
+        return any(pattern in text for pattern in patterns)
+
+    def _v13_payload_with_stale_check(
+        self,
+        *,
+        source: str,
+        trade_date: Optional[str],
+        rows: Optional[List[Dict[str, Any]]] = None,
+        status: str = "ok",
+        data_as_of: Optional[str] = None,
+        degraded_reasons: Optional[List[str]] = None,
+        expected_trade_date: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        payload = self._v13_payload(
+            source=source,
+            trade_date=trade_date,
+            rows=rows,
+            status=status,
+            data_as_of=data_as_of,
+            degraded_reasons=degraded_reasons,
+        )
+        expected_date = self._format_display_trade_date(expected_trade_date)
+        payload_rows = payload.get("rows")
+        if status != "ok" or not expected_date or not isinstance(payload_rows, list) or not payload_rows:
+            return payload
+
+        latest_row_date: Optional[str] = None
+        for row in payload_rows:
+            if not isinstance(row, dict):
+                continue
+            row_date = self._format_display_trade_date(row.get("trade_date"))
+            if row_date and (latest_row_date is None or row_date > latest_row_date):
+                latest_row_date = row_date
+
+        if latest_row_date and latest_row_date < expected_date:
+            reasons = list(payload.get("degraded_reasons") or [])
+            reasons.append(f"stale_result:{latest_row_date}<expected:{expected_date}")
+            payload["status"] = "stale"
+            payload["is_degraded"] = True
+            payload["degraded_reasons"] = reasons
+        return payload
+
     def _v13_unavailable_payload(self, *, source: str, trade_date: Optional[str], reason: str) -> Dict[str, Any]:
+        status = "permission_denied" if self._is_tushare_permission_error(reason) else "unavailable"
         logger.warning("[Tushare V1.3] %s unavailable: %s", source, reason)
         return self._v13_payload(
             source=source,
             trade_date=trade_date,
             rows=[],
-            status="unavailable",
+            status=status,
             data_as_of=self._v13_data_as_of(),
             degraded_reasons=[reason],
         )
+
+    @staticmethod
+    def _compact_date_days_ago(end_date: str, days: int) -> str:
+        end_dt = datetime.strptime(end_date, "%Y%m%d")
+        return (end_dt - timedelta(days=max(1, days))).strftime("%Y%m%d")
+
+    @classmethod
+    def _first_payload_row(cls, payload: Dict[str, Any]) -> Dict[str, Any]:
+        rows = payload.get("rows") if isinstance(payload, dict) else None
+        if isinstance(rows, list) and rows:
+            first = rows[0]
+            return first if isinstance(first, dict) else {}
+        return {}
+
+    @classmethod
+    def _payload_has_rows(cls, payload: Dict[str, Any]) -> bool:
+        rows = payload.get("rows") if isinstance(payload, dict) else None
+        return isinstance(rows, list) and len(rows) > 0
+
+    @classmethod
+    def _wan_yuan_to_yuan(cls, value: Any) -> Optional[float]:
+        numeric = cls._safe_v13_float(value)
+        if numeric is None:
+            return None
+        return numeric * 10000.0
+
+    @classmethod
+    def _append_payload_meta(cls, result: Dict[str, Any], payload: Dict[str, Any]) -> None:
+        source = str(payload.get("source") or "tushare")
+        status = str(payload.get("status") or "partial")
+        result.setdefault("source_chain", []).append(
+            {
+                "provider": source,
+                "result": status,
+                "duration_ms": 0,
+            }
+        )
+        for reason in payload.get("degraded_reasons", []) or []:
+            if reason:
+                result.setdefault("errors", []).append(f"{source}:{reason}")
+
+    def get_daily_basic_metrics(
+        self,
+        stock_code: str,
+        trade_date: Optional[str] = None,
+        lookback_days: int = 10,
+    ) -> Dict[str, Any]:
+        """
+        获取首页单票分析需要的每日估值与交易指标。
+
+        Tushare 接口：daily_basic。金额字段保留 Tushare 原始“万元”口径，
+        通过字段名显式标注，避免与实时行情的元口径混用。
+        """
+        source = "tushare.daily_basic"
+        display_trade_date = self._format_display_trade_date(trade_date)
+        if self._api is None:
+            return self._v13_unavailable_payload(
+                source=source,
+                trade_date=display_trade_date,
+                reason="api_not_initialized",
+            )
+
+        end_date = self._format_tushare_date(trade_date) or self._get_china_now().strftime("%Y%m%d")
+        start_date = self._compact_date_days_ago(end_date, max(lookback_days, 1) * 3)
+        params: Dict[str, Any] = {
+            "ts_code": self._convert_stock_code(stock_code),
+            "start_date": start_date,
+            "end_date": end_date,
+            "fields": (
+                "ts_code,trade_date,close,turnover_rate,turnover_rate_f,volume_ratio,"
+                "pe,pe_ttm,pb,ps,ps_ttm,dv_ratio,dv_ttm,total_share,float_share,"
+                "free_share,total_mv,circ_mv"
+            ),
+        }
+
+        try:
+            df = self._call_api_with_rate_limit("daily_basic", **params)
+        except Exception as exc:
+            return self._v13_unavailable_payload(source=source, trade_date=display_trade_date, reason=str(exc))
+
+        data_as_of = self._v13_data_as_of()
+        if df is None or df.empty:
+            return self._v13_payload(
+                source=source,
+                trade_date=display_trade_date,
+                rows=[],
+                status="partial",
+                data_as_of=data_as_of,
+                degraded_reasons=["empty_result"],
+            )
+
+        work_df = df.copy()
+        if "trade_date" in work_df.columns:
+            work_df = work_df.sort_values(by="trade_date", ascending=False)
+        row = work_df.iloc[0]
+        row_trade_date = self._format_display_trade_date(row.get("trade_date")) or display_trade_date
+        result_row = {
+            "ts_code": self._safe_v13_str(row.get("ts_code")),
+            "trade_date": row_trade_date,
+            "close": self._safe_v13_float(row.get("close")),
+            "turnover_rate": self._safe_v13_float(row.get("turnover_rate")),
+            "turnover_rate_f": self._safe_v13_float(row.get("turnover_rate_f")),
+            "volume_ratio": self._safe_v13_float(row.get("volume_ratio")),
+            "pe_ratio": self._safe_v13_float(row.get("pe")),
+            "pe_ttm": self._safe_v13_float(row.get("pe_ttm")),
+            "pb_ratio": self._safe_v13_float(row.get("pb")),
+            "ps": self._safe_v13_float(row.get("ps")),
+            "ps_ttm": self._safe_v13_float(row.get("ps_ttm")),
+            "dividend_yield_pct": self._safe_v13_float(row.get("dv_ttm")),
+            "dividend_yield_static_pct": self._safe_v13_float(row.get("dv_ratio")),
+            "total_share_wan": self._safe_v13_float(row.get("total_share")),
+            "float_share_wan": self._safe_v13_float(row.get("float_share")),
+            "free_share_wan": self._safe_v13_float(row.get("free_share")),
+            "total_mv_wan": self._safe_v13_float(row.get("total_mv")),
+            "circ_mv_wan": self._safe_v13_float(row.get("circ_mv")),
+            "data_source": source,
+            "data_as_of": data_as_of,
+            "is_degraded": False,
+        }
+        return self._v13_payload_with_stale_check(
+            source=source,
+            trade_date=row_trade_date,
+            rows=[result_row],
+            data_as_of=data_as_of,
+            expected_trade_date=display_trade_date,
+        )
+
+    def get_financial_indicator_summary(
+        self,
+        stock_code: str,
+        periods: int = 4,
+    ) -> Dict[str, Any]:
+        """获取首页分析需要的 Tushare 财务指标摘要。"""
+        source = "tushare.fina_indicator"
+        if self._api is None:
+            return self._v13_unavailable_payload(source=source, trade_date=None, reason="api_not_initialized")
+
+        params: Dict[str, Any] = {
+            "ts_code": self._convert_stock_code(stock_code),
+            "fields": (
+                "ts_code,ann_date,end_date,eps,dt_eps,bps,ocfps,roe,roe_dt,"
+                "grossprofit_margin,netprofit_margin,roa,roic,or_yoy,netprofit_yoy,"
+                "dt_netprofit_yoy,ocf_yoy"
+            ),
+        }
+        try:
+            df = self._call_api_with_rate_limit("fina_indicator", **params)
+        except Exception as exc:
+            return self._v13_unavailable_payload(source=source, trade_date=None, reason=str(exc))
+
+        data_as_of = self._v13_data_as_of()
+        if df is None or df.empty:
+            return self._v13_payload(
+                source=source,
+                trade_date=None,
+                rows=[],
+                status="partial",
+                data_as_of=data_as_of,
+                degraded_reasons=["empty_result"],
+            )
+
+        work_df = df.copy()
+        sort_cols = [col for col in ("end_date", "ann_date") if col in work_df.columns]
+        if sort_cols:
+            work_df = work_df.sort_values(by=sort_cols, ascending=False)
+
+        rows: List[Dict[str, Any]] = []
+        for _, row in work_df.head(max(1, periods)).iterrows():
+            rows.append(
+                {
+                    "ts_code": self._safe_v13_str(row.get("ts_code")),
+                    "ann_date": self._format_display_trade_date(row.get("ann_date")),
+                    "report_period": self._format_display_trade_date(row.get("end_date")),
+                    "eps": self._safe_v13_float(row.get("eps")),
+                    "dt_eps": self._safe_v13_float(row.get("dt_eps")),
+                    "bps": self._safe_v13_float(row.get("bps")),
+                    "ocfps": self._safe_v13_float(row.get("ocfps")),
+                    "roe": self._safe_v13_float(row.get("roe")),
+                    "roe_dt": self._safe_v13_float(row.get("roe_dt")),
+                    "gross_margin": self._safe_v13_float(row.get("grossprofit_margin")),
+                    "net_profit_margin": self._safe_v13_float(row.get("netprofit_margin")),
+                    "roa": self._safe_v13_float(row.get("roa")),
+                    "roic": self._safe_v13_float(row.get("roic")),
+                    "revenue_yoy": self._safe_v13_float(row.get("or_yoy")),
+                    "net_profit_yoy": self._safe_v13_float(row.get("netprofit_yoy")),
+                    "deducted_net_profit_yoy": self._safe_v13_float(row.get("dt_netprofit_yoy")),
+                    "operating_cash_flow_yoy": self._safe_v13_float(row.get("ocf_yoy")),
+                    "data_source": source,
+                    "data_as_of": data_as_of,
+                    "is_degraded": False,
+                }
+            )
+
+        return self._v13_payload(source=source, trade_date=None, rows=rows, data_as_of=data_as_of)
+
+    def get_dividend_summary(
+        self,
+        stock_code: str,
+        years: int = 5,
+    ) -> Dict[str, Any]:
+        """获取现金分红摘要，统一按每股税前现金分红口径输出。"""
+        source = "tushare.dividend"
+        if self._api is None:
+            return self._v13_unavailable_payload(source=source, trade_date=None, reason="api_not_initialized")
+
+        try:
+            df = self._call_api_with_rate_limit(
+                "dividend",
+                ts_code=self._convert_stock_code(stock_code),
+                fields=(
+                    "ts_code,end_date,ann_date,div_proc,stk_div,stk_bo_rate,stk_co_rate,"
+                    "cash_div,cash_div_tax,record_date,ex_date,div_listdate,imp_ann_date,"
+                    "base_date,base_share"
+                ),
+            )
+        except Exception as exc:
+            return self._v13_unavailable_payload(source=source, trade_date=None, reason=str(exc))
+
+        data_as_of = self._v13_data_as_of()
+        if df is None or df.empty:
+            return self._v13_payload(
+                source=source,
+                trade_date=None,
+                rows=[],
+                status="partial",
+                data_as_of=data_as_of,
+                degraded_reasons=["empty_result"],
+            )
+
+        now_date = self._get_china_now().date()
+        cutoff_date = now_date - timedelta(days=max(1, years) * 366)
+        events: List[Dict[str, Any]] = []
+        for _, row in df.iterrows():
+            event_date_text = (
+                self._format_display_trade_date(row.get("ex_date"))
+                or self._format_display_trade_date(row.get("record_date"))
+                or self._format_display_trade_date(row.get("ann_date"))
+            )
+            event_dt = None
+            if event_date_text:
+                try:
+                    event_dt = datetime.strptime(event_date_text, "%Y-%m-%d").date()
+                except ValueError:
+                    event_dt = None
+            if event_dt is not None and (event_dt > now_date or event_dt < cutoff_date):
+                continue
+
+            per_10_cash = self._safe_v13_float(row.get("cash_div_tax"))
+            if per_10_cash is None:
+                per_10_cash = self._safe_v13_float(row.get("cash_div"))
+            cash_per_share = round(per_10_cash / 10.0, 6) if per_10_cash is not None else None
+            event = {
+                "ts_code": self._safe_v13_str(row.get("ts_code")),
+                "report_period": self._format_display_trade_date(row.get("end_date")),
+                "ann_date": self._format_display_trade_date(row.get("ann_date")),
+                "record_date": self._format_display_trade_date(row.get("record_date")),
+                "ex_dividend_date": self._format_display_trade_date(row.get("ex_date")),
+                "event_date": event_date_text,
+                "dividend_process": self._safe_v13_str(row.get("div_proc")),
+                "cash_dividend_per_10_share": per_10_cash,
+                "cash_dividend_per_share": cash_per_share,
+                "is_pre_tax": row.get("cash_div_tax") is not None,
+                "data_source": source,
+                "data_as_of": data_as_of,
+                "is_degraded": cash_per_share is None,
+            }
+            if cash_per_share is not None:
+                events.append(event)
+
+        events.sort(key=lambda item: item.get("event_date") or "", reverse=True)
+        ttm_start = now_date - timedelta(days=365)
+        ttm_events = []
+        for item in events:
+            event_date_text = item.get("event_date")
+            if not event_date_text:
+                continue
+            try:
+                event_dt = datetime.strptime(str(event_date_text), "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            if ttm_start <= event_dt <= now_date:
+                ttm_events.append(item)
+
+        payload = self._v13_payload(
+            source=source,
+            trade_date=None,
+            rows=events[:10],
+            status="ok" if events else "partial",
+            data_as_of=data_as_of,
+            degraded_reasons=[] if events else ["no_cash_dividend_events"],
+        )
+        payload["summary"] = {
+            "events": events[:5],
+            "ttm_event_count": len(ttm_events),
+            "ttm_cash_dividend_per_share": (
+                round(sum(float(item.get("cash_dividend_per_share") or 0.0) for item in ttm_events), 6)
+                if ttm_events else None
+            ),
+            "coverage": "cash_dividend_pre_tax",
+            "as_of": now_date.isoformat(),
+        }
+        return payload
+
+    def get_performance_event_summary(
+        self,
+        stock_code: str,
+        periods: int = 4,
+    ) -> Dict[str, Any]:
+        """获取业绩预告和业绩快报摘要。"""
+        source = "tushare.performance_events"
+        normalized_ts_code = self._convert_stock_code(stock_code)
+        if self._api is None:
+            return self._v13_unavailable_payload(source=source, trade_date=None, reason="api_not_initialized")
+
+        data_as_of = self._v13_data_as_of()
+        errors: List[str] = []
+        forecast_events: List[Dict[str, Any]] = []
+        express_events: List[Dict[str, Any]] = []
+
+        try:
+            forecast_df = self._call_api_with_rate_limit(
+                "forecast",
+                ts_code=normalized_ts_code,
+                fields=(
+                    "ts_code,ann_date,end_date,type,p_change_min,p_change_max,"
+                    "net_profit_min,net_profit_max,last_parent_net,first_ann_date,"
+                    "summary,change_reason"
+                ),
+            )
+            if forecast_df is not None and not forecast_df.empty:
+                sort_cols = [col for col in ("ann_date", "end_date") if col in forecast_df.columns]
+                work_df = forecast_df.sort_values(by=sort_cols, ascending=False) if sort_cols else forecast_df
+                for _, row in work_df.head(max(1, periods)).iterrows():
+                    forecast_events.append(
+                        {
+                            "ts_code": self._safe_v13_str(row.get("ts_code")),
+                            "ann_date": self._format_display_trade_date(row.get("ann_date")),
+                            "report_period": self._format_display_trade_date(row.get("end_date")),
+                            "forecast_type": self._safe_v13_str(row.get("type")),
+                            "profit_change_min_pct": self._safe_v13_float(row.get("p_change_min")),
+                            "profit_change_max_pct": self._safe_v13_float(row.get("p_change_max")),
+                            "net_profit_min": self._safe_v13_float(row.get("net_profit_min")),
+                            "net_profit_max": self._safe_v13_float(row.get("net_profit_max")),
+                            "summary": self._safe_v13_str(row.get("summary")),
+                            "change_reason": self._safe_v13_str(row.get("change_reason")),
+                            "data_source": "tushare.forecast",
+                            "data_as_of": data_as_of,
+                            "is_degraded": False,
+                        }
+                    )
+        except Exception as exc:
+            errors.append(f"forecast:{type(exc).__name__}:{exc}")
+
+        try:
+            express_df = self._call_api_with_rate_limit(
+                "express",
+                ts_code=normalized_ts_code,
+                fields=(
+                    "ts_code,ann_date,end_date,revenue,operate_profit,total_profit,n_income,"
+                    "total_assets,total_hldr_eqy_exc_min_int,diluted_eps,diluted_roe,"
+                    "yoy_net_profit,bps,yoy_sales,yoy_op"
+                ),
+            )
+            if express_df is not None and not express_df.empty:
+                sort_cols = [col for col in ("ann_date", "end_date") if col in express_df.columns]
+                work_df = express_df.sort_values(by=sort_cols, ascending=False) if sort_cols else express_df
+                for _, row in work_df.head(max(1, periods)).iterrows():
+                    express_events.append(
+                        {
+                            "ts_code": self._safe_v13_str(row.get("ts_code")),
+                            "ann_date": self._format_display_trade_date(row.get("ann_date")),
+                            "report_period": self._format_display_trade_date(row.get("end_date")),
+                            "revenue": self._safe_v13_float(row.get("revenue")),
+                            "operating_profit": self._safe_v13_float(row.get("operate_profit")),
+                            "total_profit": self._safe_v13_float(row.get("total_profit")),
+                            "net_profit_parent": self._safe_v13_float(row.get("n_income")),
+                            "diluted_eps": self._safe_v13_float(row.get("diluted_eps")),
+                            "diluted_roe": self._safe_v13_float(row.get("diluted_roe")),
+                            "net_profit_yoy": self._safe_v13_float(row.get("yoy_net_profit")),
+                            "revenue_yoy": self._safe_v13_float(row.get("yoy_sales")),
+                            "data_source": "tushare.express",
+                            "data_as_of": data_as_of,
+                            "is_degraded": False,
+                        }
+                    )
+        except Exception as exc:
+            errors.append(f"express:{type(exc).__name__}:{exc}")
+
+        has_events = bool(forecast_events or express_events)
+        payload = self._v13_payload(
+            source=source,
+            trade_date=None,
+            rows=forecast_events + express_events,
+            status="ok" if has_events else "partial",
+            data_as_of=data_as_of,
+            degraded_reasons=errors if errors else ([] if has_events else ["empty_result"]),
+        )
+        payload["forecast_events"] = forecast_events
+        payload["express_events"] = express_events
+        return payload
+
+    def get_tushare_fundamental_bundle(
+        self,
+        stock_code: str,
+        latest_price: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """
+        返回首页个股分析可直接合并的 Tushare 基本面增强包。
+
+        该方法 fail-open：单一接口失败只记录在 errors/source_chain 中，
+        其他接口成功的数据仍会返回给上层聚合。
+        """
+        result: Dict[str, Any] = {
+            "status": "not_supported",
+            "valuation": {},
+            "profitability": {},
+            "growth": {},
+            "earnings": {},
+            "institution": {},
+            "source_chain": [],
+            "errors": [],
+        }
+
+        if self._api is None:
+            result["source_chain"].append(
+                {"provider": "tushare", "result": "unavailable", "duration_ms": 0}
+            )
+            result["errors"].append("tushare:api_not_initialized")
+            return result
+
+        try:
+            daily_payload = self.get_daily_basic_metrics(stock_code)
+        except Exception as exc:
+            daily_payload = self._v13_unavailable_payload(
+                source="tushare.daily_basic",
+                trade_date=None,
+                reason=str(exc),
+            )
+        self._append_payload_meta(result, daily_payload)
+        daily_row = self._first_payload_row(daily_payload)
+        if daily_row:
+            result["valuation"] = {
+                "trade_date": daily_row.get("trade_date"),
+                "close": daily_row.get("close"),
+                "pe_ratio": daily_row.get("pe_ratio"),
+                "pe_ttm": daily_row.get("pe_ttm"),
+                "pb_ratio": daily_row.get("pb_ratio"),
+                "ps": daily_row.get("ps"),
+                "ps_ttm": daily_row.get("ps_ttm"),
+                "dividend_yield_pct": daily_row.get("dividend_yield_pct"),
+                "dividend_yield_static_pct": daily_row.get("dividend_yield_static_pct"),
+                "turnover_rate": daily_row.get("turnover_rate"),
+                "turnover_rate_f": daily_row.get("turnover_rate_f"),
+                "volume_ratio": daily_row.get("volume_ratio"),
+                "total_mv": self._wan_yuan_to_yuan(daily_row.get("total_mv_wan")),
+                "circ_mv": self._wan_yuan_to_yuan(daily_row.get("circ_mv_wan")),
+                "total_mv_wan": daily_row.get("total_mv_wan"),
+                "circ_mv_wan": daily_row.get("circ_mv_wan"),
+                "unit": "market_value_wan_yuan",
+                "source": "tushare.daily_basic",
+                "data_status": daily_payload.get("status"),
+                "degraded_reasons": list(daily_payload.get("degraded_reasons", []) or []),
+            }
+
+        try:
+            indicator_payload = self.get_financial_indicator_summary(stock_code)
+        except Exception as exc:
+            indicator_payload = self._v13_unavailable_payload(
+                source="tushare.fina_indicator",
+                trade_date=None,
+                reason=str(exc),
+            )
+        self._append_payload_meta(result, indicator_payload)
+        indicator_row = self._first_payload_row(indicator_payload)
+        if indicator_row:
+            result["profitability"] = {
+                "ann_date": indicator_row.get("ann_date"),
+                "report_period": indicator_row.get("report_period"),
+                "roe": indicator_row.get("roe"),
+                "roe_dt": indicator_row.get("roe_dt"),
+                "gross_margin": indicator_row.get("gross_margin"),
+                "net_profit_margin": indicator_row.get("net_profit_margin"),
+                "roa": indicator_row.get("roa"),
+                "roic": indicator_row.get("roic"),
+                "source": "tushare.fina_indicator",
+                "data_status": indicator_payload.get("status"),
+                "degraded_reasons": list(indicator_payload.get("degraded_reasons", []) or []),
+            }
+            result["growth"] = {
+                "ann_date": indicator_row.get("ann_date"),
+                "report_period": indicator_row.get("report_period"),
+                "revenue_yoy": indicator_row.get("revenue_yoy"),
+                "net_profit_yoy": indicator_row.get("net_profit_yoy"),
+                "deducted_net_profit_yoy": indicator_row.get("deducted_net_profit_yoy"),
+                "operating_cash_flow_yoy": indicator_row.get("operating_cash_flow_yoy"),
+                "source": "tushare.fina_indicator",
+                "data_status": indicator_payload.get("status"),
+                "degraded_reasons": list(indicator_payload.get("degraded_reasons", []) or []),
+            }
+            result["earnings"]["financial_report"] = {
+                "report_date": indicator_row.get("report_period"),
+                "ann_date": indicator_row.get("ann_date"),
+                "eps": indicator_row.get("eps"),
+                "dt_eps": indicator_row.get("dt_eps"),
+                "bps": indicator_row.get("bps"),
+                "ocfps": indicator_row.get("ocfps"),
+                "roe": indicator_row.get("roe"),
+                "gross_margin": indicator_row.get("gross_margin"),
+                "source": "tushare.fina_indicator",
+                "data_status": indicator_payload.get("status"),
+                "degraded_reasons": list(indicator_payload.get("degraded_reasons", []) or []),
+            }
+
+        try:
+            dividend_payload = self.get_dividend_summary(stock_code)
+        except Exception as exc:
+            dividend_payload = self._v13_unavailable_payload(
+                source="tushare.dividend",
+                trade_date=None,
+                reason=str(exc),
+            )
+        self._append_payload_meta(result, dividend_payload)
+        dividend_summary = dividend_payload.get("summary") if isinstance(dividend_payload, dict) else None
+        if isinstance(dividend_summary, dict) and dividend_summary:
+            dividend = dict(dividend_summary)
+            price_for_yield = latest_price or daily_row.get("close")
+            ttm_cash = dividend.get("ttm_cash_dividend_per_share")
+            try:
+                price_value = float(price_for_yield) if price_for_yield is not None else None
+                ttm_cash_value = float(ttm_cash) if ttm_cash is not None else None
+            except (TypeError, ValueError):
+                price_value = None
+                ttm_cash_value = None
+            if price_value and price_value > 0 and ttm_cash_value is not None:
+                dividend["ttm_dividend_yield_pct"] = round(ttm_cash_value / price_value * 100.0, 4)
+                dividend["yield_formula"] = "ttm_cash_dividend_per_share / latest_price * 100"
+            dividend["data_status"] = dividend_payload.get("status")
+            dividend["degraded_reasons"] = list(dividend_payload.get("degraded_reasons", []) or [])
+            result["earnings"]["dividend"] = dividend
+
+        try:
+            performance_payload = self.get_performance_event_summary(stock_code)
+        except Exception as exc:
+            performance_payload = self._v13_unavailable_payload(
+                source="tushare.performance_events",
+                trade_date=None,
+                reason=str(exc),
+            )
+        self._append_payload_meta(result, performance_payload)
+        forecast_events = performance_payload.get("forecast_events") if isinstance(performance_payload, dict) else None
+        express_events = performance_payload.get("express_events") if isinstance(performance_payload, dict) else None
+        if isinstance(forecast_events, list) and forecast_events:
+            latest_forecast = forecast_events[0]
+            summary_text = latest_forecast.get("summary") or latest_forecast.get("change_reason")
+            result["earnings"]["forecast_summary"] = summary_text
+            result["earnings"]["forecast_events"] = forecast_events[:3]
+        if isinstance(express_events, list) and express_events:
+            latest_express = express_events[0]
+            result["earnings"]["quick_report_summary"] = {
+                "ann_date": latest_express.get("ann_date"),
+                "report_period": latest_express.get("report_period"),
+                "revenue": latest_express.get("revenue"),
+                "net_profit_parent": latest_express.get("net_profit_parent"),
+                "revenue_yoy": latest_express.get("revenue_yoy"),
+                "net_profit_yoy": latest_express.get("net_profit_yoy"),
+            }
+            result["earnings"]["express_events"] = express_events[:3]
+
+        has_content = any(
+            bool(result.get(block))
+            for block in ("valuation", "profitability", "growth", "earnings", "institution")
+        )
+        payload_statuses = {
+            str(payload.get("status") or "").strip().lower()
+            for payload in (daily_payload, indicator_payload, dividend_payload, performance_payload)
+            if isinstance(payload, dict)
+        }
+        if has_content:
+            result["status"] = "partial"
+        elif "permission_denied" in payload_statuses:
+            result["status"] = "permission_denied"
+        else:
+            result["status"] = "not_supported"
+        return result
 
     def get_stock_limit_prices(self, trade_date: str, ts_code: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -693,6 +1345,113 @@ class TushareFetcher(BaseFetcher):
             )
 
         return self._v13_payload(source=source, trade_date=None, rows=rows, data_as_of=data_as_of)
+
+    @staticmethod
+    def _is_generic_ths_board(name: str, board_type: str) -> bool:
+        normalized_name = str(name or "")
+        normalized_type = str(board_type or "").strip().upper()
+        if normalized_type in {"BB", "S", "ST"}:
+            return True
+
+        generic_patterns = (
+            "\u540c\u82b1\u987a\u5168A",
+            "\u540c\u82b1\u987a\u6caa\u6df1\u5168A",
+            "\u6caa\u6df1\u5168A",
+            "\u540c\u82b1\u987a\u4e3b\u677f",
+            "\u6df1\u80a1\u901a",
+            "\u6caa\u80a1\u901a",
+            "\u9646\u80a1\u901a",
+            "\u5927\u76d8",
+            "\u4e2d\u76d8",
+            "\u5c0f\u76d8",
+            "\u8d85\u5927\u76d8",
+            "\u9ad8\u4f30\u503c",
+            "\u4f4e\u4f30\u503c",
+            "\u5747\u8861\u4f30\u503c",
+            "\u9ad8\u76c8\u5229",
+            "\u4f4e\u76c8\u5229",
+            "\u9ad8\u52a8\u91cf",
+            "\u4f4e\u52a8\u91cf",
+            "\u6fc0\u8fdb\u6295\u8d44",
+            "\u5747\u8861\u6295\u8d44",
+            "\u9ad8\u4ef7\u80a1",
+            "\u4f4e\u4ef7\u80a1",
+            "\u91d1\u4ed3",
+            "\u7b49\u6743",
+            "\u9664\u91d1\u878d",
+            "\u9664\u79d1\u521b\u677f",
+        )
+        return any(pattern in normalized_name for pattern in generic_patterns)
+
+    @classmethod
+    def _ths_board_relevance_key(cls, board: Dict[str, Any]) -> Tuple[int, int, str]:
+        name = str(board.get("name") or "")
+        board_type = str(board.get("type") or "").strip()
+        normalized_type = board_type.upper()
+
+        if normalized_type == "I" or "\u884c\u4e1a" in board_type:
+            type_rank = 0
+        elif normalized_type in {"N", "C"} or "\u6982\u5ff5" in board_type:
+            type_rank = 1
+        else:
+            type_rank = 2
+
+        generic_rank = 1 if cls._is_generic_ths_board(name, board_type) else 0
+        return generic_rank, type_rank, name
+
+    def get_belong_board(self, stock_code: str) -> List[Dict[str, Any]]:
+        """
+        获取个股所属同花顺板块。
+
+        Tushare `ths_member` 只返回板块代码，板块名称通过 `ths_index`
+        小批量补齐；补名称失败时保留代码作为可追踪 fallback。
+        """
+        if self._api is None:
+            return []
+        if _is_us_code(stock_code) or _is_hk_market(stock_code) or _is_etf_code(stock_code):
+            return []
+
+        member_payload = self.get_ths_members(con_code=stock_code, limit=20)
+        if not self._payload_has_rows(member_payload):
+            return []
+
+        boards: List[Dict[str, Any]] = []
+        seen_codes = set()
+        for row in member_payload.get("rows", []):
+            if not isinstance(row, dict):
+                continue
+            theme_code = self._safe_v13_str(row.get("theme_code"))
+            if not theme_code or theme_code in seen_codes:
+                continue
+            seen_codes.add(theme_code)
+
+            board_name = ""
+            board_type = ""
+            try:
+                index_payload = self.get_ths_index(ts_code=theme_code, limit=1)
+                index_row = self._first_payload_row(index_payload)
+                board_name = self._safe_v13_str(index_row.get("theme_name")) or ""
+                board_type = self._safe_v13_str(index_row.get("type")) or ""
+            except Exception as exc:
+                logger.debug("[Tushare] ths_index lookup failed for %s: %s", theme_code, exc)
+
+            boards.append(
+                {
+                    "name": board_name or theme_code,
+                    "code": theme_code,
+                    "type": board_type or "同花顺板块",
+                    "source": "tushare.ths_member",
+                    "in_date": row.get("in_date"),
+                    "out_date": row.get("out_date"),
+                    "is_new": row.get("is_new"),
+                }
+            )
+
+        ranked_boards = sorted(
+            enumerate(boards),
+            key=lambda item: (*self._ths_board_relevance_key(item[1]), item[0]),
+        )
+        return [board for _, board in ranked_boards]
 
     def get_ths_hot(
         self,
@@ -993,7 +1752,13 @@ class TushareFetcher(BaseFetcher):
                 }
             )
 
-        return self._v13_payload(source=source, trade_date=display_trade_date, rows=rows, data_as_of=data_as_of)
+        return self._v13_payload_with_stale_check(
+            source=source,
+            trade_date=display_trade_date,
+            rows=rows,
+            data_as_of=data_as_of,
+            expected_trade_date=display_trade_date,
+        )
 
     def get_stock_moneyflow_ths(
         self,
@@ -1059,7 +1824,13 @@ class TushareFetcher(BaseFetcher):
                 }
             )
 
-        return self._v13_payload(source=source, trade_date=display_trade_date, rows=rows, data_as_of=data_as_of)
+        return self._v13_payload_with_stale_check(
+            source=source,
+            trade_date=display_trade_date,
+            rows=rows,
+            data_as_of=data_as_of,
+            expected_trade_date=display_trade_date,
+        )
 
     def get_stock_moneyflow_dc(
         self,
@@ -1127,7 +1898,13 @@ class TushareFetcher(BaseFetcher):
                 }
             )
 
-        return self._v13_payload(source=source, trade_date=display_trade_date, rows=rows, data_as_of=data_as_of)
+        return self._v13_payload_with_stale_check(
+            source=source,
+            trade_date=display_trade_date,
+            rows=rows,
+            data_as_of=data_as_of,
+            expected_trade_date=display_trade_date,
+        )
 
     def get_cyq_perf(
         self,
@@ -1199,7 +1976,13 @@ class TushareFetcher(BaseFetcher):
                 }
             )
 
-        return self._v13_payload(source=source, trade_date=display_trade_date, rows=rows, data_as_of=data_as_of)
+        return self._v13_payload_with_stale_check(
+            source=source,
+            trade_date=display_trade_date,
+            rows=rows,
+            data_as_of=data_as_of,
+            expected_trade_date=display_trade_date,
+        )
 
     def get_cyq_chips(
         self,
@@ -1282,9 +2065,19 @@ class TushareFetcher(BaseFetcher):
                 degraded_reasons=["invalid_distribution"],
             )
 
+        chip_trade_date = display_trade_date
+        if "trade_date" in distribution_df.columns:
+            distribution_dates = [
+                self._format_display_trade_date(value)
+                for value in distribution_df["trade_date"].tolist()
+            ]
+            distribution_dates = [value for value in distribution_dates if value]
+            if distribution_dates:
+                chip_trade_date = max(distribution_dates)
+
         row = {
             "ts_code": normalized_ts_code,
-            "trade_date": display_trade_date,
+            "trade_date": chip_trade_date,
             "profit_ratio": self._safe_v13_float(metrics.get("profit_ratio")),
             "avg_cost": self._safe_v13_float(metrics.get("avg_cost")),
             "cost_90_low": self._safe_v13_float(metrics.get("cost_90_low")),
@@ -1298,7 +2091,13 @@ class TushareFetcher(BaseFetcher):
             "data_as_of": data_as_of,
             "is_degraded": False,
         }
-        return self._v13_payload(source=source, trade_date=display_trade_date, rows=[row], data_as_of=data_as_of)
+        return self._v13_payload_with_stale_check(
+            source=source,
+            trade_date=chip_trade_date,
+            rows=[row],
+            data_as_of=data_as_of,
+            expected_trade_date=display_trade_date,
+        )
 
     def get_kpl_list(
         self,
@@ -2289,6 +3088,7 @@ class TushareFetcher(BaseFetcher):
                 chip = ChipDistribution(
                     code=stock_code,
                     date=datetime.strptime(start_date, '%Y%m%d').strftime('%Y-%m-%d'),
+                    source="tushare.cyq_chips",
                     profit_ratio=metrics['获利比例'],
                     avg_cost=metrics['平均成本'],
                     cost_90_low=metrics['90成本-低'],

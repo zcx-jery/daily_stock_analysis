@@ -11,6 +11,8 @@ import sys
 import unittest
 from unittest.mock import MagicMock
 
+import numpy as np
+
 try:
     import litellm  # noqa: F401
 except ModuleNotFoundError:
@@ -119,6 +121,23 @@ class TestBuildChipStructureFromData(unittest.TestCase):
         d = {"profit_ratio": 0.5, "avg_cost": None, "concentration_90": 0.1}
         out = _build_chip_structure_from_data(d)
         self.assertEqual(out["avg_cost"], "N/A")
+
+    def test_chip_distribution_to_dict_is_json_safe(self) -> None:
+        chip = ChipDistribution(
+            code="600519",
+            profit_ratio=np.float64(0.5),
+            avg_cost=np.float64(100.0),
+            cost_90_low=np.float64(90.0),
+            cost_90_high=np.float64(110.0),
+            concentration_90=np.float64(0.1),
+            cost_70_low=np.float64(95.0),
+            cost_70_high=np.float64(105.0),
+            concentration_70=np.float64(0.05),
+        )
+        out = chip.to_dict()
+        self.assertIs(type(out["profit_ratio"]), float)
+        self.assertEqual(out["cost_70_low"], 95.0)
+        self.assertEqual(out["cost_70_high"], 105.0)
 
 
 class TestFillChipStructureIfNeeded(unittest.TestCase):

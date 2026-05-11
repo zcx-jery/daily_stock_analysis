@@ -6,6 +6,7 @@
 - 当前状态：Draft
 - 最近更新：2026-05-04
 - 关联 SPEC：[首页个股分析 Tushare 6000 积分增强 SPEC](home-stock-analysis-tushare-enhancement-spec.md)
+- 关联技术设计：[首页个股分析 Tushare 6000 积分增强技术设计](home-stock-analysis-tushare-enhancement-technical-design.md)
 - 适用范围：首页个股分析的 A 股单票分析链路
 
 ## 2. 背景

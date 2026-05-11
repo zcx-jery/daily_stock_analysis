@@ -316,10 +316,23 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             code="600519",
             payload={
                 "belong_boards": [{"name": "白酒", "type": "行业"}],
+                "valuation": {
+                    "status": "ok",
+                    "data": {"pe_ttm": 22.1, "pb_ratio": 8.2},
+                },
+                "profitability": {
+                    "status": "ok",
+                    "data": {"roe": 30.5, "gross_margin": 90.1},
+                },
                 "boards": {
                     "data": {
                         "top": [{"name": "白酒", "change_pct": 2.6}],
                         "bottom": [],
+                        "relative_strength": {
+                            "status": "aligned",
+                            "matched_board": "白酒",
+                            "reason": "belong board in top rankings",
+                        },
                     }
                 },
                 "earnings": {
@@ -340,8 +353,73 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         report = get_history_detail(str(record_id), db_manager=self.db)
         self.assertEqual(report.details.financial_report["report_date"], "2025-12-31")
         self.assertEqual(report.details.dividend_metrics["ttm_dividend_yield_pct"], 2.6)
+        self.assertEqual(report.details.fundamental_metrics["valuation"]["pe_ttm"], 22.1)
+        self.assertEqual(report.details.fundamental_metrics["profitability"]["roe"], 30.5)
         self.assertEqual(report.details.belong_boards, [{"name": "白酒", "type": "行业"}])
         self.assertEqual(report.details.sector_rankings["top"][0]["name"], "白酒")
+        self.assertEqual(report.details.board_linkage["status"], "aligned")
+
+    def test_history_detail_exposes_enhanced_metrics_from_fundamental_snapshot(self) -> None:
+        if get_history_detail is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        result = self._build_result()
+        query_id = "query_enhanced_metrics_fallback_001"
+        saved = self.db.save_analysis_history(
+            result=result,
+            query_id=query_id,
+            report_type="simple",
+            news_content="新闻摘要",
+            context_snapshot=None,
+            save_snapshot=False,
+        )
+        self.assertEqual(saved, 1)
+
+        self.db.save_fundamental_snapshot(
+            query_id=query_id,
+            code="600519",
+            payload={
+                "market": "cn",
+                "status": "partial",
+                "enhanced_by_tushare": True,
+                "coverage": {"valuation": "ok", "capital_flow": "ok", "chip": "ok"},
+                "source_chain": [
+                    {"provider": "tushare.daily_basic", "result": "ok", "duration_ms": 8},
+                    {"provider": "tushare.cyq_chips", "result": "ok", "duration_ms": 9},
+                ],
+                "capital_flow": {
+                    "status": "ok",
+                    "source_chain": [{"provider": "tushare.moneyflow_dc", "result": "ok"}],
+                    "data": {
+                        "stock_flow": {"trade_date": "2026-05-07", "main_net_inflow": 1000},
+                        "dc": {"trade_date": "2026-05-07", "net_amount": 1000},
+                        "signal": "inflow_single_source",
+                    },
+                },
+                "chip": {
+                    "status": "ok",
+                    "source_chain": [{"provider": "tushare.cyq_chips", "result": "ok"}],
+                    "data": {
+                        "date": "2026-05-07",
+                        "data_source": "tushare.cyq_chips",
+                        "profit_ratio": 0.56,
+                        "chip_signal": "neutral",
+                    },
+                },
+            },
+        )
+
+        with self.db.get_session() as session:
+            row = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == query_id).first()
+            if row is None:
+                self.fail("未找到保存的历史记录")
+            record_id = row.id
+
+        report = get_history_detail(str(record_id), db_manager=self.db)
+        self.assertEqual(report.details.capital_flow_metrics["signal"], "inflow_single_source")
+        self.assertEqual(report.details.chip_metrics["source"], "tushare.cyq_chips")
+        self.assertEqual(report.details.data_quality["coverage"]["chip"], "ok")
+        self.assertTrue(report.details.tushare_enhancement["enabled"])
 
     def test_history_detail_preserves_unavailable_board_rankings_state(self) -> None:
         """Failed board ranking blocks should remain unavailable in detail response."""
@@ -408,8 +486,14 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         report = get_history_detail(str(record_id), db_manager=self.db)
         self.assertIsNone(report.details.financial_report)
         self.assertIsNone(report.details.dividend_metrics)
+        self.assertIsNone(report.details.fundamental_metrics)
         self.assertEqual(report.details.belong_boards, [])
         self.assertIsNone(report.details.sector_rankings)
+        self.assertIsNone(report.details.board_linkage)
+        self.assertIsNone(report.details.capital_flow_metrics)
+        self.assertIsNone(report.details.chip_metrics)
+        self.assertIsNone(report.details.data_quality)
+        self.assertIsNone(report.details.tushare_enhancement)
 
     def test_history_detail_returns_empty_related_boards_for_non_cn(self) -> None:
         if get_history_detail is None:

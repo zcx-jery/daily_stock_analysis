@@ -6,6 +6,7 @@
 - 当前状态：Draft
 - 最近更新：2026-05-04
 - 产品文档：[首页个股分析 Tushare 6000 积分增强产品文档](home-stock-analysis-tushare-enhancement-product-design.md)
+- 技术设计：[首页个股分析 Tushare 6000 积分增强技术设计](home-stock-analysis-tushare-enhancement-technical-design.md)
 - 适用范围：首页个股分析的 A 股增强数据层、LLM 上下文、报告详情字段和数据快照
 
 ## 2. 目标和非目标

@@ -502,7 +502,7 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         self.assertFalse(mainline_factor["triggered"])
         self.assertIn("R4 豁免", mainline_factor["evidence"])
 
-    def test_exhaustion_risk_mandatory_veto_blocks_official_slots(self) -> None:
+    def test_exhaustion_risk_is_conditional_without_other_stack_points(self) -> None:
         service = MomentumSecondaryDecisionService(strategy_health_async=False)
         candidate = self._selected_candidate_fixture(
             ts_code="600302.SH",
@@ -530,14 +530,15 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         risk_stack = service._risk_stack_check(candidate)
         blockers = service._slot_hard_blocker_items("main", candidate, {"化工": 92.0})
 
-        self.assertTrue(risk_stack["mandatory_veto"])
-        self.assertTrue(risk_stack["veto"])
-        self.assertEqual(risk_stack["factor_count"], 1)
+        self.assertFalse(risk_stack["mandatory_veto"])
+        self.assertFalse(risk_stack["veto"])
+        self.assertEqual(risk_stack["factor_count"], 2)
+        self.assertEqual(risk_stack["triggered_factor_count"], 1)
         self.assertIn("exhaustion_risk", risk_stack["triggered_keys"])
-        self.assertTrue(candidate["_risk_stack_veto"])
-        self.assertTrue(any(item["key"] == "risk_stack_veto" and item["label"] == "量能竭尽一票否决" for item in blockers))
+        self.assertFalse(candidate["_risk_stack_veto"])
+        self.assertFalse(any(item["key"] == "risk_stack_veto" for item in blockers))
 
-    def test_free_float_turnover_triggers_exhaustion_veto(self) -> None:
+    def test_free_float_turnover_adds_conditional_exhaustion_points(self) -> None:
         service = MomentumSecondaryDecisionService(strategy_health_async=False)
         candidate = self._selected_candidate_fixture(
             ts_code="600303.SH",
@@ -564,9 +565,237 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
 
         risk_stack = service._risk_stack_check(candidate)
 
-        self.assertTrue(risk_stack["mandatory_veto"])
-        self.assertTrue(risk_stack["veto"])
+        self.assertFalse(risk_stack["mandatory_veto"])
+        self.assertFalse(risk_stack["veto"])
+        self.assertEqual(risk_stack["factor_count"], 2)
         self.assertEqual(risk_stack["triggered_keys"], ["exhaustion_risk"])
+
+    def test_exhaustion_plus_position_risk_reaches_hard_veto(self) -> None:
+        service = MomentumSecondaryDecisionService(strategy_health_async=False)
+        candidate = self._selected_candidate_fixture(
+            ts_code="600304.SH",
+            name="高位放量样本",
+            theme="有色金属",
+            role_key="leader",
+            buy_point_status="clear",
+            decision_score=91.0,
+            forward_alpha_score=89.0,
+            official_score=93.0,
+            risk_score=10.0,
+            v13_mainline_score=88.0,
+        )
+        candidate.update(
+            {
+                "close": 24.5,
+                "ma20": 20.0,
+                "pct_chg": 9.9,
+                "volume_expand_5": 1.4,
+                "turnover_rate_f": 28.0,
+                "_theme_pool_count": 3,
+            }
+        )
+
+        risk_stack = service._risk_stack_check(candidate)
+        blockers = service._slot_hard_blocker_items("main", candidate, {"有色金属": 92.0})
+
+        self.assertTrue(risk_stack["veto"])
+        self.assertEqual(risk_stack["factor_count"], 3)
+        self.assertEqual(set(risk_stack["triggered_keys"]), {"position_risk", "exhaustion_risk"})
+        self.assertTrue(any(item["key"] == "risk_stack_veto" for item in blockers))
+
+    def test_raw_top3_soft_risk_stack_is_retained_as_weak_to_strong(self) -> None:
+        service = MomentumSecondaryDecisionService(strategy_health_async=False)
+        candidate = self._selected_candidate_fixture(
+            ts_code="301680.SZ",
+            name="弱转强样本",
+            theme="汽车",
+            role_key="leader",
+            buy_point_status="waiting",
+            decision_score=96.0,
+            forward_alpha_score=93.0,
+            official_score=98.0,
+            risk_score=16.0,
+            v13_mainline_score=90.0,
+        )
+        candidate.update(
+            {
+                "rank": 3,
+                "close": 130.0,
+                "ma20": 120.0,
+                "pct_chg": 20.0,
+                "turnover_rate_f": 61.8,
+                "_theme_pool_count": 4,
+                "_v13_sealing_strength_signal": {
+                    "available": True,
+                    "first_seal_time": "11:00:45",
+                    "last_seal_time": "13:44:06",
+                },
+            }
+        )
+
+        risk_stack = service._risk_stack_check(candidate)
+        blockers = service._slot_hard_blocker_items("secondary", candidate, {"汽车": 92.0})
+
+        self.assertTrue(risk_stack["base_veto"])
+        self.assertFalse(risk_stack["veto"])
+        self.assertTrue(risk_stack["leader_resilience_exempt"])
+        self.assertEqual(risk_stack["leader_resilience_status"], "RETAINED_LEADER_DIVERGENCE")
+        self.assertEqual(risk_stack["hard_risk_keys"], [])
+        self.assertEqual(set(risk_stack["soft_risk_keys"]), {"sealing_risk", "exhaustion_risk"})
+        self.assertFalse(candidate["_risk_stack_veto"])
+        self.assertFalse(any(item["key"] == "risk_stack_veto" for item in blockers))
+
+    def test_raw_top3_hard_risk_still_loses_sovereignty(self) -> None:
+        service = MomentumSecondaryDecisionService(strategy_health_async=False)
+        candidate = self._selected_candidate_fixture(
+            ts_code="600304.SH",
+            name="高位背离 Raw 样本",
+            theme="有色金属",
+            role_key="leader",
+            buy_point_status="clear",
+            decision_score=91.0,
+            forward_alpha_score=89.0,
+            official_score=93.0,
+            risk_score=10.0,
+            v13_mainline_score=88.0,
+        )
+        candidate.update(
+            {
+                "rank": 1,
+                "close": 24.5,
+                "ma20": 20.0,
+                "high_20d": 24.0,
+                "buy_elg_amount": -1200.0,
+                "pct_chg": 9.9,
+                "turnover_rate_f": 28.0,
+                "_theme_pool_count": 3,
+            }
+        )
+
+        risk_stack = service._risk_stack_check(candidate)
+
+        self.assertTrue(risk_stack["veto"])
+        self.assertFalse(risk_stack["leader_resilience_exempt"])
+        self.assertEqual(set(risk_stack["hard_risk_keys"]), {"position_risk", "divergence_risk"})
+
+    def test_raw_top1_single_hard_risk_is_softened_inside_sector_cluster(self) -> None:
+        service = MomentumSecondaryDecisionService(strategy_health_async=False)
+        candidate = self._selected_candidate_fixture(
+            ts_code="301217.SZ",
+            name="龙一分歧样本",
+            theme="有色金属",
+            role_key="leader",
+            buy_point_status="waiting",
+            decision_score=92.0,
+            forward_alpha_score=94.0,
+            official_score=96.0,
+            risk_score=18.0,
+            v13_mainline_score=90.0,
+        )
+        candidate.update(
+            {
+                "rank": 1,
+                "close": 10.0,
+                "ma20": 12.0,
+                "high_20d": 10.0,
+                "buy_elg_amount": -1200.0,
+                "pct_chg": 9.9,
+                "turnover_rate_f": 28.0,
+                "_theme_pool_count": 3,
+            }
+        )
+
+        risk_stack = service._risk_stack_check(candidate)
+        blockers = service._slot_hard_blocker_items("main", candidate, {"有色金属": 92.0})
+
+        self.assertTrue(risk_stack["base_veto"])
+        self.assertFalse(risk_stack["veto"])
+        self.assertEqual(risk_stack["threshold"], 4)
+        self.assertTrue(risk_stack["kings_guard_hard_risk_softened"])
+        self.assertEqual(risk_stack["leader_resilience_profile"], "raw_top1_hard_risk_softened")
+        self.assertEqual(risk_stack["hard_risk_keys"], ["divergence_risk"])
+        self.assertFalse(any(item["key"] == "risk_stack_veto" for item in blockers))
+
+    def test_raw_top3_mainline_position_churn_is_retained_without_divergence(self) -> None:
+        service = MomentumSecondaryDecisionService(strategy_health_async=False)
+        candidate = self._selected_candidate_fixture(
+            ts_code="000539.SZ",
+            name="主线高位换手 Raw 样本",
+            theme="公用事业",
+            role_key="leader",
+            buy_point_status="waiting",
+            decision_score=90.0,
+            forward_alpha_score=86.0,
+            official_score=92.0,
+            risk_score=18.0,
+            v13_mainline_score=88.0,
+        )
+        candidate.update(
+            {
+                "rank": 3,
+                "close": 6.78,
+                "ma20": 5.41,
+                "pct_chg": 10.0,
+                "turnover_rate_f": 34.86,
+                "_theme_pool_count": 55,
+            }
+        )
+
+        risk_stack = service._risk_stack_check(candidate)
+        blockers = service._slot_hard_blocker_items("secondary", candidate, {"公用事业": 92.0})
+
+        self.assertTrue(risk_stack["base_veto"])
+        self.assertFalse(risk_stack["veto"])
+        self.assertTrue(risk_stack["leader_resilience_exempt"])
+        self.assertEqual(risk_stack["leader_resilience_profile"], "mainline_position_churn")
+        self.assertEqual(risk_stack["leader_resilience_status"], "RETAINED_LEADER_DIVERGENCE")
+        self.assertIn("high-position churn", service._raw_leader_divergence_reason(risk_stack))
+        self.assertEqual(risk_stack["hard_risk_keys"], ["position_risk"])
+        self.assertEqual(risk_stack["soft_risk_keys"], ["exhaustion_risk"])
+        self.assertFalse(candidate["_risk_stack_veto"])
+        self.assertFalse(any(item["key"] == "risk_stack_veto" for item in blockers))
+
+    def test_raw_top3_mainline_position_reseal_churn_is_retained(self) -> None:
+        service = MomentumSecondaryDecisionService(strategy_health_async=False)
+        candidate = self._selected_candidate_fixture(
+            ts_code="301217.SZ",
+            name="Raw cluster reseal sample",
+            theme="Power Equipment",
+            role_key="leader",
+            buy_point_status="waiting",
+            decision_score=90.0,
+            forward_alpha_score=86.0,
+            official_score=92.0,
+            risk_score=18.0,
+            v13_mainline_score=88.0,
+        )
+        candidate.update(
+            {
+                "_raw_momentum_rank": 2,
+                "rank": 70,
+                "close": 70.98,
+                "ma20": 46.72,
+                "pct_chg": 20.0,
+                "turnover_rate_f": 34.04,
+                "_theme_pool_count": 12,
+                "_v13_sealing_strength_signal": {
+                    "available": True,
+                    "first_seal_time": "14:12:48",
+                    "last_seal_time": "14:12:48",
+                },
+            }
+        )
+
+        risk_stack = service._risk_stack_check(candidate)
+        blockers = service._slot_hard_blocker_items("secondary", candidate, {"Power Equipment": 92.0})
+
+        self.assertTrue(risk_stack["base_veto"])
+        self.assertFalse(risk_stack["veto"])
+        self.assertTrue(risk_stack["leader_resilience_exempt"])
+        self.assertEqual(risk_stack["leader_resilience_profile"], "mainline_reseal_churn")
+        self.assertEqual(risk_stack["hard_risk_keys"], ["position_risk"])
+        self.assertEqual(set(risk_stack["soft_risk_keys"]), {"sealing_risk", "exhaustion_risk"})
+        self.assertFalse(any(item["key"] == "risk_stack_veto" for item in blockers))
 
     def test_mainline_intensity_confirmation_suppresses_legacy_weak_mainline_blocker(self) -> None:
         service = MomentumSecondaryDecisionService(strategy_health_async=False)
@@ -627,6 +856,436 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         self.assertEqual(context["required_mainline_count"], 3)
         self.assertFalse(candidate["_adaptive_mainline_pass"])
         self.assertTrue(any(item["key"] == "adaptive_mainline_threshold" for item in blockers))
+
+    def test_raw_alpha_shield_restores_non_veto_raw_top3_candidate(self) -> None:
+        service = MomentumSecondaryDecisionService(strategy_health_async=False)
+        raw_one = self._selected_candidate_fixture(
+            ts_code="600101.SH",
+            name="Raw 龙头",
+            theme="机器人",
+            role_key="leader",
+            buy_point_status="unclear",
+            decision_score=78.0,
+            forward_alpha_score=86.0,
+            official_score=82.0,
+            risk_score=18.0,
+        )
+        raw_two = self._selected_candidate_fixture(
+            ts_code="600102.SH",
+            name="Raw 次强",
+            theme="机器人",
+            role_key="front",
+            buy_point_status="clear",
+            decision_score=84.0,
+            forward_alpha_score=82.0,
+            official_score=84.0,
+            risk_score=20.0,
+        )
+        raw_three = self._selected_candidate_fixture(
+            ts_code="600103.SH",
+            name="Raw 三号",
+            theme="机器人",
+            role_key="front",
+            buy_point_status="waiting",
+            decision_score=83.0,
+            forward_alpha_score=80.0,
+            official_score=83.0,
+            risk_score=22.0,
+        )
+        inserted = self._selected_candidate_fixture(
+            ts_code="600104.SH",
+            name="干净插入票",
+            theme="电子",
+            role_key="leader",
+            buy_point_status="clear",
+            decision_score=86.0,
+            forward_alpha_score=74.0,
+            official_score=86.0,
+            risk_score=16.0,
+        )
+        for rank, candidate in enumerate([raw_one, raw_two, raw_three, inserted], start=1):
+            candidate["rank"] = rank
+
+        selected = [("main", inserted), ("secondary", raw_two), ("watch", raw_three)]
+        shielded = service._apply_raw_alpha_shield(
+            selected,
+            [raw_one, raw_two, raw_three, inserted],
+            {"机器人": 88.0, "电子": 82.0},
+        )
+
+        self.assertEqual([candidate["ts_code"] for _slot, candidate in shielded], ["600101.SH", "600102.SH", "600103.SH"])
+        self.assertEqual(raw_one["_raw_alpha_shield"]["status"], "retained_by_raw_top3_sovereignty")
+        self.assertEqual(inserted["_raw_alpha_shield"]["status"], "displaced_by_raw_alpha_shield")
+
+    def test_raw_alpha_shield_fills_open_slot_with_sovereign_raw_top3(self) -> None:
+        service = MomentumSecondaryDecisionService(strategy_health_async=False)
+        raw_one = self._selected_candidate_fixture(
+            ts_code="600101.SH",
+            name="Raw 一号",
+            theme="机器人",
+            role_key="leader",
+            buy_point_status="waiting",
+            decision_score=86.0,
+            forward_alpha_score=86.0,
+            official_score=88.0,
+            risk_score=18.0,
+        )
+        raw_two = self._selected_candidate_fixture(
+            ts_code="600102.SH",
+            name="Raw 二号",
+            theme="机器人",
+            role_key="front",
+            buy_point_status="waiting",
+            decision_score=84.0,
+            forward_alpha_score=84.0,
+            official_score=86.0,
+            risk_score=20.0,
+        )
+        raw_three = self._selected_candidate_fixture(
+            ts_code="600869.SH",
+            name="买点不清晰但 Raw 三号",
+            theme="电力设备",
+            role_key="front",
+            buy_point_status="unclear",
+            decision_score=78.0,
+            forward_alpha_score=88.0,
+            official_score=82.0,
+            risk_score=18.0,
+        )
+        for rank, candidate in enumerate([raw_one, raw_two, raw_three], start=1):
+            candidate["rank"] = rank
+
+        shielded = service._apply_raw_alpha_shield(
+            [("main", raw_one), ("secondary", raw_two)],
+            [raw_one, raw_two, raw_three],
+            {"机器人": 88.0, "电力设备": 90.0},
+        )
+
+        self.assertEqual([candidate["ts_code"] for _slot, candidate in shielded], ["600101.SH", "600102.SH", "600869.SH"])
+        self.assertEqual(shielded[2][0], "watch")
+        self.assertEqual(raw_three["_raw_alpha_shield"]["status"], "retained_by_raw_top3_sovereignty")
+        self.assertEqual(raw_three["_raw_alpha_shield"]["filled_open_slot"], "watch")
+
+    def test_raw_alpha_shield_restores_soft_veto_raw_leader_divergence(self) -> None:
+        service = MomentumSecondaryDecisionService(strategy_health_async=False)
+        raw_one = self._selected_candidate_fixture(
+            ts_code="600101.SH",
+            name="Raw 一号",
+            theme="机器人",
+            role_key="leader",
+            buy_point_status="clear",
+            decision_score=88.0,
+            forward_alpha_score=88.0,
+            official_score=90.0,
+            risk_score=18.0,
+        )
+        raw_two = self._selected_candidate_fixture(
+            ts_code="600102.SH",
+            name="Raw 二号",
+            theme="机器人",
+            role_key="front",
+            buy_point_status="clear",
+            decision_score=86.0,
+            forward_alpha_score=84.0,
+            official_score=88.0,
+            risk_score=18.0,
+        )
+        raw_three = self._selected_candidate_fixture(
+            ts_code="301680.SZ",
+            name="弱转强 Raw 三号",
+            theme="汽车",
+            role_key="leader",
+            buy_point_status="waiting",
+            decision_score=84.0,
+            forward_alpha_score=92.0,
+            official_score=88.0,
+            risk_score=18.0,
+        )
+        inserted = self._selected_candidate_fixture(
+            ts_code="000420.SZ",
+            name="干净插入票",
+            theme="基础化工",
+            role_key="front",
+            buy_point_status="clear",
+            decision_score=90.0,
+            forward_alpha_score=76.0,
+            official_score=91.0,
+            risk_score=14.0,
+        )
+        for rank, candidate in enumerate([raw_one, raw_two, raw_three, inserted], start=1):
+            candidate["rank"] = rank
+        raw_three.update(
+            {
+                "pct_chg": 20.0,
+                "turnover_rate_f": 61.8,
+                "_theme_pool_count": 4,
+                "_v13_sealing_strength_signal": {
+                    "available": True,
+                    "first_seal_time": "11:00:45",
+                    "last_seal_time": "13:44:06",
+                },
+            }
+        )
+
+        selected = [("main", raw_one), ("secondary", raw_two), ("watch", inserted)]
+        shielded = service._apply_raw_alpha_shield(
+            selected,
+            [raw_one, raw_two, raw_three, inserted],
+            {"机器人": 88.0, "汽车": 90.0, "基础化工": 82.0},
+        )
+
+        self.assertEqual([candidate["ts_code"] for _slot, candidate in shielded], ["600101.SH", "600102.SH", "301680.SZ"])
+        self.assertEqual(raw_three["_raw_alpha_shield"]["status"], "RETAINED_LEADER_DIVERGENCE")
+        self.assertEqual(inserted["_raw_alpha_shield"]["status"], "displaced_by_raw_alpha_shield")
+
+    def test_raw_alpha_shield_uses_rank_score_for_raw_sovereignty(self) -> None:
+        service = MomentumSecondaryDecisionService(strategy_health_async=False)
+        raw_rank_score_leader = self._selected_candidate_fixture(
+            ts_code="688167.SH",
+            name="Raw Score Leader",
+            theme="Semiconductor",
+            role_key="leader",
+            buy_point_status="waiting",
+            decision_score=80.0,
+            forward_alpha_score=86.0,
+            official_score=82.0,
+            risk_score=18.0,
+        )
+        inserted = self._selected_candidate_fixture(
+            ts_code="600555.SH",
+            name="Clean Inserted",
+            theme="Power",
+            role_key="leader",
+            buy_point_status="clear",
+            decision_score=85.0,
+            forward_alpha_score=70.0,
+            official_score=85.0,
+            risk_score=18.0,
+        )
+        filler_two = self._selected_candidate_fixture(
+            ts_code="600556.SH",
+            name="Raw Score Two",
+            theme="AI",
+            role_key="front",
+            buy_point_status="clear",
+            decision_score=78.0,
+            forward_alpha_score=78.0,
+            official_score=78.0,
+            risk_score=18.0,
+        )
+        filler_three = self._selected_candidate_fixture(
+            ts_code="600557.SH",
+            name="Raw Score Three",
+            theme="AI",
+            role_key="front",
+            buy_point_status="clear",
+            decision_score=77.0,
+            forward_alpha_score=77.0,
+            official_score=77.0,
+            risk_score=18.0,
+        )
+        raw_rank_score_leader.update({"rank": 30, "rank_score": 99.0})
+        inserted.update({"rank": 1, "rank_score": 70.0})
+        filler_two.update({"rank": 2, "rank_score": 95.0})
+        filler_three.update({"rank": 3, "rank_score": 90.0})
+
+        candidates = [raw_rank_score_leader, filler_two, filler_three, inserted]
+        service._mark_raw_momentum_ranks(candidates)
+        shielded = service._apply_raw_alpha_shield(
+            [("main", inserted)],
+            candidates,
+            {"Semiconductor": 88.0, "Power": 80.0, "AI": 82.0},
+        )
+
+        self.assertEqual(raw_rank_score_leader["_raw_momentum_rank"], 1)
+        self.assertEqual(shielded[0][1]["ts_code"], "688167.SH")
+        self.assertEqual(
+            raw_rank_score_leader["_raw_alpha_shield"]["status"],
+            "retained_by_raw_top3_sovereignty",
+        )
+
+    def test_perfect_profile_challenger_needs_25pct_premium_to_displace_raw_leader(self) -> None:
+        service = MomentumSecondaryDecisionService(strategy_health_async=False)
+        raw_leader = self._selected_candidate_fixture(
+            ts_code="600777.SH",
+            name="Raw Leader",
+            theme="AI",
+            role_key="leader",
+            buy_point_status="waiting",
+            decision_score=80.0,
+            forward_alpha_score=80.0,
+            official_score=80.0,
+            risk_score=18.0,
+        )
+        challenger = self._selected_candidate_fixture(
+            ts_code="600888.SH",
+            name="Perfect Challenger",
+            theme="Robotics",
+            role_key="leader",
+            buy_point_status="clear",
+            decision_score=118.0,
+            forward_alpha_score=118.0,
+            official_score=118.0,
+            risk_score=12.0,
+        )
+        raw_leader.update({"rank": 1, "rank_score": 100.0})
+        challenger.update({"rank": 4, "rank_score": 90.0})
+
+        shielded = service._apply_raw_alpha_shield(
+            [("main", challenger)],
+            [raw_leader, challenger],
+            {"AI": 80.0, "Robotics": 95.0},
+        )
+
+        self.assertEqual(shielded[0][1]["ts_code"], "600888.SH")
+        self.assertEqual(raw_leader["_raw_alpha_shield"]["status"], "dropped_by_perfect_profile_challenger")
+
+        challenger["turnover_rate_f"] = 30.0
+        challenger.pop("_risk_stack_check", None)
+        shielded = service._apply_raw_alpha_shield(
+            [("main", challenger)],
+            [raw_leader, challenger],
+            {"AI": 80.0, "Robotics": 95.0},
+        )
+
+        self.assertEqual(shielded[0][1]["ts_code"], "600777.SH")
+        self.assertEqual(challenger["_raw_alpha_shield"]["status"], "displaced_by_raw_alpha_shield")
+
+    def test_kings_guard_raw_top1_cannot_be_displaced_by_perfect_challenger(self) -> None:
+        service = MomentumSecondaryDecisionService(strategy_health_async=False)
+        raw_king = self._selected_candidate_fixture(
+            ts_code="301217.SZ",
+            name="Raw 一号强主线",
+            theme="有色金属",
+            role_key="leader",
+            buy_point_status="waiting",
+            decision_score=82.0,
+            forward_alpha_score=88.0,
+            official_score=84.0,
+            risk_score=18.0,
+        )
+        challenger = self._selected_candidate_fixture(
+            ts_code="600888.SH",
+            name="Perfect Challenger",
+            theme="Robotics",
+            role_key="leader",
+            buy_point_status="clear",
+            decision_score=150.0,
+            forward_alpha_score=150.0,
+            official_score=150.0,
+            risk_score=12.0,
+        )
+        raw_king.update(
+            {
+                "rank": 1,
+                "rank_score": 100.0,
+                "_official_mainline_intensity_multiplier": 1.3,
+                "_official_mainline_intensity_count": 4,
+            }
+        )
+        challenger.update({"rank": 4, "rank_score": 90.0})
+
+        shielded = service._apply_raw_alpha_shield(
+            [("main", challenger)],
+            [raw_king, challenger],
+            {"有色金属": 92.0, "Robotics": 95.0},
+        )
+
+        self.assertEqual(shielded[0][1]["ts_code"], "301217.SZ")
+        self.assertEqual(raw_king["_raw_alpha_shield"]["status"], "retained_by_kings_guard")
+        self.assertTrue(raw_king["_raw_alpha_shield"]["kings_guard"])
+        self.assertEqual(challenger["_raw_alpha_shield"]["status"], "displaced_by_raw_alpha_shield")
+
+    def test_raw_top2_requires_40pct_premium_to_be_displaced(self) -> None:
+        service = MomentumSecondaryDecisionService(strategy_health_async=False)
+        raw_one = self._selected_candidate_fixture(
+            ts_code="600001.SH",
+            name="Raw 一号",
+            theme="AI",
+            role_key="leader",
+            buy_point_status="clear",
+            decision_score=82.0,
+            forward_alpha_score=82.0,
+            official_score=82.0,
+            risk_score=18.0,
+        )
+        raw_two = self._selected_candidate_fixture(
+            ts_code="600002.SH",
+            name="Raw 二号",
+            theme="AI",
+            role_key="front",
+            buy_point_status="waiting",
+            decision_score=80.0,
+            forward_alpha_score=80.0,
+            official_score=80.0,
+            risk_score=18.0,
+        )
+        challenger = self._selected_candidate_fixture(
+            ts_code="600003.SH",
+            name="三成溢价挑战者",
+            theme="Robotics",
+            role_key="leader",
+            buy_point_status="clear",
+            decision_score=104.0,
+            forward_alpha_score=104.0,
+            official_score=104.0,
+            risk_score=12.0,
+        )
+        raw_one.update({"rank": 1, "rank_score": 100.0})
+        raw_two.update({"rank": 2, "rank_score": 95.0})
+        challenger.update({"rank": 4, "rank_score": 70.0})
+
+        shielded = service._apply_raw_alpha_shield(
+            [("main", raw_one), ("secondary", challenger)],
+            [raw_one, raw_two, challenger],
+            {"AI": 82.0, "Robotics": 95.0},
+        )
+
+        self.assertEqual([candidate["ts_code"] for _slot, candidate in shielded], ["600001.SH", "600002.SH"])
+        self.assertEqual(raw_two["_raw_alpha_shield"]["replacement_premium_threshold"], 1.4)
+        self.assertEqual(challenger["_raw_alpha_shield"]["status"], "displaced_by_raw_alpha_shield")
+
+    def test_stable_main_slot_prefers_mainline_anchor_over_raw_one(self) -> None:
+        service = MomentumSecondaryDecisionService(strategy_health_async=False)
+        raw_one = self._selected_candidate_fixture(
+            ts_code="600201.SH",
+            name="Raw 主线一号",
+            theme="铝",
+            role_key="leader",
+            buy_point_status="waiting",
+            decision_score=86.0,
+            forward_alpha_score=88.0,
+            official_score=88.0,
+            risk_score=18.0,
+        )
+        raw_two = self._selected_candidate_fixture(
+            ts_code="600202.SH",
+            name="Raw 主线二号",
+            theme="铝",
+            role_key="front",
+            buy_point_status="clear",
+            decision_score=87.0,
+            forward_alpha_score=82.0,
+            official_score=87.0,
+            risk_score=18.0,
+        )
+        raw_one["rank"] = 1
+        raw_two["rank"] = 2
+        raw_one["_official_mainline_intensity_multiplier"] = 1.3
+        raw_two["_official_mainline_intensity_multiplier"] = 1.3
+        raw_two["_official_mainline_intensity_count"] = 4
+        selected = [("main", raw_two), ("secondary", raw_one)]
+
+        rebalanced = service._apply_stable_main_slot(selected, {"铝": 92.0})
+
+        self.assertEqual(rebalanced[0][1]["ts_code"], "600202.SH")
+        self.assertNotIn("_raw_alpha_shield", raw_one)
+
+        raw_one["_official_mainline_intensity_count"] = 5
+        rebalanced = service._apply_stable_main_slot(selected, {"铝": 92.0})
+
+        self.assertEqual(rebalanced[0][1]["ts_code"], "600201.SH")
+        self.assertEqual(raw_one["_main_slot_assignment"]["status"], "assigned_stable_main_slot")
 
     @staticmethod
     def _selected_candidate_fixture(
@@ -827,13 +1486,15 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         self.assertEqual(len(result["action_checklist"]["steps"]), 3)
         self.assertEqual(result["action_checklist"]["steps"][0]["phase"], "pre_open")
         self.assertTrue(result["excluded_candidates"])
-        self.assertEqual(result["excluded_candidates"][0]["reason"], "非主线 / 主线过弱")
-        self.assertEqual(result["excluded_candidates"][0]["reason_key"], "non_mainline_weak")
+        non_mainline_exclusion = next(
+            item for item in result["excluded_candidates"] if item["reason_key"] == "non_mainline_weak"
+        )
+        self.assertEqual(non_mainline_exclusion["reason"], "非主线 / 主线过弱")
         self.assertEqual(
-            result["excluded_candidates"][0]["reason_detail"],
+            non_mainline_exclusion["reason_detail"],
             "当前题材不在默认主线内，且题材强度偏弱，因此本轮不优先收口。",
         )
-        self.assertNotIn("?", result["excluded_candidates"][0]["reason_detail"])
+        self.assertNotIn("?", non_mainline_exclusion["reason_detail"])
         self.assertIn("hard_blockers", result["excluded_candidates"][0])
         self.assertIn("soft_adjustments", result["excluded_candidates"][0])
         self.assertIn("base_rank_score", result["portfolio"][0])
@@ -1153,6 +1814,45 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         self.assertLess(main["v13_sealing_strength_score"], 60.0)
         self.assertIn("封板质量偏弱", [item["label"] for item in main["soft_adjustments"]])
 
+    def test_build_from_screening_preserves_mainline_healthy_rotation_buy_point(self) -> None:
+        v13_data_service = _FakeV13DecisionDataService(
+            limit_events={
+                "600301.SH": [
+                    {
+                        "ts_code": "600301.SH",
+                        "limit": "U",
+                        "limit_times": 1,
+                        "open_times": 5,
+                        "amount": 1000000000,
+                        "fd_amount": 35000000,
+                        "first_time": "13:05:00",
+                    }
+                ]
+            }
+        )
+        service = MomentumSecondaryDecisionService(
+            screener_service=None,
+            v13_data_service=v13_data_service,
+        )
+
+        result = service.build_from_screening(
+            self._v13_single_candidate_screening(
+                buyability_score=65.0,
+                mainline_intensity_multiplier=1.3,
+                turnover_rate_f=6.2,
+            )
+        )
+
+        main = result["portfolio"][0]
+        signal = main["v13_sealing_strength"]
+        self.assertEqual(main["buy_point_status"], "waiting")
+        self.assertEqual(signal["execution_bias"], "healthy_rotation")
+        self.assertFalse(signal["downgrade_buy_point"])
+        self.assertEqual(signal["churn_to_seal_health"], "healthy_rotation")
+        self.assertAlmostEqual(signal["turnover_rate_f_at_seal_proxy"], 6.2)
+        self.assertGreaterEqual(main["v13_sealing_strength_score"], 68.0)
+        self.assertIn("主线换手确认", [item["label"] for item in main["soft_adjustments"]])
+
     def test_build_from_screening_treats_one_word_board_as_hard_to_participate(self) -> None:
         v13_data_service = _FakeV13DecisionDataService(
             limit_events={
@@ -1233,6 +1933,60 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         self.assertEqual(v13_data_service.last_ts_codes[-1], "600030.SH")
         self.assertEqual(result["v13_data_status"]["sampled_code_count"], 30)
         self.assertEqual(result["v13_data_status"]["candidate_count"], 35)
+
+    def test_build_from_screening_samples_deep_raw_top3_for_v13_context(self) -> None:
+        v13_data_service = _FakeV13DecisionDataService()
+        service = MomentumSecondaryDecisionService(
+            screener_service=None,
+            v13_data_service=v13_data_service,
+        )
+        results = []
+        for rank in range(1, 36):
+            rank_score = 80.0
+            if rank == 33:
+                rank_score = 103.0
+            elif rank == 34:
+                rank_score = 102.0
+            elif rank == 35:
+                rank_score = 101.0
+            results.append(
+                {
+                    "rank": rank,
+                    "ts_code": f"600{rank:03d}.SH",
+                    "name": f"candidate {rank}",
+                    "pct_chg": 6.0,
+                    "continuation_score": 82.0,
+                    "extension_score": 78.0,
+                    "risk_score": 12.0,
+                    "buyability_score": None,
+                    "entry_range_low": 10.0,
+                    "entry_range_high": 10.4,
+                    "final_score": 80.0,
+                    "rank_score": rank_score,
+                    "themes": ["Robot"],
+                    "leader_level": "leader",
+                    "top_reasons": ["candidate pool sample"],
+                    "risk_tags": [],
+                    "score_breakdown": {},
+                }
+            )
+
+        result = service.build_from_screening(
+            {
+                "profile": "standard",
+                "trade_date": "2026-04-10",
+                "candidate_count": len(results),
+                "ranked_results": results,
+                "results": results[:30],
+            }
+        )
+
+        self.assertEqual(len(v13_data_service.last_ts_codes), 30)
+        self.assertIn("600033.SH", v13_data_service.last_ts_codes)
+        self.assertIn("600034.SH", v13_data_service.last_ts_codes)
+        self.assertIn("600035.SH", v13_data_service.last_ts_codes)
+        self.assertNotIn("600030.SH", v13_data_service.last_ts_codes)
+        self.assertEqual(result["v13_data_status"]["sampled_code_count"], 30)
 
     def test_build_from_screening_disables_strategy_when_both_windows_are_weak(self) -> None:
         service = MomentumSecondaryDecisionService(screener_service=None)
@@ -1406,7 +2160,10 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         self.assertEqual(result["excluded_candidates"], [])
 
     def test_build_from_screening_allows_forward_alpha_to_challenge_clear_leader(self) -> None:
-        service = MomentumSecondaryDecisionService(screener_service=None)
+        service = MomentumSecondaryDecisionService(
+            screener_service=None,
+            adaptive_gate_audit_provider=lambda _profile: None,
+        )
         screening = {
             "profile": "standard",
             "trade_date": "2026-04-10",
@@ -1530,7 +2287,10 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         self.assertNotIn("decision_score", risky_diagnostic)
 
     def test_build_from_screening_keeps_secondary_on_mainline_when_cross_theme_is_too_weak(self) -> None:
-        service = MomentumSecondaryDecisionService(screener_service=None)
+        service = MomentumSecondaryDecisionService(
+            screener_service=None,
+            adaptive_gate_audit_provider=lambda _profile: None,
+        )
         screening = {
             "profile": "standard",
             "trade_date": "2026-04-10",
@@ -2261,7 +3021,10 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         self.assertEqual(result["portfolio"][0]["official_score"], 89.0)
 
     def test_build_from_screening_main_slot_respects_hard_blockers(self) -> None:
-        service = MomentumSecondaryDecisionService(screener_service=None)
+        service = MomentumSecondaryDecisionService(
+            screener_service=None,
+            adaptive_gate_audit_provider=lambda _profile: None,
+        )
         screening = {
             "profile": "standard",
             "trade_date": "2026-04-10",
@@ -2762,6 +3525,7 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
             "standard",
             market_environment={
                 "level": "strong",
+                "pool_success_rate_pct": 70.0,
                 "modules": [{"key": "core_premium", "level": "strong"}],
             },
             opportunity_quality={
@@ -3756,6 +4520,38 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
 
         self.assertEqual(result["level"], "stand_aside")
 
+    def test_build_action_forces_stand_aside_when_market_pool_return_breaks_threshold(self) -> None:
+        service = MomentumSecondaryDecisionService(screener_service=None)
+
+        result = service._build_action(
+            "standard",
+            market_environment={
+                "level": "strong",
+                "label": "强",
+                "force_stand_aside": True,
+                "force_reason": "Market_Pool_Avg_Return -3.40% < -3.00%，触发 Alpha Shield 总闸门，今日不做。",
+                "modules": [
+                    {"key": "core_premium", "level": "strong"},
+                    {"key": "breadth_premium", "level": "strong"},
+                ],
+            },
+            opportunity_quality={
+                "matrix_level": "strong",
+                "clear_count": 3,
+                "main_risk_reward_pass": True,
+                "theme_concentration_pass": True,
+            },
+            historical_validity={"level": "healthy"},
+            portfolio=[
+                {"slot": "main", "buy_point_status": "clear", "risk_tags": [], "risk_score": 18.0},
+                {"slot": "secondary", "buy_point_status": "clear", "risk_tags": [], "risk_score": 20.0},
+            ],
+        )
+
+        self.assertEqual(result["level"], "stand_aside")
+        self.assertTrue(result["gate_context"]["force_stand_aside"])
+        self.assertIn("Market_Pool_Avg_Return", result["reason"])
+
     def test_build_action_maps_strong_market_and_strong_opportunity_to_strong_go(self) -> None:
         service = MomentumSecondaryDecisionService(screener_service=None)
 
@@ -3763,6 +4559,7 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
             "standard",
             market_environment={
                 "level": "strong",
+                "pool_success_rate_pct": 70.0,
                 "modules": [{"key": "core_premium", "level": "strong"}],
             },
             opportunity_quality={
@@ -3773,12 +4570,51 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
             },
             historical_validity={"level": "healthy", "attack_permission_status": "open"},
             portfolio=[
-                {"slot": "main", "buy_point_status": "clear", "risk_tags": [], "risk_score": 18.0},
+                {
+                    "slot": "main",
+                    "buy_point_status": "clear",
+                    "risk_tags": [],
+                    "risk_score": 18.0,
+                    "v13_ladder_position": {"market_height": 6},
+                },
                 {"slot": "secondary", "buy_point_status": "clear", "risk_tags": [], "risk_score": 20.0},
             ],
         )
 
         self.assertEqual(result["level"], "strong_go")
+        self.assertTrue(result["gate_context"]["strong_go_guard"]["passed"])
+
+    def test_build_action_downgrades_strong_go_without_pool_and_height_confirmation(self) -> None:
+        service = MomentumSecondaryDecisionService(screener_service=None)
+
+        result = service._build_action(
+            "standard",
+            market_environment={
+                "level": "strong",
+                "pool_success_rate_pct": 60.0,
+                "modules": [{"key": "core_premium", "level": "strong"}],
+            },
+            opportunity_quality={
+                "level": "strong",
+                "matrix_level": "strong",
+                "label": "强",
+                "modules": [{"key": "buy_point_clarity", "level": "strong", "clear_count": 3}],
+            },
+            historical_validity={"level": "healthy", "attack_permission_status": "open"},
+            portfolio=[
+                {
+                    "slot": "main",
+                    "buy_point_status": "clear",
+                    "risk_tags": [],
+                    "risk_score": 18.0,
+                    "v13_ladder_position": {"market_height": 5},
+                },
+                {"slot": "secondary", "buy_point_status": "clear", "risk_tags": [], "risk_score": 20.0},
+            ],
+        )
+
+        self.assertEqual(result["level"], "normal_go")
+        self.assertTrue(result["gate_context"]["strong_go_guard"]["downgraded"])
 
     def test_apply_historical_validity_caps_recovering_to_normal_go(self) -> None:
         service = MomentumSecondaryDecisionService(screener_service=None)

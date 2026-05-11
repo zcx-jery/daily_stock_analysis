@@ -131,8 +131,18 @@ MAINLINE_CONFIRMATION_PRIORITY_TOLERANCE = 3.0
 SAME_THEME_CONFIRMATION_PRIORITY_TOLERANCE = 3.0
 WAITING_FRONT_CLEAR_LEADER_OFFICIAL_GAP_TOLERANCE = 1.2
 WAITING_FRONT_CLEAR_LEADER_FORWARD_ALPHA_ADVANTAGE_CAP = 7.5
+ALPHA_SHIELD_REPLACEMENT_PREMIUM = 1.25
+RAW_FOLLOWER_REPLACEMENT_PREMIUM = 1.40
+KINGS_GUARD_MAINLINE_MULTIPLIER_THRESHOLD = 1.25
+KINGS_GUARD_CLUSTER_MIN_COUNT = 3
+KINGS_GUARD_RISK_STACK_THRESHOLD = 4
+RAW_LEADER_HARD_RISK_KEYS = {"position_risk", "divergence_risk"}
+RAW_LEADER_SOFT_RISK_KEYS = {"sealing_risk", "mainline_risk", "exhaustion_risk"}
+RAW_LEADER_DIVERGENCE_STATUS = "RETAINED_LEADER_DIVERGENCE"
 V13_CONTEXT_MAX_TS_CODES = 30
 DECISION_CANDIDATE_POOL_LIMIT = 12
+STRONG_GO_POOL_SUCCESS_RATE_THRESHOLD_PCT = 65.0
+STRONG_GO_LEADER_BOARD_HEIGHT_THRESHOLD = 5
 ADAPTIVE_GATE_LOOKBACK_DAYS = 5
 ADAPTIVE_GATE_DEFENSIVE_RATE_THRESHOLD_PCT = 80.0
 ADAPTIVE_MAINLINE_MIN_POOL_COUNT = 3
@@ -574,6 +584,7 @@ class MomentumSecondaryDecisionService:
                 },
             }
 
+        self._mark_raw_momentum_ranks(results)
         enriched_candidates = [self._build_candidate_view(item) for item in results]
         v13_context, mainline_radar, short_term_sentiment, v13_data_status = self._build_v13_mainline_context(
             trade_date=trade_date,
@@ -744,10 +755,7 @@ class MomentumSecondaryDecisionService:
             status["reason"] = "V1.3 主线增强已关闭。"
             return {}, [], None, status
 
-        sampled_candidates = sorted(
-            candidates,
-            key=lambda item: _safe_float(item.get("rank"), 999.0),
-        )[:V13_CONTEXT_MAX_TS_CODES]
+        sampled_candidates = self._select_v13_context_candidates(candidates)
         ts_codes = [
             _safe_str(candidate.get("ts_code") or candidate.get("code"))
             for candidate in sampled_candidates
@@ -803,6 +811,46 @@ class MomentumSecondaryDecisionService:
             }
         )
         return context, mainline_radar, short_term_sentiment, status
+
+    def _select_v13_context_candidates(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if not candidates:
+            return []
+        ranked_candidates = sorted(
+            candidates,
+            key=lambda item: _safe_float(item.get("rank"), 999.0),
+        )
+        sampled_candidates = list(ranked_candidates[:V13_CONTEXT_MAX_TS_CODES])
+        sampled_codes = {
+            _safe_str(candidate.get("ts_code") or candidate.get("code"))
+            for candidate in sampled_candidates
+            if candidate.get("ts_code") or candidate.get("code")
+        }
+        raw_top3 = [
+            item
+            for item in sorted(candidates, key=self._candidate_raw_rank)
+            if self._is_raw_top3_candidate(item)
+        ]
+        for raw_candidate in raw_top3:
+            raw_code = _safe_str(raw_candidate.get("ts_code") or raw_candidate.get("code"))
+            if not raw_code or raw_code in sampled_codes:
+                continue
+            if len(sampled_candidates) >= V13_CONTEXT_MAX_TS_CODES:
+                remove_index = next(
+                    (
+                        index
+                        for index in range(len(sampled_candidates) - 1, -1, -1)
+                        if not self._is_raw_top3_candidate(sampled_candidates[index])
+                    ),
+                    None,
+                )
+                if remove_index is None:
+                    break
+                removed = sampled_candidates.pop(remove_index)
+                removed_code = _safe_str(removed.get("ts_code") or removed.get("code"))
+                sampled_codes.discard(removed_code)
+            sampled_candidates.append(raw_candidate)
+            sampled_codes.add(raw_code)
+        return sorted(sampled_candidates, key=lambda item: _safe_float(item.get("rank"), 999.0))
 
     @staticmethod
     def _default_adaptive_gate_context() -> Dict[str, Any]:
@@ -1200,10 +1248,24 @@ class MomentumSecondaryDecisionService:
         first_time = _safe_str(event.get("first_time")).strip()
         last_time = _safe_str(event.get("last_time")).strip()
         first_minutes = cls._parse_limit_time_minutes(first_time)
-        time_score = cls._sealing_time_score(first_minutes)
+        is_mainline_privileged = cls._is_mainline_privileged(candidate)
+        time_score = cls._sealing_time_score(first_minutes, is_mainline=is_mainline_privileged)
         fd_amount = _safe_float(event.get("fd_amount"))
         amount = _safe_float(event.get("amount"))
         seal_amount_ratio = fd_amount / amount if fd_amount > 0 and amount > 0 else None
+        turnover_rate_f = cls._first_available_float(
+            candidate,
+            (
+                "turnover_rate_f",
+                "free_float_turnover_rate",
+                "free_turnover_rate",
+                "_turnover_rate_f",
+                "turnover_rate",
+            ),
+        )
+        churn_to_seal_ratio = None
+        if turnover_rate_f is not None and seal_amount_ratio is not None and seal_amount_ratio > 0:
+            churn_to_seal_ratio = turnover_rate_f / max(seal_amount_ratio * 100.0, 0.01)
         amount_score = cls._sealing_amount_score(seal_amount_ratio)
         raw_open_times = event.get("open_times")
         open_times = int(_safe_float(raw_open_times)) if raw_open_times not in (None, "") else None
@@ -1225,6 +1287,19 @@ class MomentumSecondaryDecisionService:
         low_seal_ratio = seal_amount_ratio is not None and seal_amount_ratio < 0.05
         broken_limit = limit_flag == "Z"
         is_one_word_like = cls._is_one_word_like(candidate, event)
+        healthy_turnover = turnover_rate_f is not None and 5.0 <= turnover_rate_f <= 8.0
+        rotation_window = first_minutes is not None and first_minutes <= 13 * 60 + 30
+        healthy_rotation = bool(
+            is_mainline_privileged
+            and healthy_turnover
+            and rotation_window
+            and not late_seal
+            and not broken_limit
+            and limit_flag != "D"
+            and not is_one_word_like
+        )
+        if healthy_rotation:
+            score = max(score, 68.0)
 
         if score >= 80:
             level = "strong"
@@ -1246,8 +1321,12 @@ class MomentumSecondaryDecisionService:
         if first_minutes is not None:
             if first_minutes < 10 * 60:
                 notes.append("早盘封板")
+            elif is_mainline_privileged and first_minutes <= 11 * 60 + 30:
+                notes.append("主线封板宽限")
             elif late_seal:
                 notes.append("尾盘封板")
+        if healthy_rotation:
+            notes.append("主线健康换手")
         if multi_open:
             notes.append("多次开板")
         if low_seal_ratio:
@@ -1260,6 +1339,9 @@ class MomentumSecondaryDecisionService:
         if is_one_word_like:
             execution_bias = "hard_to_participate"
             participation_note = "强封但难参与"
+        elif healthy_rotation:
+            execution_bias = "healthy_rotation"
+            participation_note = "主线充分换手后封板，买点按健康轮动处理"
         elif late_seal or multi_open or low_seal_ratio or broken_limit or level == "weak":
             execution_bias = "caution"
             participation_note = "封板质量偏弱，买点需等待确认"
@@ -1283,12 +1365,24 @@ class MomentumSecondaryDecisionService:
             "amount": amount if amount > 0 else None,
             "seal_amount_ratio": round(seal_amount_ratio, 4) if seal_amount_ratio is not None else None,
             "seal_amount_score": round(amount_score, 2) if amount_score is not None else None,
+            "is_mainline_privileged": is_mainline_privileged,
+            "turnover_rate_f_at_seal_proxy": (
+                round(turnover_rate_f, 4) if turnover_rate_f is not None else None
+            ),
+            "churn_to_seal_ratio": round(churn_to_seal_ratio, 4) if churn_to_seal_ratio is not None else None,
+            "churn_to_seal_health": "healthy_rotation" if healthy_rotation else "standard",
+            "healthy_rotation": healthy_rotation,
             "open_times": open_times,
             "open_times_score": round(open_score, 2) if open_score is not None else None,
             "is_one_word_like": is_one_word_like,
             "execution_bias": execution_bias,
             "execution_participation_note": participation_note,
-            "downgrade_buy_point": bool(is_one_word_like or late_seal or multi_open or low_seal_ratio or broken_limit),
+            "downgrade_buy_point": bool(
+                is_one_word_like
+                or late_seal
+                or broken_limit
+                or ((multi_open or low_seal_ratio) and not healthy_rotation)
+            ),
             "degraded_reasons": degraded_reasons,
             "summary": "、".join(notes) if notes else participation_note,
             "confidence": "medium" if degraded_reasons else "high",
@@ -1337,15 +1431,23 @@ class MomentumSecondaryDecisionService:
         return hour * 60 + minute
 
     @staticmethod
-    def _sealing_time_score(first_minutes: Optional[int]) -> Optional[float]:
+    def _sealing_time_score(first_minutes: Optional[int], *, is_mainline: bool = False) -> Optional[float]:
         if first_minutes is None:
             return None
-        if first_minutes < 10 * 60:
+        if is_mainline:
+            if first_minutes < 11 * 60:
+                return 100.0
+            if first_minutes <= 11 * 60 + 30:
+                return 85.0
+            if first_minutes <= 14 * 60:
+                return 60.0
+            return 30.0
+        if first_minutes <= 10 * 60 + 30:
             return 100.0
         if first_minutes <= 11 * 60 + 30:
-            return 75.0
+            return 60.0
         if first_minutes <= 14 * 60:
-            return 55.0
+            return 45.0
         return 30.0
 
     @staticmethod
@@ -1411,11 +1513,17 @@ class MomentumSecondaryDecisionService:
             "seal_amount_score": signal.get("seal_amount_score"),
             "fd_amount": signal.get("fd_amount"),
             "amount": signal.get("amount"),
+            "is_mainline_privileged": bool(signal.get("is_mainline_privileged")),
+            "turnover_rate_f_at_seal_proxy": signal.get("turnover_rate_f_at_seal_proxy"),
+            "churn_to_seal_ratio": signal.get("churn_to_seal_ratio"),
+            "churn_to_seal_health": signal.get("churn_to_seal_health"),
+            "healthy_rotation": bool(signal.get("healthy_rotation")),
             "open_times": signal.get("open_times"),
             "open_times_score": signal.get("open_times_score"),
             "is_one_word_like": bool(signal.get("is_one_word_like")),
             "execution_bias": signal.get("execution_bias"),
             "execution_participation_note": signal.get("execution_participation_note"),
+            "downgrade_buy_point": bool(signal.get("downgrade_buy_point")),
             "summary": signal.get("summary"),
             "confidence": signal.get("confidence"),
             "degraded_reasons": list(signal.get("degraded_reasons") or []),
@@ -1817,6 +1925,12 @@ class MomentumSecondaryDecisionService:
                 "_role_label": role_label,
                 "_official_score": round(official_score, 2),
                 "_rule_base_score": round(rule_base_score, 2),
+                "_official_mainline_intensity_count": int(_safe_float(item.get("mainline_intensity_count"))),
+                "_official_mainline_intensity_multiplier": _safe_float(
+                    item.get("mainline_intensity_multiplier"),
+                    1.0,
+                ),
+                "_official_mainline_intensity_bonus": _safe_float(item.get("mainline_intensity_bonus")),
                 "_primary_reason": primary_reason,
             }
         )
@@ -1926,6 +2040,8 @@ class MomentumSecondaryDecisionService:
         if not candidates:
             return []
 
+        if not any(item.get("_raw_momentum_rank") for item in candidates):
+            self._mark_raw_momentum_ranks(candidates)
         sorted_candidates = self._build_decision_candidate_pool(candidates)
         selected: List[Tuple[str, Dict[str, Any]]] = []
         selected_codes: set[str] = set()
@@ -1961,11 +2077,432 @@ class MomentumSecondaryDecisionService:
 
         selected = self._rebalance_same_theme_main_slot(selected, theme_score_map)
         selected = self._rebalance_portfolio_anchor(selected, theme_score_map)
+        selected = self._apply_raw_alpha_shield(selected, sorted_candidates, theme_score_map)
+        selected = self._apply_stable_main_slot(selected, theme_score_map)
 
         return [
             self._build_portfolio_slot(slot, candidate, theme_score_map)
             for slot, candidate in selected
         ]
+
+    @staticmethod
+    def _raw_momentum_candidate_sort_key(item: Dict[str, Any]) -> Tuple[float, int, str]:
+        rank = int(_safe_float(item.get("rank"), 999.0))
+        score = item.get("rank_score")
+        if score is None or score == "":
+            score = item.get("final_score")
+        if score is None or score == "":
+            score = -float(rank)
+        return (
+            -_safe_float(score),
+            rank,
+            _safe_str(item.get("ts_code")),
+        )
+
+    @classmethod
+    def _mark_raw_momentum_ranks(cls, candidates: List[Dict[str, Any]]) -> None:
+        for raw_rank, item in enumerate(
+            sorted(candidates, key=cls._raw_momentum_candidate_sort_key),
+            start=1,
+        ):
+            item["_raw_momentum_rank"] = raw_rank
+
+    @staticmethod
+    def _candidate_raw_rank(item: Dict[str, Any]) -> int:
+        raw_rank = item.get("_raw_momentum_rank")
+        if raw_rank is not None and raw_rank != "":
+            return int(_safe_float(raw_rank, 999.0))
+        return int(_safe_float(item.get("rank"), 999.0))
+
+    @classmethod
+    def _is_raw_top3_candidate(cls, item: Dict[str, Any]) -> bool:
+        return 1 <= cls._candidate_raw_rank(item) <= 3
+
+    @classmethod
+    def _is_raw_top1_candidate(cls, item: Dict[str, Any]) -> bool:
+        return cls._candidate_raw_rank(item) == 1
+
+    def _has_raw_top3_sovereignty(self, item: Dict[str, Any]) -> bool:
+        return self._is_raw_top3_candidate(item) and not bool(self._risk_stack_check(item).get("veto"))
+
+    @staticmethod
+    def _raw_leader_divergence_reason(risk_stack: Optional[Dict[str, Any]] = None) -> str:
+        profile = risk_stack.get("leader_resilience_profile") if isinstance(risk_stack, dict) else None
+        if profile == "mainline_position_churn":
+            return (
+                "Raw Top3 triggered high-position churn (R1+R5) inside a confirmed mainline, "
+                "without sealing, divergence, or mainline risks, so it is retained as a high-volatility leader."
+            )
+        if profile == "mainline_reseal_churn":
+            return (
+                "Raw Top3 triggered high-position reseal churn (R1 with R2/R5) inside a confirmed mainline, "
+                "without moneyflow divergence or mainline isolation, so it is retained as a volatility-tolerant leader."
+            )
+        if profile == "raw_top1_hard_risk_softened":
+            return (
+                "Raw #1 triggered one hard risk inside a confirmed sector cluster, "
+                "so King's Guard raises the veto threshold and retains it as the momentum king."
+            )
+        return (
+            "Raw Top3 only triggered soft divergence risks (R2/R4/R5), "
+            "so it is retained as a Weak-to-Strong leader candidate."
+        )
+
+    @staticmethod
+    def _mainline_intensity_multiplier(item: Dict[str, Any]) -> float:
+        value = item.get("_official_mainline_intensity_multiplier")
+        if value is None or value == "":
+            value = item.get("mainline_intensity_multiplier")
+        return _safe_float(value, 1.0)
+
+    def _mainline_cluster_count(self, item: Dict[str, Any]) -> Optional[int]:
+        return self._first_available_int(
+            item,
+            (
+                "_theme_pool_count",
+                "_official_mainline_intensity_count",
+                "_v13_mainline_pool_count",
+                "v13_mainline_candidate_count",
+                "mainline_intensity_count",
+                "candidate_count",
+            ),
+        )
+
+    def _is_kings_guard_candidate(self, item: Dict[str, Any]) -> bool:
+        return (
+            self._is_raw_top1_candidate(item)
+            and self._mainline_intensity_multiplier(item) > KINGS_GUARD_MAINLINE_MULTIPLIER_THRESHOLD
+        )
+
+    @classmethod
+    def _replacement_premium_for_raw_candidate(cls, item: Dict[str, Any]) -> float:
+        return RAW_FOLLOWER_REPLACEMENT_PREMIUM if cls._candidate_raw_rank(item) in {2, 3} else ALPHA_SHIELD_REPLACEMENT_PREMIUM
+
+    def _alpha_shield_composite_score(
+        self,
+        item: Dict[str, Any],
+        theme_score_map: Dict[str, float],
+    ) -> float:
+        official_score = _official_sort_score(item)
+        forward_alpha = _safe_float(item.get("_forward_alpha_score"), 50.0)
+        portfolio_priority = self._portfolio_priority(item, theme_score_map)
+        return round(official_score * 0.55 + portfolio_priority * 0.30 + forward_alpha * 0.15, 4)
+
+    def _alpha_shield_blocks_replacement(
+        self,
+        replacement: Dict[str, Any],
+        raw_candidate: Dict[str, Any],
+        theme_score_map: Dict[str, float],
+    ) -> bool:
+        if not self._has_raw_top3_sovereignty(raw_candidate):
+            return False
+        if self._is_raw_top3_candidate(replacement):
+            return False
+        if self._is_kings_guard_candidate(raw_candidate):
+            return True
+        if not self._is_perfect_profile_challenger(replacement):
+            return True
+        raw_score = self._alpha_shield_composite_score(raw_candidate, theme_score_map)
+        replacement_score = self._alpha_shield_composite_score(replacement, theme_score_map)
+        return replacement_score < raw_score * self._replacement_premium_for_raw_candidate(raw_candidate)
+
+    def _is_perfect_profile_challenger(self, item: Dict[str, Any]) -> bool:
+        risk_stack = self._risk_stack_check(item)
+        return (
+            int(_safe_float(risk_stack.get("risk_points"), 0.0)) == 0
+            and not list(risk_stack.get("triggered_keys") or [])
+        )
+
+    def _candidate_can_displace_raw_leader(
+        self,
+        replacement: Dict[str, Any],
+        raw_candidate: Dict[str, Any],
+        theme_score_map: Dict[str, float],
+    ) -> bool:
+        if not self._has_raw_top3_sovereignty(raw_candidate):
+            return True
+        if self._is_raw_top3_candidate(replacement):
+            return True
+        if self._is_kings_guard_candidate(raw_candidate):
+            return False
+        if not self._is_perfect_profile_challenger(replacement):
+            return False
+        raw_score = self._alpha_shield_composite_score(raw_candidate, theme_score_map)
+        replacement_score = self._alpha_shield_composite_score(replacement, theme_score_map)
+        return replacement_score >= raw_score * self._replacement_premium_for_raw_candidate(raw_candidate)
+
+    @staticmethod
+    def _set_alpha_shield_status(
+        item: Dict[str, Any],
+        *,
+        status: str,
+        reason: str,
+        **extra: Any,
+    ) -> None:
+        payload = dict(item.get("_raw_alpha_shield") or {})
+        payload.update(
+            {
+                "status": status,
+                "reason": reason,
+                "raw_rank": int(_safe_float(item.get("rank"), 999.0)),
+                "raw_momentum_rank": int(_safe_float(item.get("_raw_momentum_rank"), 999.0)),
+                "replacement_premium_threshold": MomentumSecondaryDecisionService._replacement_premium_for_raw_candidate(item),
+                "kings_guard": False,
+            }
+        )
+        payload.update(extra)
+        item["_raw_alpha_shield"] = payload
+
+    def _apply_raw_alpha_shield(
+        self,
+        selected: List[Tuple[str, Dict[str, Any]]],
+        sorted_candidates: List[Dict[str, Any]],
+        theme_score_map: Dict[str, float],
+    ) -> List[Tuple[str, Dict[str, Any]]]:
+        if not selected:
+            return selected
+
+        protected_raw = [
+            item
+            for item in sorted(sorted_candidates, key=self._candidate_raw_rank)
+            if self._is_raw_top3_candidate(item)
+        ]
+        if not protected_raw:
+            return selected
+
+        updated = list(selected)
+        selected_codes = {_safe_str(candidate.get("ts_code")) for _slot, candidate in updated}
+        slot_order = {"main": 0, "secondary": 1, "watch": 2}
+        slot_sequence = ["main", "secondary", "watch"]
+
+        for raw_candidate in protected_raw:
+            raw_code = _safe_str(raw_candidate.get("ts_code"))
+            risk_stack = self._risk_stack_check(raw_candidate)
+            if not raw_code or raw_code in selected_codes:
+                if raw_code:
+                    if risk_stack.get("leader_resilience_exempt"):
+                        self._set_alpha_shield_status(
+                            raw_candidate,
+                            status=RAW_LEADER_DIVERGENCE_STATUS,
+                            reason=self._raw_leader_divergence_reason(risk_stack),
+                            risk_stack_count=risk_stack.get("factor_count"),
+                            triggered_keys=list(risk_stack.get("triggered_keys") or []),
+                            hard_risk_keys=list(risk_stack.get("hard_risk_keys") or []),
+                            soft_risk_keys=list(risk_stack.get("soft_risk_keys") or []),
+                        )
+                    else:
+                        self._set_alpha_shield_status(
+                            raw_candidate,
+                            status=(
+                                "retained_by_kings_guard"
+                                if self._is_kings_guard_candidate(raw_candidate)
+                                else "retained_by_existing_slot"
+                            ),
+                            reason=(
+                                "Raw #1 has King's Guard sovereignty and is already retained in Official Top3."
+                                if self._is_kings_guard_candidate(raw_candidate)
+                                else "Raw Top 3 already retained in Official Top3."
+                            ),
+                            kings_guard=self._is_kings_guard_candidate(raw_candidate),
+                        )
+                continue
+
+            if risk_stack.get("veto"):
+                self._set_alpha_shield_status(
+                    raw_candidate,
+                    status="dropped_by_hard_veto",
+                    reason="Raw Top 3 sovereignty removed because Risk Stack reached the hard-veto threshold with R1/R3 hard risk.",
+                    risk_stack_count=risk_stack.get("factor_count"),
+                    triggered_keys=list(risk_stack.get("triggered_keys") or []),
+                    hard_risk_keys=list(risk_stack.get("hard_risk_keys") or []),
+                    soft_risk_keys=list(risk_stack.get("soft_risk_keys") or []),
+                )
+                continue
+
+            replaceable: List[Tuple[int, str, Dict[str, Any], float]] = []
+            qualified_challengers: List[Tuple[int, str, Dict[str, Any], float]] = []
+            for index, (slot, candidate) in enumerate(updated):
+                if self._has_raw_top3_sovereignty(candidate):
+                    continue
+                candidate_score = self._alpha_shield_composite_score(candidate, theme_score_map)
+                challenger = (index, slot, candidate, candidate_score)
+                if self._candidate_can_displace_raw_leader(candidate, raw_candidate, theme_score_map):
+                    qualified_challengers.append(challenger)
+                    continue
+                replaceable.append(challenger)
+            if not replaceable:
+                if len(updated) < 3 and not qualified_challengers:
+                    used_slots = {slot for slot, _candidate in updated}
+                    append_slot = next((slot for slot in slot_sequence if slot not in used_slots), "watch")
+                    raw_score = self._alpha_shield_composite_score(raw_candidate, theme_score_map)
+                    self._set_alpha_shield_status(
+                        raw_candidate,
+                        status=(
+                            RAW_LEADER_DIVERGENCE_STATUS
+                            if risk_stack.get("leader_resilience_exempt")
+                            else (
+                                "retained_by_kings_guard"
+                                if self._is_kings_guard_candidate(raw_candidate)
+                                else "retained_by_raw_top3_sovereignty"
+                            )
+                        ),
+                        reason=(
+                            self._raw_leader_divergence_reason(risk_stack)
+                            if risk_stack.get("leader_resilience_exempt")
+                            else (
+                                "Raw #1 has King's Guard sovereignty and fills an open Official Top3 slot."
+                                if self._is_kings_guard_candidate(raw_candidate)
+                                else "Raw Top3 sovereignty fills an open Official Top3 slot after no valid replacement target is found."
+                            )
+                        ),
+                        composite_score=raw_score,
+                        risk_stack_count=risk_stack.get("factor_count"),
+                        triggered_keys=list(risk_stack.get("triggered_keys") or []),
+                        hard_risk_keys=list(risk_stack.get("hard_risk_keys") or []),
+                        soft_risk_keys=list(risk_stack.get("soft_risk_keys") or []),
+                        filled_open_slot=append_slot,
+                        kings_guard=self._is_kings_guard_candidate(raw_candidate),
+                    )
+                    updated.append((append_slot, raw_candidate))
+                    selected_codes.add(raw_code)
+                    continue
+                if qualified_challengers:
+                    _index, _slot, challenger, challenger_score = max(
+                        qualified_challengers,
+                        key=lambda item: (item[3], -slot_order.get(item[1], 99)),
+                    )
+                    raw_score = self._alpha_shield_composite_score(raw_candidate, theme_score_map)
+                    self._set_alpha_shield_status(
+                        raw_candidate,
+                        status="dropped_by_perfect_profile_challenger",
+                        reason=(
+                            "Raw Top 3 sovereignty yielded only because a zero-risk challenger "
+                            f"cleared the {int(self._replacement_premium_for_raw_candidate(raw_candidate) * 100 - 100)}% composite-score buffer."
+                        ),
+                        composite_score=raw_score,
+                        challenger_ts_code=_safe_str(challenger.get("ts_code")),
+                        challenger_score=round(challenger_score, 4),
+                        required_replacement_score=round(raw_score * self._replacement_premium_for_raw_candidate(raw_candidate), 4),
+                        risk_stack_count=risk_stack.get("factor_count"),
+                        triggered_keys=list(risk_stack.get("triggered_keys") or []),
+                        kings_guard=self._is_kings_guard_candidate(raw_candidate),
+                    )
+                continue
+
+            raw_score = self._alpha_shield_composite_score(raw_candidate, theme_score_map)
+            replace_index, replace_slot, replaced_candidate, replaced_score = min(
+                replaceable,
+                key=lambda item: (item[3], slot_order.get(item[1], 99)),
+            )
+            self._set_alpha_shield_status(
+                raw_candidate,
+                status=(
+                    RAW_LEADER_DIVERGENCE_STATUS
+                    if risk_stack.get("leader_resilience_exempt")
+                    else (
+                        "retained_by_kings_guard"
+                        if self._is_kings_guard_candidate(raw_candidate)
+                        else "retained_by_raw_top3_sovereignty"
+                    )
+                ),
+                reason=(
+                    self._raw_leader_divergence_reason(risk_stack)
+                    if risk_stack.get("leader_resilience_exempt")
+                    else (
+                        "Raw #1 has King's Guard sovereignty: strong mainline momentum cannot be displaced by secondary/waiting tickers."
+                        if self._is_kings_guard_candidate(raw_candidate)
+                        else "Raw Top 3 is protected unless Risk Stack reaches the hard-veto threshold."
+                    )
+                ),
+                composite_score=raw_score,
+                replaced_ts_code=_safe_str(replaced_candidate.get("ts_code")),
+                replaced_score=round(replaced_score, 4),
+                risk_stack_count=risk_stack.get("factor_count"),
+                triggered_keys=list(risk_stack.get("triggered_keys") or []),
+                hard_risk_keys=list(risk_stack.get("hard_risk_keys") or []),
+                soft_risk_keys=list(risk_stack.get("soft_risk_keys") or []),
+                kings_guard=self._is_kings_guard_candidate(raw_candidate),
+            )
+            self._set_alpha_shield_status(
+                replaced_candidate,
+                status="displaced_by_raw_alpha_shield",
+                reason=(
+                    "Inserted candidate was blocked by King's Guard absolute sovereignty."
+                    if self._is_kings_guard_candidate(raw_candidate)
+                    else (
+                        "Inserted candidate was not a zero-risk "
+                        f"{int(self._replacement_premium_for_raw_candidate(raw_candidate) * 100 - 100)}%-premium challenger "
+                        "over a non-veto Raw Top 3 candidate."
+                    )
+                ),
+                composite_score=round(replaced_score, 4),
+                competing_raw_ts_code=raw_code,
+                required_replacement_score=round(raw_score * self._replacement_premium_for_raw_candidate(raw_candidate), 4),
+                perfect_profile=self._is_perfect_profile_challenger(replaced_candidate),
+                kings_guard=self._is_kings_guard_candidate(raw_candidate),
+            )
+            updated[replace_index] = (replace_slot, raw_candidate)
+            selected_codes.discard(_safe_str(replaced_candidate.get("ts_code")))
+            selected_codes.add(raw_code)
+
+        return updated
+
+    def _stable_main_slot_key(
+        self,
+        item: Dict[str, Any],
+        theme_score_map: Dict[str, float],
+    ) -> Tuple[float, int, float, float, float]:
+        risk_stack = self._risk_stack_check(item)
+        return (
+            self._mainline_intensity_multiplier(item),
+            int(_safe_float(item.get("_official_mainline_intensity_count"), 0.0)),
+            -_safe_float(risk_stack.get("risk_points"), 0.0),
+            self._main_slot_priority(item, theme_score_map),
+            -float(self._candidate_raw_rank(item)),
+        )
+
+    def _apply_stable_main_slot(
+        self,
+        selected: List[Tuple[str, Dict[str, Any]]],
+        theme_score_map: Dict[str, float],
+    ) -> List[Tuple[str, Dict[str, Any]]]:
+        if len(selected) < 2:
+            return selected
+
+        main_index = next((index for index, (slot, _) in enumerate(selected) if slot == "main"), None)
+        if main_index is None:
+            return selected
+
+        best_index, (_best_slot, best_candidate) = max(
+            enumerate(selected),
+            key=lambda item: self._stable_main_slot_key(item[1][1], theme_score_map),
+        )
+        if main_index == best_index:
+            return selected
+
+        if self._slot_hard_blocker_items("main", best_candidate, theme_score_map):
+            return selected
+
+        updated = list(selected)
+        main_slot, main_candidate = updated[main_index]
+        best_slot, best_candidate = updated[best_index]
+        best_candidate["_main_slot_assignment"] = {
+            "status": "assigned_stable_main_slot",
+            "reason": "Main Slot is assigned by highest Mainline Intensity with lowest Risk Stack.",
+            "previous_slot": best_slot,
+            "previous_main_ts_code": _safe_str(main_candidate.get("ts_code")),
+            "mainline_intensity_multiplier": round(self._mainline_intensity_multiplier(best_candidate), 2),
+            "risk_stack_count": self._risk_stack_check(best_candidate).get("factor_count"),
+        }
+        main_candidate["_main_slot_assignment"] = {
+            "status": "moved_from_main_slot",
+            "reason": "Stable Main Slot anchor had stronger mainline/risk balance.",
+            "new_slot": best_slot,
+            "new_main_ts_code": _safe_str(best_candidate.get("ts_code")),
+        }
+        updated[main_index] = (main_slot, best_candidate)
+        updated[best_index] = (best_slot, main_candidate)
+        return updated
 
     def _build_excluded_candidates(
         self,
@@ -2044,6 +2581,7 @@ class MomentumSecondaryDecisionService:
                     "risk_stack": candidate.get("_risk_stack_check"),
                     "risk_stack_count": candidate.get("_risk_stack_count"),
                     "risk_stack_veto": candidate.get("_risk_stack_veto"),
+                    "raw_alpha_shield": candidate.get("_raw_alpha_shield"),
                     "mainline_intensity_count": int(_safe_float(candidate.get("_official_mainline_intensity_count"))),
                     "mainline_intensity_multiplier": round(
                         _safe_float(candidate.get("_official_mainline_intensity_multiplier"), 1.0),
@@ -2144,6 +2682,7 @@ class MomentumSecondaryDecisionService:
                     "risk_stack": candidate.get("_risk_stack_check"),
                     "risk_stack_count": candidate.get("_risk_stack_count"),
                     "risk_stack_veto": candidate.get("_risk_stack_veto"),
+                    "raw_alpha_shield": candidate.get("_raw_alpha_shield"),
                     "mainline_intensity_count": int(_safe_float(candidate.get("_official_mainline_intensity_count"))),
                     "mainline_intensity_multiplier": round(
                         _safe_float(candidate.get("_official_mainline_intensity_multiplier"), 1.0),
@@ -2340,6 +2879,10 @@ class MomentumSecondaryDecisionService:
         core_profit_window_pct = round(_safe_float(profitability.get("core_profit_window_pct"), 0.0), 2)
         broad_success_rate = round(_safe_float(profitability.get("broad_success_rate"), 0.0), 1)
         broad_profit_window_pct = round(_safe_float(profitability.get("broad_profit_window_pct"), 0.0), 2)
+        market_pool_avg_return_pct = round(
+            _safe_float(profitability.get("market_pool_avg_return_pct"), 0.0),
+            2,
+        )
 
         core_level = self._classify_core_premium_level(core_success_rate, core_profit_window_pct)
         breadth_level = self._classify_breadth_premium_level(
@@ -2385,11 +2928,23 @@ class MomentumSecondaryDecisionService:
             },
         ]
         score = round(_clamp_float(modules[0]["score"] * 0.55 + modules[1]["score"] * 0.45), 1)
+        force_stand_aside = market_pool_avg_return_pct < -3.0
+        force_reason = ""
+        if force_stand_aside:
+            level = "weak"
+            score = min(score, 20.0)
+            force_reason = (
+                f"Market_Pool_Avg_Return {market_pool_avg_return_pct:.2f}% < -3.00%，"
+                "触发 Alpha Shield 总闸门，今日不做。"
+            )
 
         return {
             "level": level,
             "label": GATE_LEVEL_LABELS[level],
             "score": score,
+            "market_pool_avg_return_pct": market_pool_avg_return_pct,
+            "force_stand_aside": force_stand_aside,
+            "force_reason": force_reason,
             "reason": (
                 f"核心溢价为{GATE_LEVEL_LABELS[core_level]}，"
                 f"广度溢价为{GATE_LEVEL_LABELS[breadth_level]}，"
@@ -2708,6 +3263,12 @@ class MomentumSecondaryDecisionService:
         broad_success_rate = 100.0 * sum(1 for item in broad_results if item["success"]) / max(len(broad_results), 1)
         core_profit_window = mean(item["profit_window_pct"] for item in core_results) if core_results else 0.0
         broad_profit_window = mean(item["profit_window_pct"] for item in broad_results) if broad_results else 0.0
+        close_return_values = [
+            _safe_float(item.get("close_return_pct"))
+            for item in broad_results
+            if item.get("close_return_pct") is not None
+        ]
+        market_pool_avg_return = mean(close_return_values) if close_return_values else 0.0
         avg_profit_window = mean(
             [item["profit_window_pct"] for item in core_results + broad_results]
         ) if (core_results or broad_results) else 0.0
@@ -2736,6 +3297,7 @@ class MomentumSecondaryDecisionService:
             "broad_success_rate": round(broad_success_rate, 1),
             "core_profit_window_pct": round(core_profit_window, 2),
             "broad_profit_window_pct": round(broad_profit_window, 2),
+            "market_pool_avg_return_pct": round(market_pool_avg_return, 2),
             "summary": (
                 f"上一交易日 Top10 成功率 {broad_success_rate:.1f}% ，核心 3 票成功率 {core_success_rate:.1f}% ，"
                 f"平均利润窗口 {avg_profit_window:.2f}% 。"
@@ -3172,6 +3734,78 @@ class MomentumSecondaryDecisionService:
             "attack_permission_label": _safe_str((attack_permission or {}).get("label"), "暂停进攻"),
         }
 
+    @staticmethod
+    def _extract_pool_success_rate_pct(market_environment: Dict[str, Any]) -> Optional[float]:
+        candidate_keys = (
+            "pool_success_rate_pct",
+            "candidate_pool_success_rate_pct",
+            "pool_base_win_rate_pct",
+            "market_pool_success_rate_pct",
+        )
+        for key in candidate_keys:
+            if key in market_environment:
+                return _safe_float(market_environment.get(key))
+        for module in market_environment.get("modules", []):
+            if not isinstance(module, dict):
+                continue
+            for key in candidate_keys:
+                if key in module:
+                    return _safe_float(module.get(key))
+            metrics = module.get("metrics")
+            if isinstance(metrics, dict):
+                for key in candidate_keys:
+                    if key in metrics:
+                        return _safe_float(metrics.get(key))
+        return None
+
+    @staticmethod
+    def _extract_leader_board_height(portfolio: List[Dict[str, Any]]) -> int:
+        heights: List[int] = []
+        for item in portfolio:
+            ladder = item.get("v13_ladder_position")
+            if not isinstance(ladder, dict):
+                ladder = item.get("_v13_ladder_position") if isinstance(item.get("_v13_ladder_position"), dict) else {}
+            for value in (
+                ladder.get("market_height"),
+                item.get("v13_market_height"),
+                item.get("_v13_market_height"),
+                item.get("leader_board_height"),
+            ):
+                height = int(_safe_float(value))
+                if height > 0:
+                    heights.append(height)
+        return max(heights or [0])
+
+    def _build_strong_go_guard(
+        self,
+        market_environment: Dict[str, Any],
+        portfolio: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        pool_success_rate_pct = self._extract_pool_success_rate_pct(market_environment)
+        leader_board_height = self._extract_leader_board_height(portfolio)
+        pool_pass = (
+            pool_success_rate_pct is not None
+            and pool_success_rate_pct > STRONG_GO_POOL_SUCCESS_RATE_THRESHOLD_PCT
+        )
+        height_pass = leader_board_height > STRONG_GO_LEADER_BOARD_HEIGHT_THRESHOLD
+        passed = pool_pass and height_pass
+        reason = (
+            "Strong_Go requires Pool_Success_Rate > "
+            f"{STRONG_GO_POOL_SUCCESS_RATE_THRESHOLD_PCT:.0f}% and Leader_Board_Height > "
+            f"{STRONG_GO_LEADER_BOARD_HEIGHT_THRESHOLD}; current pool="
+            f"{pool_success_rate_pct if pool_success_rate_pct is not None else 'unknown'}, "
+            f"height={leader_board_height}."
+        )
+        return {
+            "passed": passed,
+            "downgraded": False,
+            "pool_success_rate_pct": pool_success_rate_pct,
+            "leader_board_height": leader_board_height,
+            "pool_success_threshold_pct": STRONG_GO_POOL_SUCCESS_RATE_THRESHOLD_PCT,
+            "leader_board_height_threshold": STRONG_GO_LEADER_BOARD_HEIGHT_THRESHOLD,
+            "reason": reason,
+        }
+
     def _build_action(
         self,
         profile: str,
@@ -3181,6 +3815,7 @@ class MomentumSecondaryDecisionService:
         historical_validity: Dict[str, Any],
         portfolio: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
+        strong_go_guard = self._build_strong_go_guard(market_environment, portfolio)
         if not portfolio:
             gate_context = {
                 "market_level": _safe_str(market_environment.get("level"), "weak"),
@@ -3193,8 +3828,11 @@ class MomentumSecondaryDecisionService:
                 "breadth_premium_level": "",
                 "base_level": "stand_aside",
                 "resolved_level": "stand_aside",
+                "force_stand_aside": bool(market_environment.get("force_stand_aside")),
+                "force_reason": _safe_str(market_environment.get("force_reason")),
                 "promotion_applied": False,
                 "promotion_reason": "",
+                "strong_go_guard": strong_go_guard,
                 "restriction_reason": "当前没有默认组合，基础动作矩阵直接收口为今日不做。",
             }
         else:
@@ -3258,9 +3896,12 @@ class MomentumSecondaryDecisionService:
                 (market_level, opportunity_matrix_level),
                 "observe_only",
             )
+            force_stand_aside = bool(market_environment.get("force_stand_aside"))
             promotion_applied = False
             promotion_reason = ""
             if (
+                not force_stand_aside
+                and
                 market_level == "medium"
                 and opportunity_matrix_level == "mid"
                 and base_level == "observe_only"
@@ -3285,8 +3926,21 @@ class MomentumSecondaryDecisionService:
                 resolved_level = "cautious_go"
             else:
                 resolved_level = base_level
+            if force_stand_aside:
+                resolved_level = "stand_aside"
+                promotion_applied = False
+                promotion_reason = ""
             restriction_reason = ""
-            if resolved_level in {"observe_only", "stand_aside"}:
+            if force_stand_aside:
+                restriction_reason = _safe_str(
+                    market_environment.get("force_reason"),
+                    "Market_Pool_Avg_Return < -3%，总闸门强制今日不做。",
+                )
+            elif resolved_level == "strong_go" and not strong_go_guard["passed"]:
+                resolved_level = "normal_go"
+                strong_go_guard["downgraded"] = True
+                restriction_reason = strong_go_guard["reason"]
+            elif resolved_level in {"observe_only", "stand_aside"}:
                 restriction_reason = (
                     f"市场环境为{GATE_LEVEL_LABELS.get(market_level, market_level)}、"
                     f"机会质量为{OPPORTUNITY_MATRIX_LEVEL_LABELS.get(opportunity_matrix_level, opportunity_matrix_level)}，"
@@ -3303,9 +3957,12 @@ class MomentumSecondaryDecisionService:
                 "breadth_premium_level": breadth_premium_level,
                 "base_level": base_level,
                 "resolved_level": resolved_level,
+                "force_stand_aside": force_stand_aside,
+                "force_reason": _safe_str(market_environment.get("force_reason")),
                 "promotion_applied": promotion_applied,
                 "promotion_reason": promotion_reason,
                 "restriction_reason": restriction_reason,
+                "strong_go_guard": strong_go_guard,
             }
 
         reason = self._build_action_reason(
@@ -4729,6 +5386,7 @@ class MomentumSecondaryDecisionService:
         start_price = _safe_float(getattr(start_daily, "close", None))
         highs = [_safe_float(getattr(bar, "high", None)) for bar in forward_bars if _safe_float(getattr(bar, "high", None)) > 0]
         lows = [_safe_float(getattr(bar, "low", None)) for bar in forward_bars if _safe_float(getattr(bar, "low", None)) > 0]
+        closes = [_safe_float(getattr(bar, "close", None)) for bar in forward_bars if _safe_float(getattr(bar, "close", None)) > 0]
         if start_price <= 0 or len(forward_bars) < 2 or not highs or not lows:
             fallback_prices = self._load_strategy_health_forward_prices_from_fetcher(
                 stock_code=stock_code,
@@ -4737,11 +5395,13 @@ class MomentumSecondaryDecisionService:
             if fallback_prices is None:
                 return None
             start_price, highs, lows = fallback_prices
+            closes = []
 
         role_key = candidate.get("_role_key") if candidate else "mid"
         target = ROLE_VALIDATION_TARGETS.get(role_key or "mid", ROLE_VALIDATION_TARGETS["mid"])
         profit_window_pct = (max(highs) - start_price) / start_price * 100
         max_drawdown_pct = max(0.0, (start_price - min(lows)) / start_price * 100)
+        close_return_pct = (closes[-1] - start_price) / start_price * 100 if closes else None
         success = (
             profit_window_pct >= target["profit_window_pct"]
             and max_drawdown_pct <= target["max_drawdown_pct"]
@@ -4751,6 +5411,7 @@ class MomentumSecondaryDecisionService:
             "success": success,
             "profit_window_pct": profit_window_pct,
             "max_drawdown_pct": max_drawdown_pct,
+            "close_return_pct": close_return_pct,
         }
 
     def _load_strategy_health_forward_prices_from_fetcher(
@@ -5384,6 +6045,29 @@ class MomentumSecondaryDecisionService:
         return self._has_planned_buy_point(candidate) and candidate_adjustment >= reference_adjustment + min_gap
 
     @staticmethod
+    def _is_mainline_privileged(item: Dict[str, Any]) -> bool:
+        multiplier = MomentumSecondaryDecisionService._first_available_float(
+            item,
+            (
+                "_official_mainline_intensity_multiplier",
+                "mainline_intensity_multiplier",
+            ),
+        )
+        if multiplier is not None and multiplier > 1.2:
+            return True
+        mainline_count = MomentumSecondaryDecisionService._first_available_int(
+            item,
+            (
+                "_theme_pool_count",
+                "_v13_mainline_pool_count",
+                "v13_mainline_candidate_count",
+                "_official_mainline_intensity_count",
+                "mainline_intensity_count",
+            ),
+        )
+        return int(mainline_count or 0) >= 3
+
+    @staticmethod
     def _has_v13_mainline_confirmation(item: Dict[str, Any]) -> bool:
         mainline_count = MomentumSecondaryDecisionService._first_available_int(
             item,
@@ -5490,7 +6174,20 @@ class MomentumSecondaryDecisionService:
         )
 
     def _build_decision_candidate_pool(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        return sorted(candidates, key=self._decision_candidate_sort_key, reverse=True)[:DECISION_CANDIDATE_POOL_LIMIT]
+        if candidates and not any(item.get("_raw_momentum_rank") for item in candidates):
+            self._mark_raw_momentum_ranks(candidates)
+        decision_pool = sorted(
+            candidates,
+            key=self._decision_candidate_sort_key,
+            reverse=True,
+        )[:DECISION_CANDIDATE_POOL_LIMIT]
+        raw_top3 = [item for item in candidates if self._is_raw_top3_candidate(item)]
+        merged: Dict[str, Dict[str, Any]] = {}
+        for item in [*decision_pool, *raw_top3]:
+            code = _safe_str(item.get("ts_code"))
+            if code:
+                merged[code] = item
+        return sorted(merged.values(), key=self._decision_candidate_sort_key, reverse=True)
 
     @staticmethod
     def _reason_item(
@@ -5515,6 +6212,7 @@ class MomentumSecondaryDecisionService:
             "mainline_confirmed": "主线确认",
             "mainline_questionable": "主线存疑",
             "seal_strength_support": "早封强封",
+            "seal_rotation_support": "主线换手确认",
             "seal_quality_drag": "封板质量偏弱",
             "seal_participation_drag": "强封但难参与",
             "role_leader": "龙头核心优先",
@@ -5669,6 +6367,13 @@ class MomentumSecondaryDecisionService:
                 "seal_participation_drag",
                 "强封但难参与",
                 delta=participation_delta,
+                detail=detail,
+            )
+        if _safe_str(signal.get("execution_bias")) == "healthy_rotation":
+            return self._reason_item(
+                "seal_rotation_support",
+                "主线换手确认",
+                delta=max(support_delta, 0.6),
                 detail=detail,
             )
         if _safe_str(signal.get("execution_bias")) == "caution" or _safe_str(signal.get("level")) == "weak":
@@ -5939,12 +6644,14 @@ class MomentumSecondaryDecisionService:
         label: str,
         triggered: bool,
         evidence: str,
+        weight: int = 1,
     ) -> Dict[str, Any]:
         return {
             "key": key,
             "label": label,
             "triggered": bool(triggered),
             "evidence": evidence,
+            "weight": max(1, int(weight)),
         }
 
     def _risk_stack_check(self, item: Dict[str, Any]) -> Dict[str, Any]:
@@ -5984,15 +6691,7 @@ class MomentumSecondaryDecisionService:
         price_at_20d_high = close_price is not None and high_20d is not None and high_20d > 0 and close_price >= high_20d
         divergence_risk = buy_elg_amount is not None and buy_elg_amount < 0 and price_at_20d_high
 
-        mainline_count = self._first_available_int(
-            item,
-            (
-                "_theme_pool_count",
-                "_v13_mainline_pool_count",
-                "v13_mainline_candidate_count",
-                "candidate_count",
-            ),
-        )
+        mainline_count = self._mainline_cluster_count(item)
         ladder_position = item.get("_v13_ladder_position")
         if not isinstance(ladder_position, dict):
             ladder_position = {}
@@ -6074,23 +6773,103 @@ class MomentumSecondaryDecisionService:
                     f"pct_chg={price_gain if price_gain is not None else '--'}, "
                     f"turnover_rate_f={turnover_rate_f if turnover_rate_f is not None else '--'}"
                 ),
+                weight=2,
             ),
         ]
         triggered_factors = [factor for factor in factors if factor["triggered"]]
-        mandatory_veto_keys = [
-            factor["key"]
-            for factor in triggered_factors
-            if factor["key"] == "exhaustion_risk"
-        ]
-        mandatory_veto = bool(mandatory_veto_keys)
+        risk_points = sum(int(factor.get("weight", 1)) for factor in triggered_factors)
+        triggered_keys = [factor["key"] for factor in triggered_factors]
+        hard_risk_keys = [key for key in triggered_keys if key in RAW_LEADER_HARD_RISK_KEYS]
+        soft_risk_keys = [key for key in triggered_keys if key in RAW_LEADER_SOFT_RISK_KEYS]
+        base_veto = risk_points >= 3
+        raw_top3_candidate = self._is_raw_top3_candidate(item)
+        raw_top1_candidate = self._is_raw_top1_candidate(item)
+        kings_guard_cluster_confirmed = raw_top1_candidate and _safe_float(mainline_count, 0.0) >= KINGS_GUARD_CLUSTER_MIN_COUNT
+        kings_guard_base_veto = kings_guard_cluster_confirmed and risk_points >= KINGS_GUARD_RISK_STACK_THRESHOLD
+        kings_guard_hard_risk_softened = (
+            kings_guard_cluster_confirmed
+            and base_veto
+            and not kings_guard_base_veto
+            and len(hard_risk_keys) <= 1
+        )
+        multi_hard_risk_veto = (
+            kings_guard_cluster_confirmed
+            and base_veto
+            and len(hard_risk_keys) > 1
+        )
+        soft_only_leader_exempt = raw_top3_candidate and base_veto and not hard_risk_keys
+        mainline_position_churn_exempt = (
+            raw_top3_candidate
+            and base_veto
+            and set(hard_risk_keys).issubset({"position_risk"})
+            and set(soft_risk_keys).issubset({"exhaustion_risk"})
+            and "divergence_risk" not in triggered_keys
+            and "sealing_risk" not in triggered_keys
+            and _safe_float(mainline_count, 0.0) >= 3.0
+        )
+        mainline_reseal_churn_exempt = (
+            raw_top3_candidate
+            and base_veto
+            and hard_risk_keys == ["position_risk"]
+            and set(soft_risk_keys).issubset({"sealing_risk", "exhaustion_risk"})
+            and "divergence_risk" not in triggered_keys
+            and "mainline_risk" not in triggered_keys
+            and _safe_float(mainline_count, 0.0) >= 3.0
+            and risk_points <= 4
+        )
+        leader_resilience_exempt = (
+            soft_only_leader_exempt
+            or mainline_position_churn_exempt
+            or mainline_reseal_churn_exempt
+            or kings_guard_hard_risk_softened
+        )
+        effective_veto = (
+            (kings_guard_base_veto if kings_guard_cluster_confirmed else base_veto)
+            or multi_hard_risk_veto
+        ) and not leader_resilience_exempt
+        mandatory_veto_keys: List[str] = []
+        mandatory_veto = False
         result = {
-            "factor_count": len(triggered_factors),
-            "veto": mandatory_veto or len(triggered_factors) >= 3,
-            "threshold": 3,
+            "factor_count": risk_points,
+            "triggered_factor_count": len(triggered_factors),
+            "total_stack": risk_points,
+            "risk_points": risk_points,
+            "base_veto": base_veto,
+            "veto": effective_veto,
+            "threshold": (
+                KINGS_GUARD_RISK_STACK_THRESHOLD
+                if kings_guard_cluster_confirmed
+                else 3
+            ),
             "mandatory_veto": mandatory_veto,
             "mandatory_veto_keys": mandatory_veto_keys,
+            "hard_risk_keys": hard_risk_keys,
+            "soft_risk_keys": soft_risk_keys,
+            "kings_guard_cluster_confirmed": kings_guard_cluster_confirmed,
+            "kings_guard_base_veto": kings_guard_base_veto,
+            "kings_guard_hard_risk_softened": kings_guard_hard_risk_softened,
+            "leader_resilience_exempt": leader_resilience_exempt,
+            "leader_resilience_profile": (
+                "mainline_position_churn"
+                if mainline_position_churn_exempt
+                else (
+                    "mainline_reseal_churn"
+                    if mainline_reseal_churn_exempt
+                    else (
+                        "raw_top1_hard_risk_softened"
+                        if kings_guard_hard_risk_softened
+                        else ("soft_only" if soft_only_leader_exempt else None)
+                    )
+                )
+            ),
+            "leader_resilience_status": (
+                RAW_LEADER_DIVERGENCE_STATUS
+                if leader_resilience_exempt
+                else None
+            ),
             "factors": factors,
-            "triggered_keys": [factor["key"] for factor in triggered_factors],
+            "triggered_keys": triggered_keys,
+            "triggered_risks": triggered_keys,
         }
         item["_risk_stack_check"] = result
         item["_risk_stack_count"] = result["factor_count"]
@@ -6112,11 +6891,10 @@ class MomentumSecondaryDecisionService:
         blockers: List[Dict[str, Any]] = []
         risk_stack = self._risk_stack_check(item)
         if risk_stack["veto"]:
-            mandatory_veto = bool(risk_stack.get("mandatory_veto"))
             blockers.append(
                 self._reason_item(
                     "risk_stack_veto",
-                    "量能竭尽一票否决" if mandatory_veto else "风险堆叠 >= 3",
+                    "风险堆叠 >= 3",
                     detail="、".join(str(factor.get("label")) for factor in risk_stack["factors"] if factor.get("triggered")),
                 )
             )
@@ -6674,6 +7452,13 @@ class MomentumSecondaryDecisionService:
             "risk_stack": candidate.get("_risk_stack_check"),
             "risk_stack_count": candidate.get("_risk_stack_count"),
             "risk_stack_veto": candidate.get("_risk_stack_veto"),
+            "raw_alpha_shield": candidate.get("_raw_alpha_shield"),
+            "raw_momentum_rank": (
+                int(_safe_float(candidate.get("_raw_momentum_rank"), 0.0))
+                if candidate.get("_raw_momentum_rank") is not None
+                else None
+            ),
+            "main_slot_assignment": candidate.get("_main_slot_assignment"),
             "mainline_intensity_count": int(_safe_float(candidate.get("_official_mainline_intensity_count"))),
             "mainline_intensity_multiplier": round(
                 _safe_float(candidate.get("_official_mainline_intensity_multiplier"), 1.0),
