@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import List, Optional, Sequence
 
 from sqlalchemy import delete, desc, func, select
@@ -92,6 +92,53 @@ class MomentumScreeningRunRepository:
                 .where(MomentumScreeningRun.request_fingerprint == request_fingerprint)
                 .order_by(desc(MomentumScreeningRun.created_at), desc(MomentumScreeningRun.id))
                 .limit(1)
+            ).scalar_one_or_none()
+
+    def find_reusable_run_by_trade_date(
+        self,
+        *,
+        trade_date: date,
+        profile: str,
+        truth_mode: str,
+        engine_version: str,
+        entry_baseline_version: str,
+        market_scope_version: str,
+        screening_cache_version: str,
+        top_n: int,
+        min_change_pct: float,
+        min_amount: float,
+        min_turnover: float,
+        exclude_st: bool,
+        main_board_only: bool,
+        use_sector_context: bool,
+        max_scored_candidates: Optional[int],
+        statuses: Sequence[str],
+    ) -> Optional[MomentumScreeningRun]:
+        """Find a reusable screening run for the same resolved trading day."""
+        with self.db.get_session() as session:
+            query = select(MomentumScreeningRun).where(
+                MomentumScreeningRun.trade_date == trade_date,
+                MomentumScreeningRun.profile == profile,
+                MomentumScreeningRun.truth_mode == truth_mode,
+                MomentumScreeningRun.engine_version == engine_version,
+                MomentumScreeningRun.entry_baseline_version == entry_baseline_version,
+                MomentumScreeningRun.market_scope_version == market_scope_version,
+                MomentumScreeningRun.screening_cache_version == screening_cache_version,
+                MomentumScreeningRun.top_n == int(top_n),
+                MomentumScreeningRun.min_change_pct == float(min_change_pct),
+                MomentumScreeningRun.min_amount == float(min_amount),
+                MomentumScreeningRun.min_turnover == float(min_turnover),
+                MomentumScreeningRun.exclude_st == bool(exclude_st),
+                MomentumScreeningRun.main_board_only == bool(main_board_only),
+                MomentumScreeningRun.use_sector_context == bool(use_sector_context),
+                MomentumScreeningRun.status.in_(list(statuses)),
+            )
+            if max_scored_candidates is None:
+                query = query.where(MomentumScreeningRun.max_scored_candidates.is_(None))
+            else:
+                query = query.where(MomentumScreeningRun.max_scored_candidates == int(max_scored_candidates))
+            return session.execute(
+                query.order_by(desc(MomentumScreeningRun.created_at), desc(MomentumScreeningRun.id)).limit(1)
             ).scalar_one_or_none()
 
     def reset_running_runs_to_queued(self) -> int:

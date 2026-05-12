@@ -300,6 +300,7 @@ official_score = clamp_0_100(base_official_score * mainline_intensity_multiplier
 
 - `MomentumScreenerService` 继续负责“单次筛选怎么计算”
 - `MomentumScreeningRunService` 负责“任务怎么创建、复用、排队、续跑、取消、汇报进度”
+- run 复用必须以实际交易日为最终口径：`latest`、自动回退交易日和显式日期只要解析到同一个 `trade_date`，且 profile / truth_mode / 版本号 / 基础筛选参数一致，就应直接复用已完成或进行中的 run，避免同一交易日重复生成筛选结果。
 
 ### 4.2 run 阶段与进度口径
 

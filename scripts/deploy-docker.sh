@@ -21,9 +21,16 @@ case "$command_name" in
     compose up -d "$@"
     ;;
   rebuild)
-    compose build --no-cache "$@"
-    compose up -d "$@"
-    docker image prune -f >/dev/null || true
+    if [[ "${DSA_DOCKER_NO_CACHE:-}" == "1" || "${DSA_DOCKER_NO_CACHE:-}" == "true" ]]; then
+      compose build --no-cache "$@"
+    else
+      compose build "$@"
+    fi
+    compose up -d --force-recreate "$@"
+    if ! bash scripts/docker-cleanup.sh; then
+      echo "Docker cleanup failed; falling back to dangling image prune" >&2
+      docker image prune -f >/dev/null || true
+    fi
     ;;
   cleanup)
     bash scripts/docker-cleanup.sh

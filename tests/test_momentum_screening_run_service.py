@@ -12,7 +12,6 @@ from src.services.momentum_screening_run_service import MomentumScreeningRunServ
 from src.services.momentum_screener_service import (
     MOMENTUM_ENTRY_BASELINE_VERSION,
     MOMENTUM_MARKET_SCOPE_VERSION,
-    MOMENTUM_SCREENING_CACHE_VERSION,
 )
 from src.storage import DatabaseManager
 
@@ -21,6 +20,17 @@ class _FakeTaskizedScreenerService:
     def __init__(self, *, delay_seconds: float = 0.0) -> None:
         self.delay_seconds = delay_seconds
         self.calls = []
+        self.resolve_calls = []
+
+    def _resolve_trade_date_and_snapshot(self, trade_date):
+        self.resolve_calls.append(trade_date)
+        requested = str(trade_date or "").strip().replace("-", "")
+        return {
+            "trade_date": requested if len(requested) == 8 and requested.isdigit() else "20260410",
+            "snapshot": None,
+            "requested_trade_date": trade_date,
+            "trade_date_note": None,
+        }
 
     def screen(self, **kwargs):
         self.calls.append(dict(kwargs))
@@ -190,6 +200,27 @@ class MomentumScreeningRunServiceTestCase(unittest.TestCase):
         )
         self.assertFalse(reused["created_new"])
         self.assertEqual(reused["run"]["run_id"], run_id)
+
+    def test_create_run_async_reuses_latest_run_by_resolved_trade_date(self) -> None:
+        created = self.service.create_run_async(
+            trade_date=None,
+            profile="standard",
+            truth_mode="full",
+        )
+        run_id = created["run"]["run_id"]
+        terminal = self._wait_for_terminal_status(run_id)
+        self.assertEqual(terminal["status"], "completed")
+        self.assertEqual(terminal["trade_date"], "2026-04-10")
+
+        reused = self.service.create_run_async(
+            trade_date="2026-04-10",
+            profile="standard",
+            truth_mode="full",
+        )
+
+        self.assertFalse(reused["created_new"])
+        self.assertEqual(reused["run"]["run_id"], run_id)
+        self.assertEqual(len(self.screener_service.calls), 1)
 
     def test_cancel_run_marks_running_task_cancelled(self) -> None:
         self.service.close()

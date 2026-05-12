@@ -88,9 +88,16 @@ For servers, run it daily at 03:00 with a systemd timer. By default, the script:
 
 - removes stopped containers older than 24 hours
 - removes unused images older than 72 hours
-- removes unused build cache older than 72 hours
+- removes unused build cache older than 24 hours
+- when Docker supports BuildKit cache budget flags, caps build cache at 2GB and tries to keep at least 8GB free on the root filesystem
 - removes cache files older than 30 days under `data/cache`
 - prunes unused Docker volumes only when root disk usage reaches 90%
+
+The cleanup strength can be tuned with:
+
+- `DSA_DOCKER_BUILDER_KEEP_AGE`: build-cache retention window, default `24h`
+- `DSA_DOCKER_BUILDER_MAX_USED_SPACE`: BuildKit cache budget, default `2gb`
+- `DSA_DOCKER_BUILDER_MIN_FREE_SPACE`: minimum free-space target for the root filesystem, default `8gb`
 
 For normal code updates, prefer:
 
@@ -98,7 +105,11 @@ For normal code updates, prefer:
 bash scripts/deploy-docker.sh rebuild
 ```
 
-It prunes dangling images after the rebuild to reduce disk growth from repeated deployments.
+It reuses the build cache by default and runs the unified cleanup after the rebuild to reduce disk growth from repeated deployments. Use a full no-cache rebuild only when it is actually needed:
+
+```bash
+DSA_DOCKER_NO_CACHE=1 bash scripts/deploy-docker.sh rebuild
+```
 
 ### 6. Data Persistence
 

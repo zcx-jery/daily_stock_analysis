@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [修复] 强势筛选任务化查询按实际交易日复用已完成或进行中的筛选 run，`latest` 与显式日期命中同一交易日时不再重复生成新任务。
+- [chore] Docker 清理脚本增加 BuildKit 缓存容量上限与最小剩余空间目标，部署重建默认复用缓存并在重建后执行统一清理，降低频繁重构占满磁盘的风险。
 - [改进] 首页个股分析数据追溯区改为面向用户的增强证据解读，板块联动、资金流、筹码结构和数据质量展示中文结论、解释文案与友好数据源名称，避免直接暴露 raw 状态码。
 - [改进] 首页个股分析所属板块展示优先展示行业/概念板块，降低同花顺全A、沪深全A和风格指数等泛板块排序。
 - [改进] 强势筛选 V1.3 第十六阶段新增 King's Guard：Raw #1 且主线强度超过 1.25x 时获得绝对槽位主权，Raw #2/#3 替换门槛提升到 1.40x，并对主线簇内 Raw #1 单一硬风险提高容错。

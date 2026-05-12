@@ -8,7 +8,9 @@ CACHE_DIR="$APP_ROOT/data/cache"
 
 CONTAINER_KEEP_AGE="24h"
 IMAGE_KEEP_AGE="72h"
-BUILDER_KEEP_AGE="72h"
+BUILDER_KEEP_AGE="${DSA_DOCKER_BUILDER_KEEP_AGE:-24h}"
+BUILDER_MAX_USED_SPACE="${DSA_DOCKER_BUILDER_MAX_USED_SPACE:-2gb}"
+BUILDER_MIN_FREE_SPACE="${DSA_DOCKER_BUILDER_MIN_FREE_SPACE:-8gb}"
 IMAGE_FORCE_PRUNE_THRESHOLD=80
 VOLUME_PRUNE_THRESHOLD=90
 CACHE_KEEP_DAYS=30
@@ -44,6 +46,20 @@ disk_usage_percent() {
   df -P / | awk 'NR == 2 {gsub("%", "", $5); print $5}'
 }
 
+builder_prune_supports_budget() {
+  docker builder prune --help 2>&1 | grep -q -- "--max-used-space"
+}
+
+prune_builder_cache_budget() {
+  if builder_prune_supports_budget; then
+    run docker builder prune -af \
+      --max-used-space "$BUILDER_MAX_USED_SPACE" \
+      --min-free-space "$BUILDER_MIN_FREE_SPACE"
+  else
+    log "Docker builder prune does not support cache budget flags; skipping budgeted build-cache prune"
+  fi
+}
+
 log "DSA cleanup started"
 run df -h /
 
@@ -53,6 +69,7 @@ if command -v docker >/dev/null 2>&1; then
   run docker container prune -f --filter "until=$CONTAINER_KEEP_AGE"
   run docker image prune -af --filter "until=$IMAGE_KEEP_AGE"
   run docker builder prune -af --filter "until=$BUILDER_KEEP_AGE"
+  prune_builder_cache_budget
 
   current_usage="$(disk_usage_percent)"
   if [[ "$current_usage" =~ ^[0-9]+$ ]] && (( current_usage >= IMAGE_FORCE_PRUNE_THRESHOLD )); then

@@ -101,6 +101,7 @@ class MomentumScreeningRunService:
             raise ValueError("Only standard/aggressive profiles are supported")
 
         normalized_truth_mode = self._normalize_truth_mode(truth_mode)
+        resolved_reuse_trade_date = self._resolve_reuse_trade_date(trade_date)
         request_params = self._build_request_params(
             top_n=top_n,
             min_change_pct=min_change_pct,
@@ -114,7 +115,10 @@ class MomentumScreeningRunService:
             use_sector_context=use_sector_context,
             max_scored_candidates=max_scored_candidates,
         )
+        if resolved_reuse_trade_date:
+            request_params["reuse_scope_date"] = self._format_trade_date_str(resolved_reuse_trade_date)
         request_fingerprint = self._build_request_fingerprint(request_params)
+        resolved_trade_date_value = self._coerce_trade_date_value(resolved_reuse_trade_date)
 
         with self._run_lock:
             existing = self.repository.find_run_by_fingerprint(request_fingerprint)
@@ -124,6 +128,32 @@ class MomentumScreeningRunService:
                     "message": "已存在相同参数任务，已为你定位到该任务",
                     "run": self._serialize_run(existing),
                 }
+
+            if resolved_trade_date_value is not None:
+                existing = self.repository.find_reusable_run_by_trade_date(
+                    trade_date=resolved_trade_date_value,
+                    profile=profile,
+                    truth_mode=normalized_truth_mode,
+                    engine_version=MOMENTUM_SCREENING_RUN_ENGINE_VERSION,
+                    entry_baseline_version=MOMENTUM_ENTRY_BASELINE_VERSION,
+                    market_scope_version=MOMENTUM_MARKET_SCOPE_VERSION,
+                    screening_cache_version=MOMENTUM_SCREENING_CACHE_VERSION,
+                    top_n=int(top_n),
+                    min_change_pct=float(min_change_pct),
+                    min_amount=float(min_amount),
+                    min_turnover=float(min_turnover),
+                    exclude_st=bool(exclude_st),
+                    main_board_only=bool(main_board_only),
+                    use_sector_context=bool(use_sector_context),
+                    max_scored_candidates=self._optional_int(max_scored_candidates),
+                    statuses=tuple(REUSABLE_RUN_STATUSES),
+                )
+                if existing is not None:
+                    return {
+                        "created_new": False,
+                        "message": "已命中同交易日已完成或进行中的筛选任务，直接加载既有结果",
+                        "run": self._serialize_run(existing),
+                    }
 
             has_running = self.repository.get_first_run_by_statuses(("running",), ascending=True) is not None
             has_queued = self.repository.get_first_run_by_statuses(("queued",), ascending=True) is not None
@@ -140,7 +170,7 @@ class MomentumScreeningRunService:
                 screening_cache_version=MOMENTUM_SCREENING_CACHE_VERSION,
                 top_n=int(top_n),
                 requested_trade_date=self._normalize_trade_date_str(trade_date),
-                trade_date=None,
+                trade_date=resolved_trade_date_value,
                 min_change_pct=float(min_change_pct),
                 min_amount=float(min_amount),
                 min_turnover=float(min_turnover),
@@ -687,6 +717,32 @@ class MomentumScreeningRunService:
             "use_sector_context": bool(use_sector_context),
             "max_scored_candidates": self._optional_int(max_scored_candidates),
         }
+
+    def _resolve_reuse_trade_date(self, trade_date: Optional[str]) -> Optional[str]:
+        """Resolve latest/explicit requests to the actual trade date used for run reuse."""
+        explicit_trade_date = self._normalize_trade_date_str(trade_date)
+        if explicit_trade_date:
+            current_time = getattr(self.screener_service, "_get_china_now", None)
+            if callable(current_time):
+                try:
+                    resolved_now = current_time()
+                    if isinstance(resolved_now, datetime) and resolved_now.strftime("%Y%m%d") != explicit_trade_date:
+                        return explicit_trade_date
+                except Exception:  # noqa: BLE001
+                    logger.debug("Failed to resolve current China date for screening run reuse", exc_info=True)
+            else:
+                return explicit_trade_date
+        resolver = getattr(self.screener_service, "_resolve_trade_date_and_snapshot", None)
+        if callable(resolver):
+            try:
+                resolution = resolver(trade_date)
+                if isinstance(resolution, dict):
+                    resolved = self._normalize_trade_date_str(resolution.get("trade_date"))
+                    if resolved:
+                        return resolved
+            except Exception:  # noqa: BLE001
+                logger.debug("Failed to resolve screening run reuse trade date", exc_info=True)
+        return explicit_trade_date
 
     def _build_reuse_scope_date(self, trade_date: Optional[str]) -> str:
         explicit_trade_date = self._format_trade_date_str(trade_date)

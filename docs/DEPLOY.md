@@ -93,9 +93,16 @@ bash scripts/docker-cleanup.sh
 
 - 清理 24 小时前停止的容器
 - 清理 72 小时前未使用的镜像
-- 清理 72 小时前未使用的构建缓存
+- 清理 24 小时前未使用的构建缓存
+- 当 Docker 支持 BuildKit 缓存预算参数时，将构建缓存控制在 2GB 以内，并尽量保留至少 8GB 根分区可用空间
 - 清理 `data/cache` 下 30 天前的缓存文件
 - 仅当根分区使用率达到 90% 时清理未使用 Docker volume
+
+可通过以下环境变量调整清理强度：
+
+- `DSA_DOCKER_BUILDER_KEEP_AGE`：构建缓存保留时间，默认 `24h`
+- `DSA_DOCKER_BUILDER_MAX_USED_SPACE`：BuildKit 构建缓存上限，默认 `2gb`
+- `DSA_DOCKER_BUILDER_MIN_FREE_SPACE`：根分区最小可用空间目标，默认 `8gb`
 
 如果只是更新代码并重建服务，优先使用：
 
@@ -103,7 +110,11 @@ bash scripts/docker-cleanup.sh
 bash scripts/deploy-docker.sh rebuild
 ```
 
-该命令会在重建完成后顺手清理 dangling image，减少重复构建后的磁盘增长。
+该命令默认复用构建缓存，并在重建完成后执行统一清理，减少重复构建后的磁盘增长。只有在确实需要完全重建镜像时，才使用：
+
+```bash
+DSA_DOCKER_NO_CACHE=1 bash scripts/deploy-docker.sh rebuild
+```
 
 ### 6. 数据持久化
 
