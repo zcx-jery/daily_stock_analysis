@@ -141,6 +141,16 @@ RAW_LEADER_SOFT_RISK_KEYS = {"sealing_risk", "mainline_risk", "exhaustion_risk"}
 RAW_LEADER_DIVERGENCE_STATUS = "RETAINED_LEADER_DIVERGENCE"
 V13_CONTEXT_MAX_TS_CODES = 30
 DECISION_CANDIDATE_POOL_LIMIT = 12
+CONTINUATION_CORE_RAW_LIMIT = 7
+CONTINUATION_ELITE_RAW_LIMIT = 20
+CONTINUATION_DEEP_MIN_RAW_RANK = 8
+CONTINUATION_DEEP_TOP_FRACTION = 0.10
+CONTINUATION_OFFICIAL_TOP_N = 3
+T1_SUPPORT_EARLY_SEAL_BONUS = 1.10
+T1_SUPPORT_MONEYFLOW_INERTIA_BONUS = 1.10
+T1_SUPPORT_LOW_SEAL_PENALTY = 8.0
+SECONDARY_SOVEREIGN_SUPPORT_ADVANTAGE = 20.0
+SECONDARY_SOVEREIGN_COMPOSITE_PREMIUM = 1.30
 STRONG_GO_POOL_SUCCESS_RATE_THRESHOLD_PCT = 65.0
 STRONG_GO_LEADER_BOARD_HEIGHT_THRESHOLD = 5
 ADAPTIVE_GATE_LOOKBACK_DAYS = 5
@@ -825,12 +835,12 @@ class MomentumSecondaryDecisionService:
             for candidate in sampled_candidates
             if candidate.get("ts_code") or candidate.get("code")
         }
-        raw_top3 = [
+        raw_elite = [
             item
             for item in sorted(candidates, key=self._candidate_raw_rank)
-            if self._is_raw_top3_candidate(item)
+            if self._candidate_raw_rank(item) <= CONTINUATION_ELITE_RAW_LIMIT
         ]
-        for raw_candidate in raw_top3:
+        for raw_candidate in raw_elite:
             raw_code = _safe_str(raw_candidate.get("ts_code") or raw_candidate.get("code"))
             if not raw_code or raw_code in sampled_codes:
                 continue
@@ -839,7 +849,7 @@ class MomentumSecondaryDecisionService:
                     (
                         index
                         for index in range(len(sampled_candidates) - 1, -1, -1)
-                        if not self._is_raw_top3_candidate(sampled_candidates[index])
+                        if self._candidate_raw_rank(sampled_candidates[index]) > CONTINUATION_ELITE_RAW_LIMIT
                     ),
                     None,
                 )
@@ -1962,6 +1972,116 @@ class MomentumSecondaryDecisionService:
         item["_t1_direction_risk_adjustment"] = round(t1_direction_risk_adjustment, 2)
         item["_decision_score"] = round(decision_score, 2)
         item["_forward_alpha_score"] = round(forward_alpha_score, 2)
+        self._annotate_t1_support_probability(item)
+
+    def _annotate_t1_support_probability(self, item: Dict[str, Any]) -> None:
+        sealing_signal = item.get("_v13_sealing_strength_signal")
+        if not isinstance(sealing_signal, dict):
+            sealing_signal = item.get("v13_sealing_strength") if isinstance(item.get("v13_sealing_strength"), dict) else {}
+
+        first_seal_time = (
+            _safe_str(sealing_signal.get("first_seal_time"))
+            or _safe_str(item.get("first_seal_time"))
+            or _safe_str(item.get("first_time"))
+        )
+        first_minutes = self._parse_limit_time_minutes(first_seal_time)
+        sealing_speed_score = self._first_available_float(
+            {
+                "first_score": sealing_signal.get("first_seal_time_score"),
+                "signal_score": sealing_signal.get("score"),
+                **item,
+            },
+            ("first_score", "signal_score", "v13_sealing_strength_score", "_v13_sealing_strength_score"),
+        )
+        if sealing_speed_score is None:
+            sealing_speed_score = self._sealing_time_score(first_minutes, is_mainline=False)
+        if sealing_speed_score is None:
+            sealing_speed_score = 50.0
+
+        buy_elg_amount = self._first_available_float(
+            item,
+            (
+                "v13_stock_buy_elg_amount",
+                "_v13_stock_buy_elg_amount",
+                "buy_elg_amount",
+                "stock_fund_buy_elg_amount",
+            ),
+        )
+        moneyflow_delta = self._first_available_float(
+            item,
+            (
+                "buy_elg_amount_30m_delta",
+                "buy_elg_amount_delta_30m",
+                "v13_buy_elg_amount_30m_delta",
+                "_v13_buy_elg_amount_30m_delta",
+                "buy_elg_amount_change",
+            ),
+        )
+        moneyflow_increasing = bool(item.get("buy_elg_amount_increasing_30m"))
+        if moneyflow_delta is not None and moneyflow_delta > 0:
+            moneyflow_increasing = True
+        if moneyflow_increasing:
+            moneyflow_inertia_score = 82.0
+        elif buy_elg_amount is None:
+            moneyflow_inertia_score = 50.0
+        elif buy_elg_amount > 0:
+            moneyflow_inertia_score = 66.0
+        elif buy_elg_amount < 0:
+            moneyflow_inertia_score = 36.0
+        else:
+            moneyflow_inertia_score = 50.0
+
+        mainline_count = self._mainline_cluster_count(item)
+        mainline_multiplier = self._mainline_intensity_multiplier(item)
+        if _safe_float(mainline_count, 0.0) >= 3.0 or mainline_multiplier >= 1.20:
+            cluster_resonance_score = 82.0
+        elif _safe_float(mainline_count, 0.0) >= 2.0 or mainline_multiplier >= 1.10:
+            cluster_resonance_score = 68.0
+        elif mainline_count is not None and mainline_count <= 1:
+            cluster_resonance_score = 42.0
+        else:
+            cluster_resonance_score = 50.0
+
+        continuation_score = _safe_float(item.get("continuation_score"))
+        late_tail_seal = first_minutes is not None and first_minutes > 14 * 60
+        support_penalty = 0.0
+        if continuation_score >= 85.0 and (sealing_speed_score < 50.0 or late_tail_seal):
+            support_penalty = -T1_SUPPORT_LOW_SEAL_PENALTY
+
+        coefficient = 1.0
+        bonuses: List[str] = []
+        if first_minutes is not None and first_minutes < 10 * 60:
+            coefficient *= T1_SUPPORT_EARLY_SEAL_BONUS
+            bonuses.append("early_seal")
+        if moneyflow_increasing:
+            coefficient *= T1_SUPPORT_MONEYFLOW_INERTIA_BONUS
+            bonuses.append("moneyflow_inertia")
+
+        base_probability = (
+            sealing_speed_score * 0.40
+            + moneyflow_inertia_score * 0.30
+            + cluster_resonance_score * 0.30
+            + support_penalty
+        )
+        t1_support_probability = _clamp_float(base_probability * min(coefficient, 1.21), 0.0, 100.0)
+        support_adjusted_continuation = _clamp_float(
+            continuation_score * coefficient + support_penalty * 0.50,
+            0.0,
+            100.0,
+        )
+        components = {
+            "sealing_speed": round(sealing_speed_score, 2),
+            "moneyflow_inertia": round(moneyflow_inertia_score, 2),
+            "cluster_resonance": round(cluster_resonance_score, 2),
+            "support_penalty": round(support_penalty, 2),
+            "early_seal_bonus": "early_seal" in bonuses,
+            "moneyflow_inertia_bonus": "moneyflow_inertia" in bonuses,
+            "first_seal_time": first_seal_time or None,
+        }
+        item["_t1_support_probability"] = round(t1_support_probability, 2)
+        item["_support_inertia_coefficient"] = round(coefficient, 4)
+        item["_support_adjusted_continuation_score"] = round(support_adjusted_continuation, 2)
+        item["_t1_support_components"] = components
 
     def _build_theme_summaries(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
@@ -2047,6 +2167,16 @@ class MomentumSecondaryDecisionService:
         selected_codes: set[str] = set()
         selected_themes: List[str] = []
 
+        continuation_led_selection = self._build_continuation_led_selection(
+            candidates,
+            theme_score_map,
+        )
+        if continuation_led_selection:
+            return [
+                self._build_portfolio_slot(slot, candidate, theme_score_map)
+                for slot, candidate in continuation_led_selection
+            ]
+
         main_candidate = self._pick_main_candidate(sorted_candidates, theme_score_map)
         if main_candidate is None:
             return []
@@ -2084,6 +2214,394 @@ class MomentumSecondaryDecisionService:
             self._build_portfolio_slot(slot, candidate, theme_score_map)
             for slot, candidate in selected
         ]
+
+    def _build_continuation_led_selection(
+        self,
+        candidates: List[Dict[str, Any]],
+        theme_score_map: Dict[str, float],
+    ) -> List[Tuple[str, Dict[str, Any]]]:
+        continuation_rank_map = self._annotate_continuation_ranks(candidates)
+        raw_elite = [
+            item
+            for item in sorted(candidates, key=self._candidate_raw_rank)
+            if self._passes_continuation_candidate_gate(item, continuation_rank_map)
+        ]
+        raw_one = next(
+            (
+                item
+                for item in sorted(candidates, key=self._candidate_raw_rank)
+                if self._is_raw_top1_candidate(item)
+            ),
+            None,
+        )
+        if not raw_elite:
+            return []
+
+        selected: List[Dict[str, Any]] = []
+        selected_codes: set[str] = set()
+        for candidate in sorted(raw_elite, key=self._continuation_alpha_sort_key, reverse=True):
+            code = _safe_str(candidate.get("ts_code"))
+            if code and code not in selected_codes:
+                selected.append(candidate)
+                selected_codes.add(code)
+            if len(selected) >= CONTINUATION_OFFICIAL_TOP_N:
+                break
+
+        if not selected:
+            return []
+
+        selected = self._apply_secondary_sovereign_guard(
+            selected,
+            raw_elite,
+            continuation_rank_map,
+            theme_score_map,
+        )
+        ordered = self._order_continuation_led_slots(selected, raw_one, theme_score_map)
+        elite_pool_size = len(raw_elite)
+        for slot, candidate in ordered:
+            deep_challenger = self._is_deep_continuation_challenger(candidate, continuation_rank_map)
+            self._set_continuation_alpha_status(
+                candidate,
+                slot=slot,
+                status=(
+                    "selected_deep_continuation_challenger"
+                    if deep_challenger
+                    else "selected_by_continuation_alpha"
+                ),
+                reason=(
+                    "Official Top3 is selected from the Raw Top20 elite pool by prioritizing "
+                    "continuation_score for higher T+1 directional certainty."
+                    if not deep_challenger
+                    else (
+                        "Deep Continuation Challenger enters Official Top3 because it ranks Raw 8-20, "
+                        "is in the top continuation decile, and has at most one minor Risk Stack point."
+                    )
+                ),
+                elite_pool_size=elite_pool_size,
+                continuation_score=round(_safe_float(candidate.get("continuation_score")), 2),
+                continuation_rank=continuation_rank_map.get(_safe_str(candidate.get("ts_code"))),
+                raw_momentum_rank=self._candidate_raw_rank(candidate),
+                deep_challenger=deep_challenger,
+                secondary_sovereign_guard=bool(candidate.get("_secondary_sovereign_guard_retained")),
+            )
+        if raw_one is not None and _safe_str(raw_one.get("ts_code")) in {
+            _safe_str(candidate.get("ts_code")) for _slot, candidate in ordered
+        }:
+            raw_one_slot = next(
+                slot
+                for slot, candidate in ordered
+                if _safe_str(candidate.get("ts_code")) == _safe_str(raw_one.get("ts_code"))
+            )
+            raw_one_continuation = _safe_float(raw_one.get("continuation_score"))
+            if raw_one_slot == "main":
+                self._set_continuation_alpha_status(
+                    raw_one,
+                    slot=raw_one_slot,
+                    status="raw_top1_selected_as_anchor",
+                    reason="Raw #1 earns the Main Slot by continuation_score, not by mandatory sovereignty.",
+                    elite_pool_size=elite_pool_size,
+                    continuation_score=round(raw_one_continuation, 2),
+                    continuation_rank=continuation_rank_map.get(_safe_str(raw_one.get("ts_code"))),
+                    raw_momentum_rank=1,
+                )
+            else:
+                self._set_continuation_alpha_status(
+                    raw_one,
+                    slot=raw_one_slot,
+                    status="raw_top1_selected_but_demoted_by_anchor",
+                    reason=(
+                        "Raw #1 remains in Official Top3 only because its continuation_score ranks high enough; "
+                        "the Main Slot is assigned to a stronger continuation anchor."
+                    ),
+                    elite_pool_size=elite_pool_size,
+                    continuation_score=round(raw_one_continuation, 2),
+                    continuation_rank=continuation_rank_map.get(_safe_str(raw_one.get("ts_code"))),
+                    raw_momentum_rank=1,
+                    swap_reason="Main_Slot_Pivot",
+                )
+        elif raw_one is not None:
+            self._set_continuation_alpha_status(
+                raw_one,
+                slot=None,
+                status="raw_top1_replaced_by_anchor_supremacy",
+                reason=(
+                    "Raw #1 has no mandatory sovereignty in Stage 19; it is dropped when stronger "
+                    "continuation anchors pass the Risk Stack safety gate."
+                ),
+                elite_pool_size=elite_pool_size,
+                continuation_score=round(_safe_float(raw_one.get("continuation_score")), 2),
+                continuation_rank=continuation_rank_map.get(_safe_str(raw_one.get("ts_code"))),
+                raw_momentum_rank=1,
+                swap_reason="Anchor_Supremacy",
+            )
+        return ordered
+
+    def _annotate_continuation_ranks(self, candidates: List[Dict[str, Any]]) -> Dict[str, int]:
+        ranked = sorted(candidates, key=self._continuation_alpha_sort_key, reverse=True)
+        rank_map: Dict[str, int] = {}
+        for rank, item in enumerate(ranked, start=1):
+            code = _safe_str(item.get("ts_code"))
+            if not code:
+                continue
+            rank_map[code] = rank
+            item["_continuation_rank"] = rank
+        return rank_map
+
+    def _passes_continuation_candidate_gate(
+        self,
+        item: Dict[str, Any],
+        continuation_rank_map: Dict[str, int],
+    ) -> bool:
+        raw_rank = self._candidate_raw_rank(item)
+        if raw_rank <= CONTINUATION_CORE_RAW_LIMIT:
+            return self._passes_continuation_core_risk_check(item)
+        if raw_rank <= CONTINUATION_ELITE_RAW_LIMIT:
+            return self._is_deep_continuation_challenger(item, continuation_rank_map)
+        return False
+
+    def _passes_continuation_core_risk_check(self, item: Dict[str, Any]) -> bool:
+        risk_stack = self._risk_stack_check(item)
+        return (
+            int(_safe_float(risk_stack.get("risk_points"), 999.0)) < 3
+            and not bool(risk_stack.get("mandatory_veto"))
+        )
+
+    def _is_deep_continuation_challenger(
+        self,
+        item: Dict[str, Any],
+        continuation_rank_map: Dict[str, int],
+    ) -> bool:
+        raw_rank = self._candidate_raw_rank(item)
+        if raw_rank < CONTINUATION_DEEP_MIN_RAW_RANK or raw_rank > CONTINUATION_ELITE_RAW_LIMIT:
+            return False
+        code = _safe_str(item.get("ts_code"))
+        continuation_rank = continuation_rank_map.get(code, 999)
+        top_decile_cutoff = max(1, int(ceil(len(continuation_rank_map) * CONTINUATION_DEEP_TOP_FRACTION)))
+        if continuation_rank > top_decile_cutoff:
+            return False
+        risk_stack = self._risk_stack_check(item)
+        return (
+            int(_safe_float(risk_stack.get("risk_points"), 999.0)) <= 1
+            and not bool(risk_stack.get("mandatory_veto"))
+        )
+
+    def _continuation_alpha_sort_key(self, item: Dict[str, Any]) -> Tuple[float, float, float, float, float, float, float]:
+        self._annotate_t1_support_probability(item)
+        return (
+            _safe_float(item.get("_support_adjusted_continuation_score"), item.get("continuation_score")),
+            _safe_float(item.get("_t1_support_probability"), 50.0),
+            _safe_float(item.get("continuation_score")),
+            _safe_float(item.get("_forward_alpha_score"), 50.0),
+            _official_sort_score(item),
+            -float(self._candidate_raw_rank(item)),
+            _safe_float(item.get("extension_score")),
+        )
+
+    def _apply_secondary_sovereign_guard(
+        self,
+        selected: List[Dict[str, Any]],
+        raw_elite: List[Dict[str, Any]],
+        continuation_rank_map: Dict[str, int],
+        theme_score_map: Dict[str, float],
+    ) -> List[Dict[str, Any]]:
+        updated = list(selected[:CONTINUATION_OFFICIAL_TOP_N])
+        selected_codes = {_safe_str(item.get("ts_code")) for item in updated if item.get("ts_code")}
+        protected_raw = [
+            item
+            for item in sorted(raw_elite, key=self._candidate_raw_rank)
+            if self._candidate_raw_rank(item) in {2, 3}
+        ]
+        for raw_candidate in protected_raw:
+            raw_code = _safe_str(raw_candidate.get("ts_code"))
+            if not raw_code or raw_code in selected_codes:
+                continue
+            risk_stack = self._risk_stack_check(raw_candidate)
+            if int(_safe_float(risk_stack.get("risk_points"), 999.0)) != 0:
+                continue
+
+            replaceable_indexes = [
+                index
+                for index, candidate in enumerate(updated)
+                if not self._is_raw_top3_candidate(candidate)
+            ]
+            if not replaceable_indexes:
+                continue
+
+            if any(
+                self._challenger_breaks_secondary_sovereign_guard(
+                    updated[index],
+                    raw_candidate,
+                    theme_score_map,
+                )
+                for index in replaceable_indexes
+            ):
+                self._set_continuation_alpha_status(
+                    raw_candidate,
+                    slot=None,
+                    status="displaced_by_high_support_challenger",
+                    reason=(
+                        "Raw #2/#3 sovereignty is waived because the challenger has a materially higher "
+                        "T1 support probability and a 30%+ composite edge."
+                    ),
+                    continuation_rank=continuation_rank_map.get(raw_code),
+                    raw_momentum_rank=self._candidate_raw_rank(raw_candidate),
+                )
+                continue
+
+            replace_index = min(
+                replaceable_indexes,
+                key=lambda index: self._secondary_sovereign_composite_score(updated[index], theme_score_map),
+            )
+            displaced = updated[replace_index]
+            displaced_code = _safe_str(displaced.get("ts_code"))
+            updated[replace_index] = raw_candidate
+            selected_codes.discard(displaced_code)
+            selected_codes.add(raw_code)
+            raw_candidate["_secondary_sovereign_guard_retained"] = True
+            raw_candidate["_secondary_sovereign_guard_displaced_code"] = displaced_code or None
+            self._set_continuation_alpha_status(
+                displaced,
+                slot=None,
+                status="blocked_by_secondary_sovereign_guard",
+                reason=(
+                    "Challenger failed the Secondary Sovereign Guard: it did not exceed the protected "
+                    "Raw #2/#3 by +20 T1 support points and 30% composite score."
+                ),
+                continuation_rank=continuation_rank_map.get(displaced_code),
+                raw_momentum_rank=self._candidate_raw_rank(displaced),
+                replaced_by=raw_code,
+            )
+        return updated
+
+    def _challenger_breaks_secondary_sovereign_guard(
+        self,
+        challenger: Dict[str, Any],
+        raw_candidate: Dict[str, Any],
+        theme_score_map: Dict[str, float],
+    ) -> bool:
+        support_advantage = (
+            _safe_float(challenger.get("_t1_support_probability"), 50.0)
+            - _safe_float(raw_candidate.get("_t1_support_probability"), 50.0)
+        )
+        if support_advantage < SECONDARY_SOVEREIGN_SUPPORT_ADVANTAGE:
+            return False
+        challenger_score = self._secondary_sovereign_composite_score(challenger, theme_score_map)
+        raw_score = self._secondary_sovereign_composite_score(raw_candidate, theme_score_map)
+        return challenger_score >= raw_score * SECONDARY_SOVEREIGN_COMPOSITE_PREMIUM
+
+    def _secondary_sovereign_composite_score(
+        self,
+        item: Dict[str, Any],
+        theme_score_map: Dict[str, float],
+    ) -> float:
+        self._annotate_t1_support_probability(item)
+        support = _safe_float(item.get("_t1_support_probability"), 50.0)
+        adjusted_continuation = _safe_float(item.get("_support_adjusted_continuation_score"), item.get("continuation_score"))
+        official_score = _official_sort_score(item)
+        forward_alpha = _safe_float(item.get("_forward_alpha_score"), 50.0)
+        theme_score = _safe_float(theme_score_map.get(_safe_str(item.get("_theme"))), 50.0)
+        return round(
+            support * 0.35
+            + adjusted_continuation * 0.35
+            + official_score * 0.15
+            + forward_alpha * 0.10
+            + theme_score * 0.05,
+            4,
+        )
+
+    def _order_continuation_led_slots(
+        self,
+        selected: List[Dict[str, Any]],
+        raw_one: Optional[Dict[str, Any]],
+        theme_score_map: Dict[str, float],
+    ) -> List[Tuple[str, Dict[str, Any]]]:
+        ordered_candidates = sorted(
+            selected,
+            key=self._continuation_alpha_sort_key,
+            reverse=True,
+        )
+        slots = ["main", "secondary", "watch"]
+        return [
+            (slots[index], candidate)
+            for index, candidate in enumerate(ordered_candidates[:CONTINUATION_OFFICIAL_TOP_N])
+        ]
+
+    def _main_slot_alpha_anchor_sort_key(
+        self,
+        item: Dict[str, Any],
+        theme_score_map: Dict[str, float],
+    ) -> Tuple[int, float, int, float, float, float]:
+        risk_stack = self._risk_stack_check(item)
+        position_risk = self._risk_stack_has_triggered_key(risk_stack, "position_risk")
+        return (
+            0 if self._has_continuation_main_slot_blocker(item, theme_score_map) else 1,
+            _safe_float(item.get("continuation_score")),
+            0 if position_risk else 1,
+            -_safe_float(risk_stack.get("risk_points")),
+            _safe_float(item.get("_forward_alpha_score"), 50.0),
+            _official_sort_score(item),
+        )
+
+    @staticmethod
+    def _risk_stack_has_triggered_key(risk_stack: Dict[str, Any], key: str) -> bool:
+        factors = risk_stack.get("factors")
+        if not isinstance(factors, list):
+            return False
+        return any(
+            isinstance(factor, dict)
+            and factor.get("key") == key
+            and bool(factor.get("triggered"))
+            for factor in factors
+        )
+
+    def _has_continuation_main_slot_blocker(
+        self,
+        item: Dict[str, Any],
+        theme_score_map: Dict[str, float],
+    ) -> bool:
+        hard_blockers = [
+            blocker
+            for blocker in self._slot_hard_blocker_items("main", item, theme_score_map)
+            if blocker.get("key") != "adaptive_mainline_threshold"
+        ]
+        if hard_blockers:
+            return True
+        buy_point_status = _safe_str(item.get("_buy_point_status"), item.get("buy_point_status"))
+        return self._has_severe_t1_direction_risk(item, buy_point_status=buy_point_status)
+
+    @staticmethod
+    def _set_continuation_alpha_status(
+        item: Dict[str, Any],
+        *,
+        slot: Optional[str],
+        status: str,
+        reason: str,
+        **extra: Any,
+    ) -> None:
+        payload = dict(item.get("_continuation_alpha") or {})
+        payload.update(
+            {
+                "status": status,
+                "slot": slot,
+                "reason": reason,
+            }
+        )
+        if item.get("_t1_support_probability") is not None:
+            payload["t1_support_probability"] = round(_safe_float(item.get("_t1_support_probability")), 2)
+        if item.get("_support_adjusted_continuation_score") is not None:
+            payload["support_adjusted_continuation_score"] = round(
+                _safe_float(item.get("_support_adjusted_continuation_score")),
+                2,
+            )
+        if item.get("_support_inertia_coefficient") is not None:
+            payload["support_inertia_coefficient"] = round(
+                _safe_float(item.get("_support_inertia_coefficient"), 1.0),
+                4,
+            )
+        if item.get("_t1_support_components") is not None:
+            payload["support_components"] = item.get("_t1_support_components")
+        payload.update(extra)
+        item["_continuation_alpha"] = payload
 
     @staticmethod
     def _raw_momentum_candidate_sort_key(item: Dict[str, Any]) -> Tuple[float, int, str]:
@@ -2138,11 +2656,6 @@ class MomentumSecondaryDecisionService:
                 "Raw Top3 triggered high-position reseal churn (R1 with R2/R5) inside a confirmed mainline, "
                 "without moneyflow divergence or mainline isolation, so it is retained as a volatility-tolerant leader."
             )
-        if profile == "raw_top1_hard_risk_softened":
-            return (
-                "Raw #1 triggered one hard risk inside a confirmed sector cluster, "
-                "so King's Guard raises the veto threshold and retains it as the momentum king."
-            )
         return (
             "Raw Top3 only triggered soft divergence risks (R2/R4/R5), "
             "so it is retained as a Weak-to-Strong leader candidate."
@@ -2169,10 +2682,7 @@ class MomentumSecondaryDecisionService:
         )
 
     def _is_kings_guard_candidate(self, item: Dict[str, Any]) -> bool:
-        return (
-            self._is_raw_top1_candidate(item)
-            and self._mainline_intensity_multiplier(item) > KINGS_GUARD_MAINLINE_MULTIPLIER_THRESHOLD
-        )
+        return False
 
     @classmethod
     def _replacement_premium_for_raw_candidate(cls, item: Dict[str, Any]) -> float:
@@ -2293,16 +2803,8 @@ class MomentumSecondaryDecisionService:
                     else:
                         self._set_alpha_shield_status(
                             raw_candidate,
-                            status=(
-                                "retained_by_kings_guard"
-                                if self._is_kings_guard_candidate(raw_candidate)
-                                else "retained_by_existing_slot"
-                            ),
-                            reason=(
-                                "Raw #1 has King's Guard sovereignty and is already retained in Official Top3."
-                                if self._is_kings_guard_candidate(raw_candidate)
-                                else "Raw Top 3 already retained in Official Top3."
-                            ),
+                            status="retained_by_existing_slot",
+                            reason="Raw Top 3 already retained in Official Top3.",
                             kings_guard=self._is_kings_guard_candidate(raw_candidate),
                         )
                 continue
@@ -2340,20 +2842,12 @@ class MomentumSecondaryDecisionService:
                         status=(
                             RAW_LEADER_DIVERGENCE_STATUS
                             if risk_stack.get("leader_resilience_exempt")
-                            else (
-                                "retained_by_kings_guard"
-                                if self._is_kings_guard_candidate(raw_candidate)
-                                else "retained_by_raw_top3_sovereignty"
-                            )
+                            else "retained_by_raw_top3_sovereignty"
                         ),
                         reason=(
                             self._raw_leader_divergence_reason(risk_stack)
                             if risk_stack.get("leader_resilience_exempt")
-                            else (
-                                "Raw #1 has King's Guard sovereignty and fills an open Official Top3 slot."
-                                if self._is_kings_guard_candidate(raw_candidate)
-                                else "Raw Top3 sovereignty fills an open Official Top3 slot after no valid replacement target is found."
-                            )
+                            else "Raw Top3 sovereignty fills an open Official Top3 slot after no valid replacement target is found."
                         ),
                         composite_score=raw_score,
                         risk_stack_count=risk_stack.get("factor_count"),
@@ -2399,20 +2893,12 @@ class MomentumSecondaryDecisionService:
                 status=(
                     RAW_LEADER_DIVERGENCE_STATUS
                     if risk_stack.get("leader_resilience_exempt")
-                    else (
-                        "retained_by_kings_guard"
-                        if self._is_kings_guard_candidate(raw_candidate)
-                        else "retained_by_raw_top3_sovereignty"
-                    )
+                    else "retained_by_raw_top3_sovereignty"
                 ),
                 reason=(
                     self._raw_leader_divergence_reason(risk_stack)
                     if risk_stack.get("leader_resilience_exempt")
-                    else (
-                        "Raw #1 has King's Guard sovereignty: strong mainline momentum cannot be displaced by secondary/waiting tickers."
-                        if self._is_kings_guard_candidate(raw_candidate)
-                        else "Raw Top 3 is protected unless Risk Stack reaches the hard-veto threshold."
-                    )
+                    else "Raw Top 3 is protected unless Risk Stack reaches the hard-veto threshold."
                 ),
                 composite_score=raw_score,
                 replaced_ts_code=_safe_str(replaced_candidate.get("ts_code")),
@@ -2427,13 +2913,9 @@ class MomentumSecondaryDecisionService:
                 replaced_candidate,
                 status="displaced_by_raw_alpha_shield",
                 reason=(
-                    "Inserted candidate was blocked by King's Guard absolute sovereignty."
-                    if self._is_kings_guard_candidate(raw_candidate)
-                    else (
-                        "Inserted candidate was not a zero-risk "
-                        f"{int(self._replacement_premium_for_raw_candidate(raw_candidate) * 100 - 100)}%-premium challenger "
-                        "over a non-veto Raw Top 3 candidate."
-                    )
+                    "Inserted candidate was not a zero-risk "
+                    f"{int(self._replacement_premium_for_raw_candidate(raw_candidate) * 100 - 100)}%-premium challenger "
+                    "over a non-veto Raw Top 3 candidate."
                 ),
                 composite_score=round(replaced_score, 4),
                 competing_raw_ts_code=raw_code,
@@ -2582,6 +3064,12 @@ class MomentumSecondaryDecisionService:
                     "risk_stack_count": candidate.get("_risk_stack_count"),
                     "risk_stack_veto": candidate.get("_risk_stack_veto"),
                     "raw_alpha_shield": candidate.get("_raw_alpha_shield"),
+                    "continuation_alpha": candidate.get("_continuation_alpha"),
+                    "continuation_rank": candidate.get("_continuation_rank"),
+                    "t1_support_probability": candidate.get("_t1_support_probability"),
+                    "support_inertia_coefficient": candidate.get("_support_inertia_coefficient"),
+                    "support_adjusted_continuation_score": candidate.get("_support_adjusted_continuation_score"),
+                    "support_components": candidate.get("_t1_support_components"),
                     "mainline_intensity_count": int(_safe_float(candidate.get("_official_mainline_intensity_count"))),
                     "mainline_intensity_multiplier": round(
                         _safe_float(candidate.get("_official_mainline_intensity_multiplier"), 1.0),
@@ -2683,6 +3171,12 @@ class MomentumSecondaryDecisionService:
                     "risk_stack_count": candidate.get("_risk_stack_count"),
                     "risk_stack_veto": candidate.get("_risk_stack_veto"),
                     "raw_alpha_shield": candidate.get("_raw_alpha_shield"),
+                    "continuation_alpha": candidate.get("_continuation_alpha"),
+                    "continuation_rank": candidate.get("_continuation_rank"),
+                    "t1_support_probability": candidate.get("_t1_support_probability"),
+                    "support_inertia_coefficient": candidate.get("_support_inertia_coefficient"),
+                    "support_adjusted_continuation_score": candidate.get("_support_adjusted_continuation_score"),
+                    "support_components": candidate.get("_t1_support_components"),
                     "mainline_intensity_count": int(_safe_float(candidate.get("_official_mainline_intensity_count"))),
                     "mainline_intensity_multiplier": round(
                         _safe_float(candidate.get("_official_mainline_intensity_multiplier"), 1.0),
@@ -2883,16 +3377,32 @@ class MomentumSecondaryDecisionService:
             _safe_float(profitability.get("market_pool_avg_return_pct"), 0.0),
             2,
         )
+        current_candidate_count = len(candidates or [])
+        current_theme_count = len(themes or [])
+        current_breadth_score = round(
+            _clamp_float(
+                min(current_candidate_count, 30) / 30.0 * 65.0
+                + min(current_theme_count, 4) / 4.0 * 35.0,
+                0.0,
+                100.0,
+            ),
+            1,
+        )
 
         core_level = self._classify_core_premium_level(core_success_rate, core_profit_window_pct)
         breadth_level = self._classify_breadth_premium_level(
             broad_success_rate,
             broad_profit_window_pct,
         )
+        current_breadth_level = (
+            "strong"
+            if current_breadth_score >= 70.0
+            else ("medium" if current_breadth_score >= 45.0 else "weak")
+        )
 
-        if core_level == "strong" and breadth_level == "strong":
+        if core_level == "strong" and breadth_level in {"strong", "medium"}:
             level = "strong"
-        elif core_level == "weak" and breadth_level == "weak":
+        elif core_level == "weak" and breadth_level == "weak" and current_breadth_level == "weak":
             level = "weak"
         else:
             level = "medium"
@@ -2926,8 +3436,25 @@ class MomentumSecondaryDecisionService:
                     f"平均利润窗口 {broad_profit_window_pct:.2f}% 。"
                 ),
             },
+            {
+                "key": "current_pool_breadth",
+                "label": GATE_LEVEL_LABELS[current_breadth_level],
+                "level": current_breadth_level,
+                "score": current_breadth_score,
+                "summary": (
+                    f"current pool has {current_candidate_count} candidates and "
+                    f"{current_theme_count} theme clusters; Sentiment_Lag_Filter now favors pool breadth."
+                ),
+            },
         ]
-        score = round(_clamp_float(modules[0]["score"] * 0.55 + modules[1]["score"] * 0.45), 1)
+        score = round(
+            _clamp_float(
+                modules[0]["score"] * 0.40
+                + modules[1]["score"] * 0.45
+                + modules[2]["score"] * 0.15
+            ),
+            1,
+        )
         force_stand_aside = market_pool_avg_return_pct < -3.0
         force_reason = ""
         if force_stand_aside:
@@ -6181,9 +6708,13 @@ class MomentumSecondaryDecisionService:
             key=self._decision_candidate_sort_key,
             reverse=True,
         )[:DECISION_CANDIDATE_POOL_LIMIT]
-        raw_top3 = [item for item in candidates if self._is_raw_top3_candidate(item)]
+        raw_elite = [
+            item
+            for item in candidates
+            if self._candidate_raw_rank(item) <= CONTINUATION_ELITE_RAW_LIMIT
+        ]
         merged: Dict[str, Dict[str, Any]] = {}
-        for item in [*decision_pool, *raw_top3]:
+        for item in [*decision_pool, *raw_elite]:
             code = _safe_str(item.get("ts_code"))
             if code:
                 merged[code] = item
@@ -6479,6 +7010,11 @@ class MomentumSecondaryDecisionService:
             adjustments.append(self._reason_item("t1_direction_drag", "次日方向承接一般", delta=-0.3))
         elif role_key == "leader" and buy_point_status == "clear":
             adjustments.append(self._reason_item("t1_direction_resilience", "次日承接更稳", delta=0.3))
+        support_probability = _safe_float(item.get("_t1_support_probability"), 50.0)
+        if support_probability >= 72.0:
+            adjustments.append(self._reason_item("t1_support_probability", "T+1 support probability", delta=0.5))
+        elif support_probability <= 42.0:
+            adjustments.append(self._reason_item("t1_support_penalty", "Low T+1 support probability", delta=-0.8))
         if role_key == "front" and severe_t1_risk:
             adjustments.append(self._reason_item("front_t1_risk_drag", "前排次日承接偏激进", delta=-0.8))
         return adjustments
@@ -6783,20 +7319,10 @@ class MomentumSecondaryDecisionService:
         soft_risk_keys = [key for key in triggered_keys if key in RAW_LEADER_SOFT_RISK_KEYS]
         base_veto = risk_points >= 3
         raw_top3_candidate = self._is_raw_top3_candidate(item)
-        raw_top1_candidate = self._is_raw_top1_candidate(item)
-        kings_guard_cluster_confirmed = raw_top1_candidate and _safe_float(mainline_count, 0.0) >= KINGS_GUARD_CLUSTER_MIN_COUNT
-        kings_guard_base_veto = kings_guard_cluster_confirmed and risk_points >= KINGS_GUARD_RISK_STACK_THRESHOLD
-        kings_guard_hard_risk_softened = (
-            kings_guard_cluster_confirmed
-            and base_veto
-            and not kings_guard_base_veto
-            and len(hard_risk_keys) <= 1
-        )
-        multi_hard_risk_veto = (
-            kings_guard_cluster_confirmed
-            and base_veto
-            and len(hard_risk_keys) > 1
-        )
+        kings_guard_cluster_confirmed = False
+        kings_guard_base_veto = False
+        kings_guard_hard_risk_softened = False
+        multi_hard_risk_veto = False
         soft_only_leader_exempt = raw_top3_candidate and base_veto and not hard_risk_keys
         mainline_position_churn_exempt = (
             raw_top3_candidate
@@ -6821,12 +7347,8 @@ class MomentumSecondaryDecisionService:
             soft_only_leader_exempt
             or mainline_position_churn_exempt
             or mainline_reseal_churn_exempt
-            or kings_guard_hard_risk_softened
         )
-        effective_veto = (
-            (kings_guard_base_veto if kings_guard_cluster_confirmed else base_veto)
-            or multi_hard_risk_veto
-        ) and not leader_resilience_exempt
+        effective_veto = base_veto and not leader_resilience_exempt
         mandatory_veto_keys: List[str] = []
         mandatory_veto = False
         result = {
@@ -6836,11 +7358,7 @@ class MomentumSecondaryDecisionService:
             "risk_points": risk_points,
             "base_veto": base_veto,
             "veto": effective_veto,
-            "threshold": (
-                KINGS_GUARD_RISK_STACK_THRESHOLD
-                if kings_guard_cluster_confirmed
-                else 3
-            ),
+            "threshold": 3,
             "mandatory_veto": mandatory_veto,
             "mandatory_veto_keys": mandatory_veto_keys,
             "hard_risk_keys": hard_risk_keys,
@@ -6855,11 +7373,7 @@ class MomentumSecondaryDecisionService:
                 else (
                     "mainline_reseal_churn"
                     if mainline_reseal_churn_exempt
-                    else (
-                        "raw_top1_hard_risk_softened"
-                        if kings_guard_hard_risk_softened
-                        else ("soft_only" if soft_only_leader_exempt else None)
-                    )
+                    else ("soft_only" if soft_only_leader_exempt else None)
                 )
             ),
             "leader_resilience_status": (
@@ -7453,6 +7967,12 @@ class MomentumSecondaryDecisionService:
             "risk_stack_count": candidate.get("_risk_stack_count"),
             "risk_stack_veto": candidate.get("_risk_stack_veto"),
             "raw_alpha_shield": candidate.get("_raw_alpha_shield"),
+            "continuation_alpha": candidate.get("_continuation_alpha"),
+            "continuation_rank": candidate.get("_continuation_rank"),
+            "t1_support_probability": candidate.get("_t1_support_probability"),
+            "support_inertia_coefficient": candidate.get("_support_inertia_coefficient"),
+            "support_adjusted_continuation_score": candidate.get("_support_adjusted_continuation_score"),
+            "support_components": candidate.get("_t1_support_components"),
             "raw_momentum_rank": (
                 int(_safe_float(candidate.get("_raw_momentum_rank"), 0.0))
                 if candidate.get("_raw_momentum_rank") is not None
@@ -7482,6 +8002,7 @@ class MomentumSecondaryDecisionService:
             "score": round(slot_score, 1),
             "official_score": official_score,
             "base_rank_score": official_score,
+            "continuation_score": round(_safe_float(candidate.get("continuation_score")), 1),
             "risk_score": round(_safe_float(candidate.get("risk_score")), 1),
             "rule_base_score": round(_safe_float(candidate.get("_rule_base_score")), 1),
             "decision_adjustment": decision_adjustment,

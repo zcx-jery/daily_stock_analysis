@@ -99,6 +99,15 @@ AI 执行守卫必须遵守：
 
 对 `RETAINED_LEADER_DIVERGENCE`、`mainline_position_churn`、潜在 `Mainline_Churn` 标的，AI 必须允许 **Volatility Gap（波动缺口）**，优先给出“先看 30 分钟承接与带量反转”的执行提示，而不是旧版“一低开就放弃”的硬口径。
 
+### 2.5 Directional Conviction（延续性确信度）
+
+第十七阶段起，AI 点评必须同步二阶段的 `Continuation Alpha Protocol`；第十九阶段进一步同步 `Anchor Supremacy & Scaled Alpha`：
+
+1. **先解释延续性**：在 `[Core Logic]` 开头优先说明 `continuation_alpha` 和 `continuation_score`，解释为什么某只票获得主仓 / 次仓，而不是只复述综合分或 Raw 排名。
+2. **Raw Top20 + 深度挑战者口径**：AI 应明确 Official Top3 来自 Raw Top20 精英池；Raw 8-20 只有在 `continuation_rank <= ceil(pool_size * 10%)` 且 `Risk_Stack points <= 1` 时，才可作为 `Deep Continuation Challenger / 深度挑战者` 入选。
+3. **Raw #1 锚点替换解释**：第十九阶段起 Raw #1 不再强制保底。若 Raw #1 被从主仓调到次仓 / 观察仓，AI 必须说明这是 `Main_Slot_Pivot`；若 Raw #1 被挤出 Official Top3，AI 必须说明这是 `Anchor_Supremacy`，原因是更高 `continuation_score` 且通过 Risk Stack 安全门的锚点组合获得优先级，不得继续按旧口径写成“Raw #1 必须保留”。
+4. **执行守卫衔接**：延续分更高不等于直接追买；AI 仍需落到 Track A / Track B 和开盘后 30 分钟确认条件。
+
 ## 3. 目标用户
 
 ### 3.1 核心用户

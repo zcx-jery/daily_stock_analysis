@@ -197,6 +197,42 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
         )
         self.assertIn("momentum_backtest.delete_run", calls)
 
+    def test_repository_storage_integrity_check_reports_ok(self) -> None:
+        repository = MomentumBacktestRepository(self.db_manager)
+
+        result = repository.verify_storage_integrity()
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["skipped"])
+        self.assertEqual(result["messages"], ["ok"])
+
+    def test_wipe_and_rebuild_local_backtest_cache_deletes_runs(self) -> None:
+        repository = MomentumBacktestRepository(self.db_manager)
+        repository.create_run(
+            MomentumBacktestRun(
+                run_id="momentum_bt_wipe_guard",
+                status="completed",
+                profile="standard",
+                engine_version="test",
+                strategy_health_mode="cached_only",
+                entry_baseline_version="test",
+                market_scope_version="test",
+                top_n=30,
+                start_trade_date=date(2026, 1, 28),
+                end_trade_date=date(2026, 1, 28),
+                total_trade_dates=1,
+                processed_trade_dates=1,
+                failed_trade_dates=0,
+            )
+        )
+
+        result = self.service.wipe_and_rebuild_local_backtest_cache()
+
+        self.assertTrue(result["before_integrity"]["ok"])
+        self.assertTrue(result["after_integrity"]["ok"])
+        self.assertEqual(result["deleted"]["runs"], 1)
+        self.assertEqual(repository.count_runs(), 0)
+
     def test_candidate_records_rebuild_from_daily_snapshot_on_sqlite_read_error(self) -> None:
         daily_row = MomentumBacktestDailySummary(
             run_id="momentum_bt_snapshot_rebuild",
@@ -256,6 +292,91 @@ class MomentumBacktestServiceTestCase(unittest.TestCase):
         self.assertEqual(rows[0].ts_code, "600000.SH")
         self.assertEqual(rows[0].theme, "测试主线")
         self.assertIn("risk_stack_count", rows[0].candidate_payload_json)
+
+    def test_daily_summary_resilient_listing_skips_corrupted_day(self) -> None:
+        good_row = MomentumBacktestDailySummary(
+            run_id="momentum_bt_summary_degraded",
+            trade_date=date(2026, 1, 13),
+            action_level="normal_go",
+            action_label="可做",
+            recommendation_cap="3",
+            market_environment_level="strong",
+            opportunity_quality_level="strong",
+            historical_validity_level="general",
+        )
+        read_error = OperationalError(
+            "select daily summaries",
+            {},
+            sqlite3.OperationalError("disk I/O error"),
+        )
+
+        with (
+            patch.object(self.service.repository, "list_daily_summaries", side_effect=read_error),
+            patch.object(
+                self.service.repository,
+                "list_artifact_trade_dates",
+                return_value=[date(2026, 1, 13), date(2026, 1, 12)],
+            ),
+            patch.object(
+                self.service.repository,
+                "get_daily_summary",
+                side_effect=[good_row, read_error],
+            ),
+        ):
+            rows, skipped_dates = self.service._list_daily_summaries_resilient(
+                "momentum_bt_summary_degraded",
+            )
+
+        self.assertEqual([row.trade_date for row in rows], [date(2026, 1, 13)])
+        self.assertEqual(skipped_dates, [date(2026, 1, 12)])
+        self.assertEqual(
+            self.service._build_data_integrity_warnings(skipped_dates),
+            {
+                "summary_degraded": True,
+                "skipped_daily_summary_count": 1,
+                "skipped_daily_summary_dates": ["2026-01-12"],
+            },
+        )
+
+    def test_list_daily_reports_data_integrity_warning(self) -> None:
+        repository = MomentumBacktestRepository(self.db_manager)
+        run_id = "momentum_bt_daily_degraded"
+        run = MomentumBacktestRun(
+            run_id=run_id,
+            status="completed",
+            profile="standard",
+            engine_version="test",
+            entry_baseline_version="v1_4_3_0",
+            market_scope_version="v1_a_share_main_chinext_star",
+            top_n=30,
+            start_trade_date=date(2026, 1, 12),
+            end_trade_date=date(2026, 1, 13),
+            total_trade_dates=2,
+            processed_trade_dates=2,
+            failed_trade_dates=0,
+        )
+        repository.create_run(run)
+        daily_row = MomentumBacktestDailySummary(
+            run_id=run_id,
+            trade_date=date(2026, 1, 13),
+            action_level="normal_go",
+            action_label="可做",
+            recommendation_cap="3",
+            market_environment_level="strong",
+            opportunity_quality_level="strong",
+            historical_validity_level="general",
+        )
+
+        with patch.object(
+            self.service,
+            "_list_daily_summaries_resilient",
+            return_value=([daily_row], [date(2026, 1, 12)]),
+        ):
+            payload = self.service.list_daily(run_id)
+
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(payload["items"][0]["trade_date"], "2026-01-13")
+        self.assertEqual(payload["data_integrity_warnings"]["skipped_daily_summary_dates"], ["2026-01-12"])
 
     def _slow_down_freeze(self, delay_seconds: float = 0.05) -> None:
         original = self.service._freeze_trade_date_artifacts

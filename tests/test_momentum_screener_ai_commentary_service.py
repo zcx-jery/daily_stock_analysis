@@ -236,6 +236,14 @@ def test_system_prompt_requires_logic_audit_sections_and_risk_stack_context():
     assert "Weak-to-Strong" in prompt
     assert "Volatility Gap" in prompt
     assert "Track B" in prompt
+    assert "Directional Conviction" in prompt
+    assert "continuation_alpha" in prompt
+    assert "continuation_score" in prompt
+    assert "continuation_rank" in prompt
+    assert "Deep Continuation Challenger" in prompt
+    assert "Main_Slot_Pivot" in prompt
+    assert "Anchor_Supremacy" in prompt
+    assert "Top10%" in prompt
     assert "不得仅因 T+1 低开低于 99% 就强制 Abandon" in prompt
     assert "CRITICAL_REJECTION_ADVICE" in prompt
     assert "TRADING WARNING: Extreme Churn Detected" in prompt

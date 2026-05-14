@@ -204,6 +204,10 @@ export interface MomentumDecisionIntelligenceFields {
   adaptiveMainlineMinCount?: number | null;
   adaptiveMainlinePass?: boolean | null;
   v13LadderPosition?: Record<string, unknown> | null;
+  t1SupportProbability?: number | null;
+  supportInertiaCoefficient?: number | null;
+  supportAdjustedContinuationScore?: number | null;
+  supportComponents?: Record<string, unknown> | null;
 }
 
 export interface MomentumDecisionPortfolioSlot extends MomentumDecisionIntelligenceFields {

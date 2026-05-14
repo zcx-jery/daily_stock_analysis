@@ -678,7 +678,7 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         self.assertFalse(risk_stack["leader_resilience_exempt"])
         self.assertEqual(set(risk_stack["hard_risk_keys"]), {"position_risk", "divergence_risk"})
 
-    def test_raw_top1_single_hard_risk_is_softened_inside_sector_cluster(self) -> None:
+    def test_raw_top1_single_hard_risk_is_not_softened_after_anchor_supremacy(self) -> None:
         service = MomentumSecondaryDecisionService(strategy_health_async=False)
         candidate = self._selected_candidate_fixture(
             ts_code="301217.SZ",
@@ -709,12 +709,11 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         blockers = service._slot_hard_blocker_items("main", candidate, {"有色金属": 92.0})
 
         self.assertTrue(risk_stack["base_veto"])
-        self.assertFalse(risk_stack["veto"])
-        self.assertEqual(risk_stack["threshold"], 4)
-        self.assertTrue(risk_stack["kings_guard_hard_risk_softened"])
-        self.assertEqual(risk_stack["leader_resilience_profile"], "raw_top1_hard_risk_softened")
+        self.assertTrue(risk_stack["veto"])
+        self.assertEqual(risk_stack["threshold"], 3)
+        self.assertFalse(risk_stack["kings_guard_hard_risk_softened"])
         self.assertEqual(risk_stack["hard_risk_keys"], ["divergence_risk"])
-        self.assertFalse(any(item["key"] == "risk_stack_veto" for item in blockers))
+        self.assertTrue(any(item["key"] == "risk_stack_veto" for item in blockers))
 
     def test_raw_top3_mainline_position_churn_is_retained_without_divergence(self) -> None:
         service = MomentumSecondaryDecisionService(strategy_health_async=False)
@@ -1151,7 +1150,7 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         self.assertEqual(shielded[0][1]["ts_code"], "600777.SH")
         self.assertEqual(challenger["_raw_alpha_shield"]["status"], "displaced_by_raw_alpha_shield")
 
-    def test_kings_guard_raw_top1_cannot_be_displaced_by_perfect_challenger(self) -> None:
+    def test_anchor_supremacy_allows_raw_top1_to_be_displaced_by_perfect_challenger(self) -> None:
         service = MomentumSecondaryDecisionService(strategy_health_async=False)
         raw_king = self._selected_candidate_fixture(
             ts_code="301217.SZ",
@@ -1191,10 +1190,10 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
             {"有色金属": 92.0, "Robotics": 95.0},
         )
 
-        self.assertEqual(shielded[0][1]["ts_code"], "301217.SZ")
-        self.assertEqual(raw_king["_raw_alpha_shield"]["status"], "retained_by_kings_guard")
-        self.assertTrue(raw_king["_raw_alpha_shield"]["kings_guard"])
-        self.assertEqual(challenger["_raw_alpha_shield"]["status"], "displaced_by_raw_alpha_shield")
+        self.assertEqual(shielded[0][1]["ts_code"], "600888.SH")
+        self.assertEqual(raw_king["_raw_alpha_shield"]["status"], "dropped_by_perfect_profile_challenger")
+        self.assertFalse(raw_king["_raw_alpha_shield"]["kings_guard"])
+        self.assertIsNone(challenger.get("_raw_alpha_shield"))
 
     def test_raw_top2_requires_40pct_premium_to_be_displaced(self) -> None:
         service = MomentumSecondaryDecisionService(strategy_health_async=False)
@@ -1244,6 +1243,100 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         self.assertEqual([candidate["ts_code"] for _slot, candidate in shielded], ["600001.SH", "600002.SH"])
         self.assertEqual(raw_two["_raw_alpha_shield"]["replacement_premium_threshold"], 1.4)
         self.assertEqual(challenger["_raw_alpha_shield"]["status"], "displaced_by_raw_alpha_shield")
+
+    def test_anchor_supremacy_selects_deep_challenger_without_raw_one_sovereignty(self) -> None:
+        service = MomentumSecondaryDecisionService(strategy_health_async=False)
+        candidates = []
+        for index, (code, continuation, rank_score) in enumerate(
+            [
+                ("600001.SH", 82.0, 100.0),
+                ("600002.SH", 96.0, 95.0),
+                ("600003.SH", 90.0, 90.0),
+                ("600004.SH", 94.0, 89.0),
+                ("600005.SH", 88.0, 88.0),
+                ("600006.SH", 87.0, 87.0),
+                ("600007.SH", 86.0, 86.0),
+                ("600008.SH", 99.0, 60.0),
+            ],
+            start=1,
+        ):
+            candidate = self._selected_candidate_fixture(
+                ts_code=code,
+                name=f"Candidate {index}",
+                theme="AI",
+                role_key="leader" if index == 1 else "front",
+                buy_point_status="clear",
+                decision_score=80.0,
+                forward_alpha_score=80.0,
+                official_score=rank_score,
+                risk_score=18.0,
+                continuation_score=continuation,
+            )
+            candidate.update({"rank": index, "rank_score": rank_score})
+            candidates.append(candidate)
+        service._mark_raw_momentum_ranks(candidates)
+
+        portfolio = service._build_portfolio(candidates, [{"name": "AI", "score": 90.0}], {"AI": 90.0})
+
+        self.assertEqual([item["ts_code"] for item in portfolio], ["600002.SH", "600004.SH", "600003.SH"])
+        self.assertEqual(candidates[-1]["_continuation_alpha"]["status"], "blocked_by_secondary_sovereign_guard")
+        self.assertTrue(portfolio[2]["continuation_alpha"]["secondary_sovereign_guard"])
+        self.assertFalse(portfolio[0]["continuation_alpha"]["deep_challenger"])
+        self.assertEqual(portfolio[0]["continuation_alpha"]["continuation_rank"], 2)
+        self.assertEqual(portfolio[2]["continuation_alpha"]["status"], "selected_by_continuation_alpha")
+        self.assertEqual(portfolio[2]["continuation_alpha"]["continuation_rank"], 4)
+        self.assertEqual(portfolio[2]["slot"], "watch")
+        self.assertNotIn("600001.SH", [item["ts_code"] for item in portfolio])
+        self.assertEqual(candidates[0]["_continuation_alpha"]["status"], "raw_top1_replaced_by_anchor_supremacy")
+        self.assertEqual(candidates[0]["_continuation_alpha"]["swap_reason"], "Anchor_Supremacy")
+
+    def test_secondary_sovereign_guard_allows_material_support_challenger(self) -> None:
+        service = MomentumSecondaryDecisionService(strategy_health_async=False)
+        candidates = []
+        for index, (code, continuation, rank_score) in enumerate(
+            [
+                ("600001.SH", 82.0, 100.0),
+                ("600002.SH", 94.0, 95.0),
+                ("600003.SH", 70.0, 90.0),
+                ("600004.SH", 90.0, 80.0),
+                ("600005.SH", 88.0, 78.0),
+                ("600006.SH", 87.0, 76.0),
+                ("600007.SH", 86.0, 74.0),
+                ("600008.SH", 99.0, 60.0),
+            ],
+            start=1,
+        ):
+            candidate = self._selected_candidate_fixture(
+                ts_code=code,
+                name=f"Candidate {index}",
+                theme="AI",
+                role_key="front",
+                buy_point_status="clear",
+                decision_score=80.0,
+                forward_alpha_score=100.0 if code == "600008.SH" else 70.0,
+                official_score=100.0 if code == "600008.SH" else rank_score,
+                risk_score=18.0,
+                continuation_score=continuation,
+            )
+            candidate.update({"rank": index, "rank_score": rank_score})
+            if code == "600008.SH":
+                candidate["_v13_sealing_strength_signal"] = {
+                    "available": True,
+                    "first_seal_time": "09:45:00",
+                    "first_seal_time_score": 100.0,
+                    "score": 92.0,
+                }
+                candidate["buy_elg_amount_30m_delta"] = 1000.0
+            candidates.append(candidate)
+        service._mark_raw_momentum_ranks(candidates)
+
+        portfolio = service._build_portfolio(candidates, [{"name": "AI", "score": 90.0}], {"AI": 90.0})
+
+        self.assertIn("600008.SH", [item["ts_code"] for item in portfolio])
+        self.assertNotIn("600003.SH", [item["ts_code"] for item in portfolio])
+        self.assertEqual(candidates[2]["_continuation_alpha"]["status"], "displaced_by_high_support_challenger")
+        challenger = next(item for item in portfolio if item["ts_code"] == "600008.SH")
+        self.assertGreater(challenger["t1_support_probability"], candidates[2]["_t1_support_probability"] + 20.0)
 
     def test_stable_main_slot_prefers_mainline_anchor_over_raw_one(self) -> None:
         service = MomentumSecondaryDecisionService(strategy_health_async=False)
@@ -1722,13 +1815,16 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         self.assertEqual(result["v13_data_status"]["status"], "ok")
         self.assertEqual(result["mainline_radar"][0]["theme_name"], "机器人主线")
         self.assertEqual(result["short_term_sentiment"]["level"], "tradable")
-        self.assertEqual(result["portfolio"][0]["ts_code"], "600301.SH")
-        self.assertEqual(result["portfolio"][0]["theme"], "机器人主线")
-        self.assertEqual(result["portfolio"][0]["v13_mainline_score"], 90.0)
-        self.assertGreater(result["portfolio"][0]["v13_shadow_score"], 80.0)
-        self.assertGreater(result["portfolio"][0]["v13_fund_support_score"], 85.0)
-        self.assertGreater(result["portfolio"][0]["v13_limit_structure_score"], 85.0)
-        self.assertLess(result["portfolio"][0]["v13_chip_risk_score"], 50.0)
+        self.assertEqual(result["portfolio"][0]["ts_code"], "600302.SH")
+        self.assertEqual(result["portfolio"][0]["continuation_rank"], 1)
+        mainline_item = next(item for item in result["portfolio"] if item["ts_code"] == "600301.SH")
+        self.assertEqual(mainline_item["slot"], "secondary")
+        self.assertEqual(mainline_item["theme"], "机器人主线")
+        self.assertEqual(mainline_item["v13_mainline_score"], 90.0)
+        self.assertGreater(mainline_item["v13_shadow_score"], 80.0)
+        self.assertGreater(mainline_item["v13_fund_support_score"], 85.0)
+        self.assertGreater(mainline_item["v13_limit_structure_score"], 85.0)
+        self.assertLess(mainline_item["v13_chip_risk_score"], 50.0)
         diagnostic = next(item for item in result["candidate_diagnostics"] if item["ts_code"] == "600301.SH")
         self.assertEqual(diagnostic["v13_theme_id"], "THS001")
         self.assertGreater(diagnostic["v13_shadow_score"], 80.0)
@@ -2223,7 +2319,7 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         )
         self.assertEqual(diagnostic["selected_slot"], "main")
 
-    def test_build_from_screening_penalizes_t1_direction_risk_in_portfolio(self) -> None:
+    def test_build_from_screening_keeps_continuation_anchor_despite_t1_direction_risk(self) -> None:
         service = MomentumSecondaryDecisionService(screener_service=None)
         screening = {
             "profile": "standard",
@@ -2278,12 +2374,17 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
 
         result = service.build_from_screening(screening)
 
-        self.assertEqual(result["portfolio"][0]["ts_code"], "600202.SH")
+        self.assertEqual(result["portfolio"][0]["ts_code"], "600201.SH")
+        self.assertEqual(result["portfolio"][0]["continuation_rank"], 1)
         risky_diagnostic = next(
             item for item in result["candidate_diagnostics"] if item["ts_code"] == "600201.SH"
         )
+        stable_diagnostic = next(
+            item for item in result["candidate_diagnostics"] if item["ts_code"] == "600202.SH"
+        )
         self.assertEqual(risky_diagnostic["t1_direction_risk_adjustment"], -12.0)
         self.assertLessEqual(risky_diagnostic["decision_adjustment"], 0)
+        self.assertGreater(risky_diagnostic["continuation_score"], stable_diagnostic["continuation_score"])
         self.assertNotIn("decision_score", risky_diagnostic)
 
     def test_build_from_screening_keeps_secondary_on_mainline_when_cross_theme_is_too_weak(self) -> None:
@@ -3020,7 +3121,7 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
         self.assertEqual(result["portfolio"][0]["ts_code"], "600012.SH")
         self.assertEqual(result["portfolio"][0]["official_score"], 89.0)
 
-    def test_build_from_screening_main_slot_respects_hard_blockers(self) -> None:
+    def test_build_from_screening_main_slot_follows_anchor_supremacy(self) -> None:
         service = MomentumSecondaryDecisionService(
             screener_service=None,
             adaptive_gate_audit_provider=lambda _profile: None,
@@ -3075,15 +3176,18 @@ class MomentumSecondaryDecisionServiceTestCase(unittest.TestCase):
 
         result = service.build_from_screening(screening)
 
-        self.assertEqual(result["portfolio"][0]["ts_code"], "600022.SH")
-        self.assertEqual(result["portfolio"][0]["base_rank"], 2)
-        self.assertTrue(result["portfolio"][0]["soft_adjustments"])
-        blocked = next(
+        self.assertEqual(result["portfolio"][0]["ts_code"], "600021.SH")
+        self.assertEqual(result["portfolio"][0]["base_rank"], 1)
+        anchor = next(
             item for item in result["candidate_diagnostics"] if item["ts_code"] == "600021.SH"
         )
-        self.assertNotEqual(blocked["selected_slot"], "main")
-        self.assertTrue(blocked["decision_adjustment_reason"])
-        self.assertLessEqual(blocked["decision_adjustment"], 0)
+        safer = next(
+            item for item in result["candidate_diagnostics"] if item["ts_code"] == "600022.SH"
+        )
+        self.assertEqual(anchor["selected_slot"], "main")
+        self.assertGreater(anchor["continuation_score"], safer["continuation_score"])
+        self.assertTrue(anchor["decision_adjustment_reason"])
+        self.assertLessEqual(anchor["decision_adjustment"], 0)
 
     def test_build_intraday_from_decision_marks_overextended_price_as_do_not_chase(self) -> None:
         screening = {

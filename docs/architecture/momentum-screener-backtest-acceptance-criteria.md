@@ -213,6 +213,7 @@ Stage 2 起，这一门槛正式用于证伪 V1.3 过滤层是否真的创造价
 回测任务元数据、每日摘要、候选/决策/outcome 明细落库必须走 SQLite 写事务重试与 `busy_timeout` 保护；删除旧任务、刷新进度或后台 worker 心跳遇到短暂 `database is locked` 时应等待重试，不应把策略回放误判为失败。
 
 summary、单日详情和问题诊断读取候选明细时，若 `momentum_backtest_candidate_records` 出现局部 SQLite I/O 损伤，应优先从对应交易日的 `screening_payload_json` 快照重建 candidate records 继续出报告；只有 daily summary 与 outcome 同时不可用时，才将该交易日视为不可恢复样本。
+summary、单日列表和问题诊断读取每日摘要时，若单个 `momentum_backtest_daily_summaries` 行触发 SQLite `disk I/O error`，必须按已冻结的 candidate / decision / outcome 交易日逐日降级读取，跳过坏行并在 `data_integrity_warnings.skipped_daily_summary_dates` 中标记；只要剩余有效交易日仍满足数据完整性门槛，本轮回测不得因单日坏页整体失败。
 
 数据完整性不达标时，本次结果不能用于策略可用性判断，只能用于排障。
 

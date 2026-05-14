@@ -55,6 +55,7 @@ export interface MomentumBacktestSummary {
   gateModuleBreakdown: MomentumBacktestGateModuleBreakdownItem[];
   regimeBreakdown: MomentumBacktestRegimeBreakdownItem[];
   v13Diagnostics?: MomentumBacktestV13Diagnostics | null;
+  dataIntegrityWarnings?: Record<string, unknown>;
 }
 
 export interface MomentumBacktestBenchmarkItem {
@@ -347,6 +348,7 @@ export interface MomentumBacktestDailyListResponse {
   page: number;
   pageSize: number;
   hasMore: boolean;
+  dataIntegrityWarnings?: Record<string, unknown>;
   items: MomentumBacktestDailyItem[];
 }
 
@@ -421,6 +423,10 @@ export interface MomentumBacktestCandidateDetailItem {
   officialScore?: number | null;
   finalScore?: number | null;
   continuationScore?: number | null;
+  continuationRank?: number | null;
+  t1SupportProbability?: number | null;
+  supportInertiaCoefficient?: number | null;
+  supportAdjustedContinuationScore?: number | null;
   extensionScore?: number | null;
   riskScore?: number | null;
   buyabilityScore?: number | null;
@@ -436,6 +442,12 @@ export interface MomentumBacktestDecisionDetailItem {
   theme?: string | null;
   role?: string | null;
   officialScore?: number | null;
+  continuationScore?: number | null;
+  continuationRank?: number | null;
+  continuationAlpha?: Record<string, unknown> | null;
+  t1SupportProbability?: number | null;
+  supportInertiaCoefficient?: number | null;
+  supportAdjustedContinuationScore?: number | null;
   riskScore?: number | null;
   buyPointStatus?: string | null;
   suggestedAction?: string | null;
@@ -486,5 +498,6 @@ export interface MomentumBacktestIssueListResponse {
   totalIssues: number;
   severityBreakdown: Record<string, number>;
   issueKeyBreakdown: Record<string, number>;
+  dataIntegrityWarnings?: Record<string, unknown>;
   items: MomentumBacktestIssueListItem[];
 }

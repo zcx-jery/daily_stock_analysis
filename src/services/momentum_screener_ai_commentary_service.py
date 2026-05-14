@@ -301,6 +301,7 @@ class MomentumScreenerAICommentaryService:
 14. 若 `risk_stack` 命中 `exhaustion_risk` / R5，或 `exhaustion_volume_audit` 状态为 `extreme_churn`，必须在摘要开头优先输出：`TRADING WARNING: Extreme Churn Detected (量能过载). Probability of A-top is high; use tight trailing stop.`
 15. 必须检查 `raw_alpha_shield`：若状态为 `RETAINED_LEADER_DIVERGENCE`，必须使用 `Weak-to-Strong / 弱转强` 术语解释“R2 封板分歧 + R5 爆量换手”为什么可能是分歧转一致；若 Raw Top3 被剔除，必须给出 R1 高位或 R3 资金背离等硬风险证据，不能只说买点不干净。
 16. 对 `RETAINED_LEADER_DIVERGENCE`、`mainline_position_churn` 或潜在 `Mainline_Churn`，允许 `Volatility Gap`：T+1 低开时优先建议观察开盘后 30 分钟是否带量收复 T0 收盘价，而不是开盘即硬丢弃。
+17. 必须检查 `continuation_alpha`、`continuation_score` 与 `continuation_rank`：输出开头要先给出 `Directional Conviction / 延续性确信度`，说明主仓/次仓为何因更高延续分、低 Risk Stack 或主线确认获得更高槽位；若出现 `selected_deep_continuation_challenger`，必须解释这是 Raw 8-20 中延续分 Top10% 且 Risk Stack <= 1 的 Deep Continuation Challenger；若 Raw #1 被调到次仓/观察仓，必须说明这是 `Main_Slot_Pivot`；若 Raw #1 被锚点替出，必须说明这是 `Anchor_Supremacy`，即 Raw #1 已不再享有强制保底，系统优先选择更高延续概率的锚点组合。
 
 本次回答必须使用以下结构：
 {self._build_answer_contract(request.review_type)}
@@ -322,7 +323,7 @@ class MomentumScreenerAICommentaryService:
 - 若调用了工具，总结外部验证；若未调用，明确说明当前以规则快照为主。"""
         if review_type == "decision":
             return """## [Core Logic]
-- 先明确今天做不做，再解释默认 Top3 的主线强度、角色分工和 Mainline Intensity。
+- 先明确今天做不做，并优先说明 Directional Conviction / 延续性确信度：为什么 continuation_score 更高的票获得主仓/次仓，再解释默认 Top3 的主线强度、角色分工和 Mainline Intensity。
 ## [Risk Audit]
 - 逐只列出 Risk Stack 触发项；每只 Top3 必须给出至少一个 Devil's Advocate 背离/瑕疵因子。
 ## [Execution Guard]
@@ -417,6 +418,8 @@ class MomentumScreenerAICommentaryService:
                         "role": item.role,
                         "official_score": item.official_score,
                         "base_rank_score": item.base_rank_score,
+                        "continuation_score": self._model_value(item, "continuation_score"),
+                        "continuation_rank": self._model_value(item, "continuation_rank"),
                         "buy_point_label": item.buy_point_label,
                         "suggested_action_label": item.suggested_action_label,
                         "decision_adjustment": item.decision_adjustment,
@@ -427,6 +430,7 @@ class MomentumScreenerAICommentaryService:
                         "risk_stack_count": self._model_value(item, "risk_stack_count"),
                         "risk_stack_veto": self._model_value(item, "risk_stack_veto"),
                         "raw_alpha_shield": self._model_value(item, "raw_alpha_shield"),
+                        "continuation_alpha": self._model_value(item, "continuation_alpha"),
                         "mainline_intensity": self._build_model_mainline_intensity(item),
                         "ladder_position": self._model_value(item, "v13_ladder_position"),
                         "adaptive_gate": self._model_value(item, "adaptive_gate"),
@@ -490,6 +494,8 @@ class MomentumScreenerAICommentaryService:
                     "risk_stack_count": slot.get("risk_stack_count") if isinstance(slot, dict) else None,
                     "risk_stack_veto": slot.get("risk_stack_veto") if isinstance(slot, dict) else None,
                     "raw_alpha_shield": slot.get("raw_alpha_shield") if isinstance(slot, dict) else None,
+                    "continuation_alpha": slot.get("continuation_alpha") if isinstance(slot, dict) else None,
+                    "continuation_rank": slot.get("continuation_rank") if isinstance(slot, dict) else None,
                     "entry_range_low": candidate["entry_range_low"],
                     "entry_range_high": candidate["entry_range_high"],
                 },
@@ -721,11 +727,14 @@ class MomentumScreenerAICommentaryService:
                     "name": item.name,
                     "theme": item.theme,
                     "official_score": item.official_score,
+                    "continuation_score": self._model_value(item, "continuation_score"),
+                    "continuation_rank": self._model_value(item, "continuation_rank"),
                     "mainline_intensity": self._build_candidate_mainline_intensity(candidate, item),
                     "ladder_position": self._model_value(item, "v13_ladder_position"),
                     "risk_stack": risk_stack,
                     "risk_stack_triggered_factors": triggered_factors,
                     "raw_alpha_shield": self._model_value(item, "raw_alpha_shield"),
+                    "continuation_alpha": self._model_value(item, "continuation_alpha"),
                     "devils_advocate_required": True,
                     "exhaustion_volume_audit": self._build_exhaustion_volume_audit(candidate),
                     "suggested_divergence_factors": self._infer_divergence_factors(

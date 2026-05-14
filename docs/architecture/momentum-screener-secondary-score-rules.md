@@ -319,40 +319,32 @@ mainline_privilege = Mainline_Intensity > 1.2x
 - AI 点评必须使用 `Weak-to-Strong / 弱转强` 语言说明：晚封、炸板或爆量并不自动等于出货，关键是 T+1 是否不深低开、是否能突破首 30 分钟高点并维持承接。
 - 若同一票命中 `R3`，或 `R1` 同时叠加无主线、资金背离、多硬风险等非健康换手证据，弱转强豁免失效，继续按硬否决处理；强主线 Raw Top3 的 `R1 + R5` 可按 `mainline_position_churn` 保留，强主线 Raw Top3 的 `R1 + R2/R5` 可按 `mainline_reseal_churn` 保留。
 
-### 7.10 King's Guard Protocol / 龙一绝对主权
+### 7.10 Anchor Supremacy / 锚点至上制
 
-第十六阶段新增 `King's Guard / 龙一绝对主权`，用于修复 Official Top3 最后一段负 Alpha：二阶段槽位竞优仍会把 Raw 龙头踢出，换入低回撤但弹性不足的平庸标的。
+第十九阶段正式废止 `King's Guard / 龙一绝对主权`。Stage 18 回测显示：当 Raw #1 被更高延续性的锚点组合替换时，替换组合胜率高于 Raw #1 自身，说明“龙一名次”不应继续作为强制保底条件。V1.3 的最终槽位主权改为由 `continuation_score` 与 Risk Stack 安全门共同决定。
 
-触发条件：
+核心合同：
 
-```text
-kings_guard =
-    raw_momentum_rank == 1
-    AND mainline_intensity_multiplier > 1.25
-```
+- `Abolish King's Guard / 废止龙一保底`：Raw #1 不再拥有不可替换权，也不再享受 Risk Stack 阈值抬高到 4 的特殊豁免；Raw #1 只有在自身 `continuation_score` 足够高且通过安全门时，才进入 Official Top3。
+- `Anchor Supremacy / 锚点至上`：Official Top3 在 Raw Top20 精英池中按 `continuation_score` 严格优先排序，目标是提升 T+1 方向确认率与主仓延续确定性。
+- `Core Safety Gate / 核心安全门`：Raw 1-7 进入候选重排前必须满足 `Risk_Stack points < 3` 且没有 `mandatory_veto`。
+- `Relaxed Deep Challengers / 放宽深度挑战者`：Raw 8-20 若 `continuation_rank` 位于全池 Top10%，且 `Risk_Stack points <= 1`、无强制否决，可以进入 Official Top3 竞争。允许一个轻微软风险，用于把高质量深位锚点从“精品店”扩展为可影响全局的 Alpha 来源。
+- `Main Slot Alpha Anchor / 主仓延续锚点`：Official Top3 的第 1 名即为主仓，不再额外按 Raw 名次或旧主仓阻断重排；主仓必须是最终组合中即时延续概率最高的标的。
 
-收口合同：
-
-- `Displacement Immunity / 不可替换权`：若命中 `kings_guard`，该 Raw #1 不允许被任何 Secondary / Waiting 插入票替换；即使挑战者是零风险画像且综合分大幅更高，也只能作为备选解释，不能挤掉龙一。
-- `Open Slot Fill / 空槽补位权`：若 Official Top3 因买点、槽位或硬阻断只形成 1-2 只组合，未触发有效硬否决的 Raw Top3 必须先补入空槽，再考虑替换逻辑；不能因为没有可替换对象而让 Raw 主权失效。
-- `Hard Risk Softening / 硬风险软化`：若 Raw #1 所在主线 / 行业簇计数 `>= 3`，Risk Stack 硬否决阈值从 `>= 3` 提升到 `>= 4`。在此条件下，Raw #1 允许单独触发一个硬风险（`R1` 或 `R3`）而不自动出局。
-- `Two-Hard-Risk Exception / 双硬风险例外`：若 Raw #1 同时触发 `R1` 与 `R3`，并再叠加其他风险使 `risk_stack_points >= 3`，仍视为有效硬否决；龙一主权不保护“高位 + 资金背离 + 额外瑕疵”的组合毒性。
-- `Follower Buffer / 二三名溢价缓冲`：Raw #2 / Raw #3 的替换门槛提升至 `1.40x`，只有挑战者形成真正的降维打击时才允许替换，减少“干净但平庸”的无效换入。
-- `Deep Raw Coverage / 深位 Raw 覆盖`：V1.3 主线上下文采样在控制 30 只成本上限的同时，必须把 Raw Momentum Top3 纳入样本；若 Raw Top3 位于基础排序 30 名之后，则替换掉尾部非 Raw 样本，避免深位高 `rank_score` 龙头缺少主线 / 封板上下文。
-
-实现输出：
+伪代码：
 
 ```text
-raw_alpha_shield.status = retained_by_kings_guard
-raw_alpha_shield.kings_guard = true
-raw_alpha_shield.filled_open_slot = watch
-raw_alpha_shield.replacement_premium_threshold = 1.25  # Raw #1 基础门槛；命中 King's Guard 时实际不可替换
-
-risk_stack.leader_resilience_profile = raw_top1_hard_risk_softened
-risk_stack.threshold = 4
+core_pool = Raw 1-7 where risk_stack_points < 3 and no mandatory_veto
+deep_pool = Raw 8-20 where continuation_rank <= ceil(pool_size * 10%) and risk_stack_points <= 1
+elite_pool = core_pool + deep_pool
+official_top3 = top 3 by continuation_score, then forward_alpha_score, then official_score
+main_slot = official_top3[0]
+if Raw #1 is not selected:
+    continuation_alpha.status = raw_top1_replaced_by_anchor_supremacy
+    continuation_alpha.swap_reason = Anchor_Supremacy
 ```
 
-设计原因：Raw Momentum #1 是市场最直接的强势表达。V1.3 允许二阶段决策做风险审计，但不能用“买点更规整”“回撤画像更温顺”这类细节推翻龙一的主线地位。防守已经由 Total Gate 完成，选股层必须保留足够的进攻上限。
+设计原因：Raw Momentum #1 代表市场名气，但 Stage 18 数据证明名气也会带来 T+1 分歧和流动性毒性。第十九阶段让“大逻辑”从“保护龙一”切换为“保护延续性锚点”，只要锚点通过 Risk Stack 安全门，就允许它替代 Raw #1。
 
 ## 8. 最终排序分规则
 
@@ -414,6 +406,79 @@ rank_score
 | `25 ~ 49` | 可控风险 |
 | `50 ~ 74` | 中高风险 |
 | `75 ~ 100` | 高风险 |
+
+### 7.11 Scaled Continuation Alpha / 规模化延续 Alpha
+
+第十七阶段新增 `Continuation-Led Re-ranking / 延续性主导排序`，第十八阶段验证深度挑战者具备更高方向确认率但样本量不足。第十九阶段在此基础上引入 `Anchor Supremacy / 锚点至上制` 与 `Relaxed Deep Challengers / 放宽深度挑战者`，目标是把高质量延续信号从小样本扩展为可拉动 60 日胜率的稳定来源。
+
+核心合同：
+- `Selection Pool / 精英池扩展`：候选搜索范围固定为 Raw Top20。Raw 1-7 通过核心安全门即可参与延续重排；Raw 8-20 通过放宽深度挑战者条件后才可进入 Official Top3。
+- `Deep Continuation Challenger / 深度挑战者`：Raw 8-20 标的必须同时满足 `continuation_rank <= ceil(pool_size * 10%)` 且 `Risk_Stack points <= 1`，才可挑战 Official Top3。它们不能靠主线热度或综合分插队，必须是“极高延续 + 至多一个轻微软风险”的深位锚点。
+- `Raw #1 No Sovereignty / 龙一不再保底`：Raw #1 可以被移出 Official Top3；若被替出，需要在解释字段中标记 `raw_top1_replaced_by_anchor_supremacy` 与 `Anchor_Supremacy`。
+- `Main Slot Alpha Anchor / 主仓延续锚点`：Official Top3 按 `continuation_score` 排序后的第 1 名即为主仓；若 Raw #1 仍入选但不在主仓，标记 `Main_Slot_Pivot`。
+- `continuation_alpha` 解释字段：每只 Official Top3 需要记录其是否由延续性重排选入、是否为深度挑战者、所属 Raw 名次、`continuation_rank`、延续分、精英池大小，以及 Raw #1 是让出主仓还是被锚点替换。
+
+排序伪代码：
+
+```text
+core_pool = Raw 1-7 where risk_stack_points < 3 and no mandatory_veto
+deep_pool = Raw 8-20 where continuation_rank <= ceil(pool_size * 10%) and risk_stack_points <= 1
+elite_pool = core_pool + deep_pool
+official_top3 = top 3 by continuation_score, then forward_alpha_score, then official_score
+Main Slot = official_top3[0]
+if Raw #1 selected but slot != main:
+    continuation_alpha.swap_reason = Main_Slot_Pivot
+if Raw #1 not selected:
+    continuation_alpha.swap_reason = Anchor_Supremacy
+```
+
+验收目标：全量 60 日回测中，Official 可交易合格率应达到 `24%+`，Official `T+1 direction pass` 应提升到 `55%+`；同时输出 Anchors vs Raw #1 对照，确认锚点组合是否真正优于 Raw #1。
+
+### 7.12 T+1 Support & Sovereign Defense / 次日承接与槽位主权防御
+
+第二十阶段把“延续性锚点”继续拆细为 `T+1 Support Probability / 次日承接概率`。`continuation_score` 仍表示静态延续基因，但最终槽位排序必须使用承接修正后的延续分，避免高延续、晚封板、无资金惯性的标的在 T+1 给用户制造“折磨式持仓”。
+
+核心合同：
+- `T+1 Support Probability` 由三项组成：`Sealing_Speed / 封板速度`、`MoneyFlow_Inertia / 资金惯性`、`Cluster_Resonance / 板块共振`。
+- `Sealing_Speed` 优先读取 `limit_list_d.first_time` 或 `v13_sealing_strength.first_seal_time_score`；`first_seal_time < 10:00` 获得 `1.10x` 承接惯性系数。
+- `MoneyFlow_Inertia` 优先读取 `buy_elg_amount_30m_delta` / `buy_elg_amount_delta_30m` 等尾盘超大单增量字段；若最近 30 分钟超大单净买入改善，获得 `1.10x` 承接惯性系数。
+- `Cluster_Resonance` 使用 `mainline_intensity_count` / `mainline_intensity_multiplier`，主线池计数 `>= 3` 或主线强度 `>= 1.20x` 视为强共振。
+- `Support_Penalty`：若 `continuation_score >= 85` 但封板速度低于中性，或 `first_seal_time > 14:00`，扣减承接概率并下调 `support_adjusted_continuation_score`，防止尾盘偷板伪装成高延续。
+
+排序口径：
+
+```text
+support_inertia_coefficient = 1.0
+if first_seal_time < 10:00:
+    support_inertia_coefficient *= 1.10
+if buy_elg_amount_30m_delta > 0:
+    support_inertia_coefficient *= 1.10
+
+t1_support_probability =
+    40% * Sealing_Speed
+  + 30% * MoneyFlow_Inertia
+  + 30% * Cluster_Resonance
+  - Support_Penalty
+
+support_adjusted_continuation_score =
+    continuation_score * support_inertia_coefficient
+  - 0.5 * Support_Penalty
+
+official_top3 = top 3 by support_adjusted_continuation_score,
+                then t1_support_probability,
+                then continuation_score
+```
+
+`Secondary Sovereign Guard / 次席主权护卫`：
+- Raw #2 / Raw #3 若 `Risk_Stack points == 0`，默认拥有槽位主权。
+- 非 Raw Top3 挑战者只有同时满足 `t1_support_probability >= protected_raw + 20` 且 `composite_score >= protected_raw * 1.30`，才能替换无风险 Raw #2 / Raw #3。
+- 若挑战者未达标，被标记为 `blocked_by_secondary_sovereign_guard`；若 Raw #2 / Raw #3 因护卫回归，`continuation_alpha.secondary_sovereign_guard = true`。
+- 该护卫只保护次席/观察席的真实动量，不恢复第十九阶段已经废止的 Raw #1 保底。
+
+`Sentiment_Lag_Filter`：
+- 总闸门继续保留 `Market_Pool_Avg_Return < -3%` 的强制不做规则。
+- 环境分从“核心溢价偏重”调整为：`40% core_premium + 45% breadth_premium + 15% current_pool_breadth`。
+- `current_pool_breadth` 使用当日候选池规模和主题簇数量，目的是降低指数滞后权重、提高涨停家数 / 候选池规模对早周期启动的识别权重，修复类似 2026-01-07 的早周期漏判。
 
 ## 11. 实现注意事项
 

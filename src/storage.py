@@ -19,6 +19,7 @@ import logging
 import re
 import time
 from datetime import datetime, date, timedelta
+from pathlib import Path
 from typing import Optional, List, Dict, Any, TYPE_CHECKING, Tuple, Callable, TypeVar
 
 import pandas as pd
@@ -983,6 +984,41 @@ class DatabaseManager:
     def _is_file_sqlite_database(self) -> bool:
         database = (self._engine.url.database or "").strip()
         return bool(database) and database.lower() != ":memory:"
+
+    def verify_sqlite_integrity(self) -> Dict[str, Any]:
+        """Run SQLite PRAGMA integrity_check when the active database is SQLite."""
+        if not self._is_sqlite_engine:
+            return {"ok": True, "skipped": True, "reason": "non_sqlite"}
+        database = self._engine.url.database
+        if self._sqlite_file_db and database:
+            db_path = Path(database)
+            if db_path.exists() and db_path.stat().st_size > 512 * 1024 * 1024:
+                return {
+                    "ok": True,
+                    "skipped": True,
+                    "reason": "database_too_large_for_startup_integrity_check",
+                    "database": database,
+                    "size_bytes": db_path.stat().st_size,
+                }
+        try:
+            with self._engine.connect() as connection:
+                rows = connection.exec_driver_sql("PRAGMA integrity_check").fetchall()
+            messages = [str(row[0]) for row in rows if row and row[0] is not None]
+            ok = bool(messages) and all(message.lower() == "ok" for message in messages)
+            return {
+                "ok": ok,
+                "skipped": False,
+                "messages": messages,
+                "database": database,
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("SQLite integrity_check failed: %s", exc)
+            return {
+                "ok": False,
+                "skipped": False,
+                "messages": [str(exc)],
+                "database": database,
+            }
 
     def _ensure_momentum_backtest_schema(self) -> None:
         """为已有 SQLite 数据库补齐回测任务中心新增列。"""

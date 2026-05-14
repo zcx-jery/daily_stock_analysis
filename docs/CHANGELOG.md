@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [改进] 强势筛选 V1.3 第二十阶段新增 T+1 Support Probability：Official Top3 排序改用承接修正延续分，显式纳入封板速度、资金惯性和板块共振，并对高延续但尾盘弱封标的施加承接惩罚。
+- [改进] 强势筛选 V1.3 新增 Secondary Sovereign Guard：Raw #2/#3 零风险时获得槽位护卫，挑战者需同时具备 +20 承接概率优势和 30% 综合分优势才可替换。
+- [修复] V1.3 总闸门 Sentiment_Lag_Filter 降低核心溢价滞后权重，新增当日候选池广度权重以提高早周期启动识别能力。
+- [chore] 回测任务启动前新增 SQLite `PRAGMA integrity_check` 自检，并提供 `scripts/wipe_momentum_backtest_cache.py` 清理本地回测缓存。
+- [修复] 强势筛选 60 日回测摘要构建增加日级摘要坏页容错，单个 `momentum_backtest_daily_summaries` 行触发 SQLite `disk I/O error` 时会跳过该交易日并输出 `data_integrity_warnings`，避免整轮已完成回测被误判失败。
+- [改进] 强势筛选 V1.3 第十九阶段新增 Anchor Supremacy：废止 Raw #1 强制保底，Official Top3 改为 Raw Top20 内按 `continuation_score` 锚点至上排序，Raw 8-20 深度挑战者放宽为延续分 Top10% 且 Risk Stack <= 1，同时为前向日线加载增加 3 次指数退避重试。
+- [改进] 强势筛选 V1.3 第十八阶段新增 Deep Challenger & Main Slot Pivot：Raw Top20 中延续分 Top5 且零风险堆叠的深度挑战者可进入 Official Top3，主仓改由最高即时延续锚点承担，Raw #1 保留 Top3 但不再保留主仓特权。
+- [改进] 强势筛选 V1.3 第十七阶段新增 Continuation Alpha Protocol：Raw Top7 精英圈按 `continuation_score` 主导 Official Top3 重排，Raw #1 保底不掉出 Top3，但可在显著延续分差、执行质量或主线确认优势下让位次仓。
 - [修复] 强势筛选任务化查询按实际交易日复用已完成或进行中的筛选 run，`latest` 与显式日期命中同一交易日时不再重复生成新任务。
 - [chore] Docker 清理脚本增加 BuildKit 缓存容量上限与最小剩余空间目标，部署重建默认复用缓存并在重建后执行统一清理，降低频繁重构占满磁盘的风险。
 - [改进] 首页个股分析数据追溯区改为面向用户的增强证据解读，板块联动、资金流、筹码结构和数据质量展示中文结论、解释文案与友好数据源名称，避免直接暴露 raw 状态码。

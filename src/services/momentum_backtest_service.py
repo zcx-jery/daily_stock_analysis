@@ -38,7 +38,7 @@ from src.storage import (
 
 logger = logging.getLogger(__name__)
 
-MOMENTUM_BACKTEST_ENGINE_VERSION = "v1_3_kings_guard_protocol"
+MOMENTUM_BACKTEST_ENGINE_VERSION = "v1_3_t1_support_sovereign_defense"
 MOMENTUM_BACKTEST_OFFICIAL_PROFILE = "standard"
 MOMENTUM_BACKTEST_OFFICIAL_TOP_N = MOMENTUM_DEFAULT_TOP_N
 MOMENTUM_BACKTEST_SCREENING_TRUTH_MODE = MOMENTUM_TRUTH_MODE_FULL
@@ -46,6 +46,8 @@ MOMENTUM_BACKTEST_STRATEGY_HEALTH_MODE_CACHED_ONLY = STRATEGY_HEALTH_MODE_CACHED
 MOMENTUM_BACKTEST_STRATEGY_HEALTH_MODE_STRICT_FINAL = STRATEGY_HEALTH_MODE_STRICT_FINAL
 MOMENTUM_BACKTEST_T1_MIN_OPEN_RATIO = 0.99
 MOMENTUM_BACKTEST_T2_ADJUSTED_EXIT_BUFFER_RATIO = 1.02
+MOMENTUM_BACKTEST_FORWARD_FETCH_RETRY_LIMIT = 3
+MOMENTUM_BACKTEST_FORWARD_FETCH_BACKOFF_SECONDS = 1.0
 MOMENTUM_BACKTEST_STRATEGY_HEALTH_MODE_LABELS = {
     MOMENTUM_BACKTEST_STRATEGY_HEALTH_MODE_CACHED_ONLY: "兼容缓存口径",
     MOMENTUM_BACKTEST_STRATEGY_HEALTH_MODE_STRICT_FINAL: "严格 final 口径",
@@ -443,6 +445,7 @@ class MomentumBacktestService:
         strategy_health_mode: str,
     ) -> None:
         screener_service, decision_service = self._ensure_execution_services()
+        self._verify_backtest_storage_before_run(run_id)
         existing_run = self.repository.get_run(run_id)
         if existing_run is None:
             raise ValueError(f"Backtest run not found: {run_id}")
@@ -738,6 +741,32 @@ class MomentumBacktestService:
             )
             raise
 
+    def _verify_backtest_storage_before_run(self, run_id: str) -> Dict[str, Any]:
+        integrity = self.repository.verify_storage_integrity()
+        if not integrity.get("ok", True):
+            logger.warning(
+                "Momentum backtest storage integrity check failed before run %s: %s",
+                run_id,
+                integrity.get("messages"),
+            )
+        else:
+            logger.info(
+                "Momentum backtest storage integrity check ok before run %s: skipped=%s",
+                run_id,
+                integrity.get("skipped"),
+            )
+        return integrity
+
+    def wipe_and_rebuild_local_backtest_cache(self) -> Dict[str, Any]:
+        before = self.repository.verify_storage_integrity()
+        deleted = self.repository.wipe_backtest_cache()
+        after = self.repository.verify_storage_integrity()
+        return {
+            "before_integrity": before,
+            "deleted": deleted,
+            "after_integrity": after,
+        }
+
     def get_run(self, run_id: str) -> Dict[str, Any]:
         run = self.repository.get_run(run_id)
         if run is None:
@@ -852,7 +881,7 @@ class MomentumBacktestService:
         run = self.repository.get_run(run_id)
         if run is None:
             raise ValueError(f"Backtest run not found: {run_id}")
-        rows = self.repository.list_daily_summaries(run_id)
+        rows, skipped_dates = self._list_daily_summaries_resilient(run_id)
         decision_map: Dict[date, List[MomentumBacktestDecisionRecord]] = {}
         if slot or theme_name:
             for record in self.repository.list_decision_records_for_run(run_id):
@@ -887,6 +916,7 @@ class MomentumBacktestService:
             "page_size": safe_page_size,
             "has_more": end_index < total,
             "items": [self._serialize_daily_summary(row) for row in page_rows],
+            "data_integrity_warnings": self._build_data_integrity_warnings(skipped_dates),
         }
 
     def get_daily_detail(self, run_id: str, trade_date: str) -> Dict[str, Any]:
@@ -894,7 +924,16 @@ class MomentumBacktestService:
         if run is None:
             raise ValueError(f"Backtest run not found: {run_id}")
         trade_dt = self._parse_trade_date(trade_date)
-        daily_row = self.repository.get_daily_summary(run_id, trade_dt)
+        try:
+            daily_row = self.repository.get_daily_summary(run_id, trade_dt)
+        except OperationalError as exc:
+            logger.warning(
+                "Momentum backtest daily detail skipped corrupted daily summary: run_id=%s trade_date=%s error=%s",
+                run_id,
+                trade_dt.isoformat(),
+                exc,
+            )
+            raise ValueError(f"Backtest trade date is unavailable due to corrupted daily summary: {trade_date}") from exc
         if daily_row is None:
             raise ValueError(f"Backtest trade date not found: {trade_date}")
 
@@ -950,7 +989,8 @@ class MomentumBacktestService:
         severity_breakdown = {"critical": 0, "warning": 0, "info": 0}
         key_breakdown: Dict[str, int] = {}
 
-        for daily_row in self.repository.list_daily_summaries(run_id):
+        daily_rows, skipped_dates = self._list_daily_summaries_resilient(run_id)
+        for daily_row in daily_rows:
             candidate_rows = self._list_candidate_records_or_rebuild(
                 run_id,
                 daily_row.trade_date,
@@ -995,6 +1035,7 @@ class MomentumBacktestService:
             "total_issues": len(items),
             "severity_breakdown": severity_breakdown,
             "issue_key_breakdown": key_breakdown,
+            "data_integrity_warnings": self._build_data_integrity_warnings(skipped_dates),
             "items": items,
         }
 
@@ -2010,7 +2051,8 @@ class MomentumBacktestService:
 
     def _build_run_summary(self, run_id: str) -> Dict[str, Any]:
         run = self.repository.get_run(run_id)
-        daily_rows = self.repository.list_daily_summaries(run_id)
+        daily_rows, skipped_daily_summary_dates = self._list_daily_summaries_resilient(run_id)
+        valid_trade_dates = {row.trade_date for row in daily_rows}
         candidate_rows = self._list_candidate_records_for_run_or_rebuild(
             run_id,
             daily_rows,
@@ -2025,6 +2067,11 @@ class MomentumBacktestService:
             candidate_pool_rows = candidate_rows
         decision_rows = self.repository.list_decision_records_for_run(run_id)
         outcome_rows = self.repository.list_outcomes(run_id)
+        if skipped_daily_summary_dates and valid_trade_dates:
+            candidate_rows = [row for row in candidate_rows if row.trade_date in valid_trade_dates]
+            candidate_pool_rows = [row for row in candidate_pool_rows if row.trade_date in valid_trade_dates]
+            decision_rows = [row for row in decision_rows if row.trade_date in valid_trade_dates]
+            outcome_rows = [row for row in outcome_rows if row.trade_date in valid_trade_dates]
         candidate_outcomes = [row for row in outcome_rows if row.view_scope == "candidate_top10"]
         candidate_pool_outcomes = [row for row in outcome_rows if row.view_scope == "candidate_pool"]
         if not candidate_pool_outcomes:
@@ -2143,6 +2190,12 @@ class MomentumBacktestService:
             candidate_pool_outcomes_by_date=candidate_pool_outcomes_by_date,
             decision_outcomes_by_date=decision_outcomes_by_date,
         )
+        anchor_supremacy_report = self._build_anchor_supremacy_report(
+            candidate_pool_rows_by_date=candidate_pool_rows_by_date,
+            decision_rows_by_date=decision_rows_by_date,
+            candidate_pool_outcomes_by_date=candidate_pool_outcomes_by_date,
+            decision_outcomes_by_date=decision_outcomes_by_date,
+        )
         strategy_alpha_report["ticker_swap_underperforming_day_count"] = ticker_swap_log[
             "underperforming_day_count"
         ]
@@ -2211,12 +2264,14 @@ class MomentumBacktestService:
             "decision_top3_avg_t2_max_drawdown_pct": decision_metrics["avg_t2_max_drawdown_pct"],
             "benchmark_comparison": benchmark_comparison,
             "strategy_alpha_report": strategy_alpha_report,
+            "anchor_supremacy_report": anchor_supremacy_report,
             "ticker_swap_log": ticker_swap_log,
             "gate_justification_report": gate_justification_report,
             "layer_diagnostics": layer_diagnostics,
             "gate_module_breakdown": gate_module_breakdown,
             "regime_breakdown": regime_breakdown,
             "v13_diagnostics": v13_diagnostics,
+            "data_integrity_warnings": self._build_data_integrity_warnings(skipped_daily_summary_dates),
         }
 
     def _load_complete_summary(self, run_id: str, payload: Optional[str]) -> Dict[str, Any]:
@@ -2224,6 +2279,29 @@ class MomentumBacktestService:
         if self._summary_requires_refresh(summary):
             return self._build_run_summary(run_id)
         return summary
+
+    def _list_daily_summaries_resilient(
+        self,
+        run_id: str,
+    ) -> Tuple[List[MomentumBacktestDailySummary], List[date]]:
+        rows, skipped_dates = self.repository.list_daily_summaries_resilient(run_id)
+        if skipped_dates:
+            logger.warning(
+                "Momentum backtest summary is degraded; skipped unreadable daily summaries: "
+                "run_id=%s skipped_dates=%s",
+                run_id,
+                [trade_dt.isoformat() for trade_dt in skipped_dates],
+            )
+        return rows, skipped_dates
+
+    @staticmethod
+    def _build_data_integrity_warnings(skipped_dates: Iterable[date]) -> Dict[str, Any]:
+        skipped = sorted({trade_dt.isoformat() for trade_dt in skipped_dates})
+        return {
+            "summary_degraded": bool(skipped),
+            "skipped_daily_summary_count": len(skipped),
+            "skipped_daily_summary_dates": skipped,
+        }
 
     def _build_v13_run_diagnostics(self, daily_rows: List[MomentumBacktestDailySummary]) -> Dict[str, Any]:
         return self._build_v13_run_diagnostics_v2(daily_rows)
@@ -2959,6 +3037,7 @@ class MomentumBacktestService:
             "decision_top3_t1_direction_pass_rate",
             "decision_top3_t2_continuation_pass_rate",
             "strategy_alpha_report",
+            "anchor_supremacy_report",
             "ticker_swap_log",
             "gate_justification_report",
             "market_environment_breakdown",
@@ -3037,6 +3116,140 @@ class MomentumBacktestService:
                 if outcome is not None:
                     selected.append(outcome)
         return selected
+
+    def _select_raw_momentum_top1_outcomes(
+        self,
+        *,
+        candidate_rows_by_date: Dict[date, List[MomentumBacktestCandidateRecord]],
+        candidate_pool_outcomes_by_date: Dict[date, List[MomentumBacktestOutcomeRecord]],
+    ) -> List[MomentumBacktestOutcomeRecord]:
+        selected: List[MomentumBacktestOutcomeRecord] = []
+        for trade_date, rows in candidate_rows_by_date.items():
+            raw_one = next(iter(sorted(rows, key=self._raw_momentum_candidate_sort_key)), None)
+            if raw_one is None:
+                continue
+            outcome = next(
+                (
+                    item
+                    for item in candidate_pool_outcomes_by_date.get(trade_date, [])
+                    if item.ts_code == raw_one.ts_code
+                ),
+                None,
+            )
+            if outcome is not None:
+                selected.append(outcome)
+        return selected
+
+    def _build_anchor_supremacy_report(
+        self,
+        *,
+        candidate_pool_rows_by_date: Dict[date, List[MomentumBacktestCandidateRecord]],
+        decision_rows_by_date: Dict[date, List[MomentumBacktestDecisionRecord]],
+        candidate_pool_outcomes_by_date: Dict[date, List[MomentumBacktestOutcomeRecord]],
+        decision_outcomes_by_date: Dict[date, List[MomentumBacktestOutcomeRecord]],
+    ) -> Dict[str, Any]:
+        raw_top1_outcomes = self._select_raw_momentum_top1_outcomes(
+            candidate_rows_by_date=candidate_pool_rows_by_date,
+            candidate_pool_outcomes_by_date=candidate_pool_outcomes_by_date,
+        )
+        anchor_outcomes: List[MomentumBacktestOutcomeRecord] = []
+        replaced_items: List[Dict[str, Any]] = []
+
+        for trade_dt in sorted(set(candidate_pool_rows_by_date) | set(decision_rows_by_date)):
+            raw_rows = sorted(
+                candidate_pool_rows_by_date.get(trade_dt, []),
+                key=self._raw_momentum_candidate_sort_key,
+            )
+            raw_one = raw_rows[0] if raw_rows else None
+            official_rows = self._sort_official_decision_rows(decision_rows_by_date.get(trade_dt, []))
+            anchor_row = official_rows[0] if official_rows else None
+            if anchor_row is None:
+                continue
+            anchor_outcome = next(
+                (
+                    item
+                    for item in decision_outcomes_by_date.get(trade_dt, [])
+                    if item.ts_code == anchor_row.ts_code and item.slot == anchor_row.slot
+                ),
+                None,
+            )
+            if anchor_outcome is not None:
+                anchor_outcomes.append(anchor_outcome)
+            if raw_one is None or anchor_row.ts_code == raw_one.ts_code:
+                continue
+            raw_one_outcome = next(
+                (
+                    item
+                    for item in candidate_pool_outcomes_by_date.get(trade_dt, [])
+                    if item.ts_code == raw_one.ts_code
+                ),
+                None,
+            )
+            if anchor_outcome is None and raw_one_outcome is None:
+                continue
+            anchor_payload = self._load_json(anchor_row.decision_payload_json or "{}")
+            replaced_items.append(
+                {
+                    "trade_date": trade_dt.isoformat(),
+                    "anchor_ts_code": anchor_row.ts_code,
+                    "anchor_name": anchor_row.name,
+                    "anchor_continuation_score": self._to_float(anchor_payload.get("continuation_score")),
+                    "anchor_continuation_rank": anchor_payload.get("continuation_rank"),
+                    "anchor_tradable_success_pass": (
+                        self._outcome_tradable_success_pass(anchor_outcome)
+                        if anchor_outcome is not None
+                        else None
+                    ),
+                    "anchor_t1_direction_pass": (
+                        self._outcome_t1_direction_pass(anchor_outcome)
+                        if anchor_outcome is not None
+                        else None
+                    ),
+                    "raw_top1_ts_code": raw_one.ts_code,
+                    "raw_top1_name": raw_one.name,
+                    "raw_top1_continuation_score": raw_one.continuation_score,
+                    "raw_top1_tradable_success_pass": (
+                        self._outcome_tradable_success_pass(raw_one_outcome)
+                        if raw_one_outcome is not None
+                        else None
+                    ),
+                    "raw_top1_t1_direction_pass": (
+                        self._outcome_t1_direction_pass(raw_one_outcome)
+                        if raw_one_outcome is not None
+                        else None
+                    ),
+                }
+            )
+
+        anchor_metrics = self._summarize_outcomes(anchor_outcomes)
+        raw_top1_metrics = self._summarize_outcomes(raw_top1_outcomes)
+        anchor_alpha = self._delta_pct(
+            anchor_metrics.get("tradable_success_rate_pct"),
+            raw_top1_metrics.get("tradable_success_rate_pct"),
+        )
+        anchor_t1_alpha = self._delta_pct(
+            anchor_metrics.get("t1_direction_pass_rate_pct"),
+            raw_top1_metrics.get("t1_direction_pass_rate_pct"),
+        )
+        return {
+            "status": (
+                "anchor_outperforming_raw_top1"
+                if anchor_alpha is not None and anchor_alpha >= 0
+                else ("raw_top1_outperforming_anchor" if anchor_alpha is not None else "insufficient_data")
+            ),
+            "anchor_label": "Official Main Slot Anchor",
+            "raw_top1_label": "Raw Momentum #1",
+            "anchor_metrics": anchor_metrics,
+            "raw_top1_metrics": raw_top1_metrics,
+            "anchor_alpha_vs_raw_top1_pct": anchor_alpha,
+            "anchor_t1_direction_alpha_vs_raw_top1_pct": anchor_t1_alpha,
+            "raw_top1_replaced_day_count": len(replaced_items),
+            "comparison_table": [
+                {"group": "anchors", "label": "Official Main Slot Anchor", **anchor_metrics},
+                {"group": "raw_top1", "label": "Raw Momentum #1", **raw_top1_metrics},
+            ],
+            "replaced_days": replaced_items,
+        }
 
     def _build_strategy_alpha_report(
         self,
@@ -3233,6 +3446,22 @@ class MomentumBacktestService:
             "raw_rank_score": row.rank_score,
             "official_score": self._to_float(payload.get("official_score")),
             "final_score": row.final_score,
+            "continuation_score": row.continuation_score,
+            "continuation_rank": (
+                diagnostics.get("continuation_rank")
+                if isinstance(diagnostics, dict)
+                else payload.get("continuation_rank")
+            ),
+            "t1_support_probability": (
+                diagnostics.get("t1_support_probability")
+                if isinstance(diagnostics, dict)
+                else payload.get("t1_support_probability")
+            ),
+            "support_adjusted_continuation_score": (
+                diagnostics.get("support_adjusted_continuation_score")
+                if isinstance(diagnostics, dict)
+                else payload.get("support_adjusted_continuation_score")
+            ),
             "risk_score": row.risk_score,
             "mainline_intensity_count": payload.get("mainline_intensity_count"),
             "risk_stack_count": (
@@ -3459,9 +3688,34 @@ class MomentumBacktestService:
             "risk_stack_count": payload.get("risk_stack_count"),
             "risk_stack_veto": payload.get("risk_stack_veto"),
             "raw_alpha_shield": payload.get("raw_alpha_shield"),
+            "continuation_alpha": payload.get("continuation_alpha"),
+            "continuation_score": self._to_float(payload.get("continuation_score")),
+            "continuation_rank": payload.get("continuation_rank"),
+            "swap_reason": self._decision_swap_reason(payload),
             "mainline_intensity_count": payload.get("mainline_intensity_count"),
             "outcome": self._serialize_swap_outcome(outcome),
         }
+
+    @staticmethod
+    def _decision_swap_reason(payload: Dict[str, Any]) -> Optional[str]:
+        continuation_alpha = payload.get("continuation_alpha")
+        if isinstance(continuation_alpha, dict) and continuation_alpha.get("swap_reason"):
+            return str(continuation_alpha.get("swap_reason"))
+        if (
+            isinstance(continuation_alpha, dict)
+            and str(continuation_alpha.get("status") or "")
+            in {
+                "raw_top1_shifted_for_continuation_edge",
+                "raw_top1_selected_but_demoted_by_anchor",
+            }
+        ):
+            return "Main_Slot_Pivot"
+        if (
+            isinstance(continuation_alpha, dict)
+            and str(continuation_alpha.get("status") or "") == "raw_top1_replaced_by_anchor_supremacy"
+        ):
+            return "Anchor_Supremacy"
+        return None
 
     @staticmethod
     def _serialize_swap_outcome(
@@ -4449,6 +4703,10 @@ class MomentumBacktestService:
             "official_score": MomentumBacktestService._to_float(payload_snapshot.get("official_score")),
             "final_score": row.final_score,
             "continuation_score": row.continuation_score,
+            "continuation_rank": payload_snapshot.get("_continuation_rank"),
+            "t1_support_probability": payload_snapshot.get("_t1_support_probability"),
+            "support_inertia_coefficient": payload_snapshot.get("_support_inertia_coefficient"),
+            "support_adjusted_continuation_score": payload_snapshot.get("_support_adjusted_continuation_score"),
             "extension_score": row.extension_score,
             "risk_score": row.risk_score,
             "buyability_score": row.buyability_score,
@@ -4456,6 +4714,9 @@ class MomentumBacktestService:
         diagnostics = payload_snapshot.get("_decision_diagnostics")
         if isinstance(diagnostics, dict):
             payload["decision_diagnostics"] = diagnostics
+            payload["t1_support_probability"] = diagnostics.get("t1_support_probability")
+            payload["support_inertia_coefficient"] = diagnostics.get("support_inertia_coefficient")
+            payload["support_adjusted_continuation_score"] = diagnostics.get("support_adjusted_continuation_score")
         if outcome is not None:
             payload["outcome"] = MomentumBacktestService._serialize_outcome_record(outcome)
         return payload
@@ -4474,6 +4735,12 @@ class MomentumBacktestService:
             "theme": row.theme,
             "role": row.role,
             "official_score": MomentumBacktestService._to_float(payload_snapshot.get("official_score")),
+            "continuation_score": MomentumBacktestService._to_float(payload_snapshot.get("continuation_score")),
+            "continuation_rank": payload_snapshot.get("continuation_rank"),
+            "continuation_alpha": payload_snapshot.get("continuation_alpha"),
+            "t1_support_probability": payload_snapshot.get("t1_support_probability"),
+            "support_inertia_coefficient": payload_snapshot.get("support_inertia_coefficient"),
+            "support_adjusted_continuation_score": payload_snapshot.get("support_adjusted_continuation_score"),
             "risk_score": row.risk_score,
             "buy_point_status": row.buy_point_status,
             "suggested_action": row.suggested_action,
@@ -4663,20 +4930,43 @@ class MomentumBacktestService:
     def _load_forward_bars(self, ts_code: str, trade_dt: date, days: int = 2) -> List[Dict[str, Any]]:
         fetcher = self._ensure_execution_services()[0].fetcher
         end_dt = trade_dt + timedelta(days=10)
-        try:
-            history = fetcher.get_daily_data(
-                ts_code,
-                start_date=trade_dt.strftime("%Y-%m-%d"),
-                end_date=end_dt.strftime("%Y-%m-%d"),
-                days=20,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "Momentum backtest missing forward bars for %s after %s; marking outcome as insufficient: %s",
-                ts_code,
-                trade_dt.isoformat(),
-                exc,
-            )
+        history = None
+        last_exc: Optional[Exception] = None
+        for attempt in range(1, MOMENTUM_BACKTEST_FORWARD_FETCH_RETRY_LIMIT + 1):
+            try:
+                history = fetcher.get_daily_data(
+                    ts_code,
+                    start_date=trade_dt.strftime("%Y-%m-%d"),
+                    end_date=end_dt.strftime("%Y-%m-%d"),
+                    days=20,
+                )
+                last_exc = None
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                if attempt >= MOMENTUM_BACKTEST_FORWARD_FETCH_RETRY_LIMIT:
+                    logger.warning(
+                        "Momentum backtest forward bars RETRY_FAILED for %s after %s; "
+                        "attempts=%s, marking single-stock outcome as insufficient: %s",
+                        ts_code,
+                        trade_dt.isoformat(),
+                        attempt,
+                        exc,
+                    )
+                    break
+                backoff = MOMENTUM_BACKTEST_FORWARD_FETCH_BACKOFF_SECONDS * (2 ** (attempt - 1))
+                logger.warning(
+                    "Momentum backtest forward bars fetch failed for %s after %s; "
+                    "attempt=%s/%s, retrying in %.1fs: %s",
+                    ts_code,
+                    trade_dt.isoformat(),
+                    attempt,
+                    MOMENTUM_BACKTEST_FORWARD_FETCH_RETRY_LIMIT,
+                    backoff,
+                    exc,
+                )
+                time.sleep(backoff)
+        if last_exc is not None:
             return []
         if history is None or history.empty:
             return []

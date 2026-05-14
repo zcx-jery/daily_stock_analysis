@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime
-from typing import Any, Callable, Iterable, List, Optional, Sequence, TypeVar
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, TypeVar
 
 from sqlalchemy import and_, delete, desc, func, select
+from sqlalchemy.exc import OperationalError
 
 from src.storage import (
     DatabaseManager,
@@ -17,6 +19,7 @@ from src.storage import (
 )
 
 T = TypeVar("T")
+logger = logging.getLogger(__name__)
 
 
 class MomentumBacktestRepository:
@@ -224,6 +227,27 @@ class MomentumBacktestRepository:
 
         return self._run_write("momentum_backtest.delete_run", write)
 
+    def verify_storage_integrity(self) -> Dict[str, Any]:
+        verifier = getattr(self.db, "verify_sqlite_integrity", None)
+        if callable(verifier):
+            return dict(verifier())
+        return {"ok": True, "skipped": True, "reason": "integrity_check_unavailable"}
+
+    def wipe_backtest_cache(self) -> Dict[str, int]:
+        """Delete local momentum backtest runs and frozen artifacts."""
+
+        def write(session) -> Dict[str, int]:
+            counts = {
+                "outcome_records": int(session.query(MomentumBacktestOutcomeRecord).delete(synchronize_session=False) or 0),
+                "decision_records": int(session.query(MomentumBacktestDecisionRecord).delete(synchronize_session=False) or 0),
+                "candidate_records": int(session.query(MomentumBacktestCandidateRecord).delete(synchronize_session=False) or 0),
+                "daily_summaries": int(session.query(MomentumBacktestDailySummary).delete(synchronize_session=False) or 0),
+                "runs": int(session.query(MomentumBacktestRun).delete(synchronize_session=False) or 0),
+            }
+            return counts
+
+        return self._run_write("momentum_backtest.wipe_backtest_cache", write)
+
     def replace_daily_summary(self, summary: MomentumBacktestDailySummary) -> None:
         def write(session) -> None:
             session.execute(
@@ -288,6 +312,80 @@ class MomentumBacktestRepository:
                 .order_by(desc(MomentumBacktestDailySummary.trade_date))
             ).scalars().all()
             return list(rows)
+
+    def list_daily_summaries_resilient(
+        self,
+        run_id: str,
+    ) -> tuple[List[MomentumBacktestDailySummary], List[date]]:
+        """List daily summaries, skipping isolated corrupted rows if SQLite cannot fetch all."""
+        try:
+            return self.list_daily_summaries(run_id), []
+        except OperationalError as exc:
+            logger.warning(
+                "Momentum backtest daily summary full scan failed; falling back to per-date reads: "
+                "run_id=%s error=%s",
+                run_id,
+                exc,
+            )
+
+        trade_dates = self.list_artifact_trade_dates(run_id)
+        rows: List[MomentumBacktestDailySummary] = []
+        skipped_dates: List[date] = []
+        for trade_dt in trade_dates:
+            try:
+                row = self.get_daily_summary(run_id, trade_dt)
+            except OperationalError as exc:
+                logger.warning(
+                    "Momentum backtest daily summary row skipped after read failure: "
+                    "run_id=%s trade_date=%s error=%s",
+                    run_id,
+                    trade_dt.isoformat(),
+                    exc,
+                )
+                skipped_dates.append(trade_dt)
+                continue
+            if row is None:
+                skipped_dates.append(trade_dt)
+                continue
+            rows.append(row)
+
+        if not rows:
+            raise OperationalError(
+                "select daily summaries",
+                {"run_id": run_id},
+                RuntimeError("No readable daily summaries after resilient fallback"),
+            )
+        rows.sort(key=lambda row: row.trade_date, reverse=True)
+        skipped_dates.sort(reverse=True)
+        return rows, skipped_dates
+
+    def list_artifact_trade_dates(self, run_id: str) -> List[date]:
+        """Return trade dates with any frozen backtest artifacts for a run."""
+        trade_dates: set[date] = set()
+        models = (
+            MomentumBacktestOutcomeRecord,
+            MomentumBacktestCandidateRecord,
+            MomentumBacktestDecisionRecord,
+            MomentumBacktestDailySummary,
+        )
+        with self.db.get_session() as session:
+            for model in models:
+                try:
+                    rows = session.execute(
+                        select(model.trade_date)
+                        .where(model.run_id == run_id)
+                        .distinct()
+                    ).scalars().all()
+                except OperationalError as exc:
+                    logger.warning(
+                        "Momentum backtest artifact date scan failed: run_id=%s table=%s error=%s",
+                        run_id,
+                        model.__tablename__,
+                        exc,
+                    )
+                    continue
+                trade_dates.update(row for row in rows if row is not None)
+        return sorted(trade_dates, reverse=True)
 
     def get_daily_summary(self, run_id: str, trade_date: date) -> Optional[MomentumBacktestDailySummary]:
         with self.db.get_session() as session:
