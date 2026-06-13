@@ -1018,7 +1018,7 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
 
         self.assertEqual(fetcher.api_calls.get("index_classify"), 1)
         self.assertEqual(fetcher.api_calls.get("index_member"), 1)
-        self.assertEqual(fetcher.api_calls.get("index_daily"), 1)
+        self.assertIsNone(fetcher.api_calls.get("index_daily"))
         self.assertEqual(MomentumScreenerService.get_sector_cache_stats()["miss"], 1)
 
         second_service = self._build_service(fetcher)
@@ -1026,7 +1026,7 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
 
         self.assertEqual(fetcher.api_calls.get("index_classify"), 1)
         self.assertEqual(fetcher.api_calls.get("index_member"), 1)
-        self.assertEqual(fetcher.api_calls.get("index_daily"), 1)
+        self.assertIsNone(fetcher.api_calls.get("index_daily"))
         stats = MomentumScreenerService.get_sector_cache_stats()
         self.assertEqual(stats["miss"], 1)
         self.assertEqual(stats["hit"], 1)
@@ -1040,7 +1040,7 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
 
         self.assertEqual(fetcher.api_calls.get("index_classify"), 1)
         self.assertEqual(fetcher.api_calls.get("index_member"), 1)
-        self.assertEqual(fetcher.api_calls.get("index_daily"), 1)
+        self.assertIsNone(fetcher.api_calls.get("index_daily"))
 
         ttl = MomentumScreenerService.get_sector_cache_stats()["ttl_seconds"]
         with patch.object(MomentumScreenerService, "_cache_now_ts", return_value=1000.0 + ttl + 1):
@@ -1049,7 +1049,7 @@ class MomentumScreenerServiceTestCase(unittest.TestCase):
 
         self.assertEqual(fetcher.api_calls.get("index_classify"), 2)
         self.assertEqual(fetcher.api_calls.get("index_member"), 2)
-        self.assertEqual(fetcher.api_calls.get("index_daily"), 2)
+        self.assertIsNone(fetcher.api_calls.get("index_daily"))
         stats = MomentumScreenerService.get_sector_cache_stats()
         self.assertEqual(stats["miss"], 2)
         self.assertEqual(stats["expired"], 1)

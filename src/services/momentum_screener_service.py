@@ -805,14 +805,15 @@ class MomentumScreenerService:
                 pending_codes.discard(member_code)
 
             if sector_name not in sector_pct_map:
-                index_daily = self._call_tushare(
-                    "index_daily",
-                    ts_code=sector_code,
-                    trade_date=trade_date,
-                    fields="ts_code,trade_date,pct_chg",
-                )
-                if not index_daily.empty and "pct_chg" in index_daily.columns:
-                    sector_pct_map[sector_name] = _safe_float(index_daily.iloc[0].get("pct_chg"))
+                if not str(sector_code).endswith(".SI"):
+                    index_daily = self._call_tushare(
+                        "index_daily",
+                        ts_code=sector_code,
+                        trade_date=trade_date,
+                        fields="ts_code,trade_date,pct_chg",
+                    )
+                    if not index_daily.empty and "pct_chg" in index_daily.columns:
+                        sector_pct_map[sector_name] = _safe_float(index_daily.iloc[0].get("pct_chg"))
 
             if not pending_codes:
                 break
@@ -828,10 +829,11 @@ class MomentumScreenerService:
             "expires_at": self.__class__._cache_now_ts() + self.__class__._sector_cache_ttl_seconds,
         }
         logger.info(
-            "Momentum sector context loaded: trade_date=%s sectors=%d mapped_stocks=%d cache_stats=%s",
+            "Momentum sector context loaded: trade_date=%s sector_pct=%d mapped_stocks=%d sectors=%d cache_stats=%s",
             trade_date,
             len(sector_pct_map),
             len(mapping),
+            len(set(mapping.values())),
             self.__class__._shared_sector_cache_stats,
         )
         return result
