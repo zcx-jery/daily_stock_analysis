@@ -4701,7 +4701,14 @@ class MomentumSecondaryDecisionService:
         health = self._extract_strategy_health_from_state(state)
         runtime_metadata = self._build_strategy_health_runtime_metadata(state)
         if _safe_str((state or {}).get("status")) == "final" and health is not None:
-            return health, runtime_metadata
+            current_dates = self._load_strategy_health_trade_dates(
+                end_trade_date=normalized_trade_date,
+                limit=STRATEGY_HEALTH_TARGET_SAMPLE_COUNT + 12,
+            )
+            cached_dates = state.get("trade_dates")
+            if isinstance(cached_dates, list) and current_dates == cached_dates:
+                return health, runtime_metadata
+            state["status"] = "running"
 
         state = self._compute_strategy_health_to_completion(
             cache_key=cache_key,
