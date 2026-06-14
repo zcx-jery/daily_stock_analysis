@@ -223,13 +223,12 @@ ROLE_VALIDATION_TARGETS = {
     "mid": {"profit_window_pct": 2.0, "max_drawdown_pct": 4.0},
     "back": {"profit_window_pct": 2.0, "max_drawdown_pct": 4.0},
 }
-STRATEGY_HEALTH_CACHE_TTL = timedelta(hours=12)
+STRATEGY_HEALTH_CACHE_TTL = timedelta(hours=24)
 STRATEGY_HEALTH_CACHE_VERSION = "v4"
 STRATEGY_HEALTH_SAMPLE_CACHE_TTL = timedelta(days=30)
 STRATEGY_HEALTH_SAMPLE_CACHE_VERSION = "v1"
 STRATEGY_HEALTH_DISK_CACHE_DIRNAME = "momentum_strategy_health"
 STRATEGY_HEALTH_SAMPLE_DISK_CACHE_DIRNAME = "samples"
-STRATEGY_HEALTH_ASYNC_DEFAULT_DELAY_SECONDS = 20.0
 STRATEGY_HEALTH_WAIT_TIMEOUT_SECONDS = 8.0
 STRATEGY_HEALTH_WAIT_POLL_INTERVAL_SECONDS = 0.1
 STRATEGY_HEALTH_COMPUTE_TIME_BUDGET_SECONDS = 75.0
@@ -266,12 +265,6 @@ THEME_CONFIDENCE_SCORE_THRESHOLDS = {
     "credible": 60.0,
     "recovering": 45.0,
 }
-STRATEGY_HEALTH_WARMING_REASON = (
-    "真实 20/60 日历史验证正在后台计算，本次先展示代理健康度，稍后刷新即可切换为真实结果。"
-)
-STRATEGY_HEALTH_MODE_DEFAULT = "default"
-STRATEGY_HEALTH_MODE_CACHED_ONLY = "cached_only"
-STRATEGY_HEALTH_MODE_STRICT_FINAL = "strict_final"
 
 StrategyHealthProgressCallback = Callable[[Dict[str, Any]], None]
 
@@ -401,17 +394,8 @@ class MomentumSecondaryDecisionService:
         self.v13_data_service = v13_data_service
         self.enable_v13_mainline = enable_v13_mainline
         self.adaptive_gate_audit_provider = adaptive_gate_audit_provider
-        self.strategy_health_async = strategy_health_async
-        self.strategy_health_async_delay_seconds = max(0.0, float(strategy_health_async_delay_seconds))
         self._strategy_health_cache: Dict[str, Dict[str, Any]] = {}
         self._strategy_health_sample_cache: Dict[str, Dict[str, Any]] = {}
-        self._strategy_health_jobs: Dict[str, Any] = {}
-        self._strategy_health_jobs_lock = Lock()
-        self._strategy_health_executor = (
-            ThreadPoolExecutor(max_workers=1, thread_name_prefix="momentum-health")
-            if strategy_health_async
-            else None
-        )
         self._strategy_health_cache_dir = (
             Path(strategy_health_cache_dir)
             if strategy_health_cache_dir is not None
@@ -430,8 +414,6 @@ class MomentumSecondaryDecisionService:
         main_board_only: bool = False,
         trade_date: Optional[str] = None,
         profile: str = "standard",
-        wait_for_strategy_health: bool = False,
-        strategy_health_mode: str = STRATEGY_HEALTH_MODE_DEFAULT,
     ) -> Dict[str, Any]:
         screener_service = self.screener_service or MomentumScreenerService()
         self.screener_service = screener_service
@@ -461,8 +443,6 @@ class MomentumSecondaryDecisionService:
             "decision": self.build_from_screening(
                 screening,
                 request_params=request_params,
-                wait_for_strategy_health=wait_for_strategy_health,
-                strategy_health_mode=strategy_health_mode,
             ),
         }
 
@@ -478,7 +458,6 @@ class MomentumSecondaryDecisionService:
         trade_date: Optional[str] = None,
         profile: str = "standard",
         now: Optional[datetime] = None,
-        wait_for_strategy_health: bool = False,
     ) -> Dict[str, Any]:
         result = self.build(
             top_n=top_n,
@@ -489,7 +468,6 @@ class MomentumSecondaryDecisionService:
             main_board_only=main_board_only,
             trade_date=trade_date,
             profile=profile,
-            wait_for_strategy_health=wait_for_strategy_health,
         )
         result["intraday_signal"] = self.build_intraday_from_decision(
             result["decision"],
@@ -505,19 +483,10 @@ class MomentumSecondaryDecisionService:
         screening: Dict[str, Any],
         *,
         request_params: Optional[Dict[str, Any]] = None,
-        wait_for_strategy_health: bool = False,
-        strategy_health_progress_callback: Optional[StrategyHealthProgressCallback] = None,
-        strategy_health_mode: str = STRATEGY_HEALTH_MODE_DEFAULT,
     ) -> Dict[str, Any]:
         results = self._extract_decision_source_results(screening)
         profile = _safe_str(screening.get("profile"), "standard")
         trade_date = _safe_str(screening.get("trade_date"))
-        if strategy_health_mode not in {
-            STRATEGY_HEALTH_MODE_DEFAULT,
-            STRATEGY_HEALTH_MODE_CACHED_ONLY,
-            STRATEGY_HEALTH_MODE_STRICT_FINAL,
-        }:
-            strategy_health_mode = STRATEGY_HEALTH_MODE_DEFAULT
         request_params = dict(screening.get("_request_params") or request_params or self._build_request_params(profile=profile))
 
         if not results:
@@ -527,9 +496,6 @@ class MomentumSecondaryDecisionService:
                 [],
                 trade_date=trade_date,
                 request_params=request_params,
-                wait_for_strategy_health=wait_for_strategy_health,
-                strategy_health_progress_callback=strategy_health_progress_callback,
-                strategy_health_mode=strategy_health_mode,
             )
             action_reason = "当前没有形成足够强的候选池，系统不建议今天给出强推荐。"
             attack_permission = self._build_attack_permission(strategy_health)
@@ -620,9 +586,6 @@ class MomentumSecondaryDecisionService:
             portfolio,
             trade_date=trade_date,
             request_params=request_params,
-            wait_for_strategy_health=wait_for_strategy_health,
-            strategy_health_progress_callback=strategy_health_progress_callback,
-            strategy_health_mode=strategy_health_mode,
         )
         attack_permission = self._build_attack_permission(strategy_health)
         theme_confidence = self._build_theme_confidence(strategy_health)
@@ -4521,15 +4484,19 @@ class MomentumSecondaryDecisionService:
             "can_full_recommend": False,
             "short_window": self._build_strategy_health_window(
                 "short_20d",
-                score=0.0,
-                threshold=68.0,
-                status="weak",
+                metrics={"score": 0.0, "threshold": 68.0, "status": "weak",
+                         "window": "short_20d", "sample_count": 0, "success_count": 0,
+                         "success_rate": 0.0, "avg_profit_window_pct": 0.0,
+                         "avg_max_drawdown_pct": 0.0, "avg_selected_count": 0.0,
+                         "summary": "20 日窗口当前没有可用结论。"},
             ),
             "long_window": self._build_strategy_health_window(
                 "long_60d",
-                score=0.0,
-                threshold=64.0,
-                status="weak",
+                metrics={"score": 0.0, "threshold": 64.0, "status": "weak",
+                         "window": "long_60d", "sample_count": 0, "success_count": 0,
+                         "success_rate": 0.0, "avg_profit_window_pct": 0.0,
+                         "avg_max_drawdown_pct": 0.0, "avg_selected_count": 0.0,
+                         "summary": "60 日窗口当前没有可信结构。"},
             ),
             "blockers": [
                 "20 日窗口当前没有形成可用结论。",
@@ -4684,26 +4651,7 @@ class MomentumSecondaryDecisionService:
             return "recovering"
         return "weak"
 
-    def _build_empty_strategy_health(self) -> Dict[str, Any]:
-        short_metrics = self._empty_strategy_health_metrics("short_20d")
-        long_metrics = self._empty_strategy_health_metrics("long_60d")
-        return {
-            "status": "disabled",
-            "label": STRATEGY_HEALTH_LABELS["disabled"],
-            "reason": "当前没有足够的历史验证样本，20 日进攻许可暂时暂停。",
-            "recommendation_cap": "disabled",
-            "can_full_recommend": False,
-            "short_window": self._build_strategy_health_window("short_20d", metrics=short_metrics),
-            "long_window": self._build_strategy_health_window("long_60d", metrics=long_metrics),
-            "blockers": [
-                "20 日窗口当前没有形成可验证样本。",
-                "60 日窗口当前没有形成可信结构。",
-            ],
-            "recovery_conditions": [
-                "先恢复到最近窗口能稳定输出可评估样本。",
-                "再恢复到主线、角色与默认组合重新稳定。",
-            ],
-        }
+
 
     def _build_strategy_health(
         self,
@@ -4713,58 +4661,28 @@ class MomentumSecondaryDecisionService:
         *,
         trade_date: str,
         request_params: Optional[Dict[str, Any]],
-        wait_for_strategy_health: bool = False,
-        strategy_health_progress_callback: Optional[StrategyHealthProgressCallback] = None,
-        strategy_health_mode: str = STRATEGY_HEALTH_MODE_DEFAULT,
     ) -> Dict[str, Any]:
         historical_health, runtime_metadata = self._build_historical_strategy_health(
             trade_date=trade_date,
             request_params=request_params,
-            wait_for_strategy_health=wait_for_strategy_health,
-            strategy_health_progress_callback=strategy_health_progress_callback,
-            strategy_health_mode=strategy_health_mode,
         )
         if historical_health is not None:
             return self._attach_strategy_health_runtime_metadata(
                 historical_health,
                 data_source="historical",
-                is_warming=bool(runtime_metadata.get("is_warming", False)),
+                is_warming=False,
                 validation_status=_safe_str(runtime_metadata.get("validation_status"), "final"),
                 progress=runtime_metadata.get("progress"),
             )
-        if (
-            strategy_health_mode == STRATEGY_HEALTH_MODE_STRICT_FINAL
-            and _safe_str(runtime_metadata.get("validation_status")) == "failed"
-        ):
-            return self._attach_strategy_health_runtime_metadata(
-                self._build_unavailable_strategy_health(
-                    reason=self._format_strategy_health_failure_reason(
-                        _safe_str(runtime_metadata.get("failure_reason"))
-                    )
-                ),
-                data_source="historical",
-                is_warming=False,
-                validation_status="failed",
-                progress=runtime_metadata.get("progress"),
-            )
-        if not themes or not portfolio:
-            return self._attach_strategy_health_runtime_metadata(
-                self._build_empty_strategy_health(),
-                data_source="proxy",
-                is_warming=False,
-                validation_status="proxy",
-                progress=runtime_metadata.get("progress"),
-            )
         return self._attach_strategy_health_runtime_metadata(
-            self._build_proxy_strategy_health(
-                candidates,
-                themes,
-                portfolio,
-                is_warming=bool(runtime_metadata.get("is_warming", False)),
+            self._build_unavailable_strategy_health(
+                reason=self._format_strategy_health_failure_reason(
+                    _safe_str(runtime_metadata.get("failure_reason"))
+                )
             ),
-            data_source="proxy",
-            is_warming=bool(runtime_metadata.get("is_warming", False)),
-            validation_status="proxy",
+            data_source="historical",
+            is_warming=False,
+            validation_status="failed",
             progress=runtime_metadata.get("progress"),
         )
 
@@ -4773,135 +4691,29 @@ class MomentumSecondaryDecisionService:
         *,
         trade_date: str,
         request_params: Optional[Dict[str, Any]],
-        wait_for_strategy_health: bool = False,
-        strategy_health_progress_callback: Optional[StrategyHealthProgressCallback] = None,
-        strategy_health_mode: str = STRATEGY_HEALTH_MODE_DEFAULT,
     ) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
         normalized_trade_date = self._normalize_trade_date(trade_date)
         if not normalized_trade_date or not request_params or self.screener_service is None:
             return None, self._build_strategy_health_runtime_metadata()
 
-        cache_key = self._build_strategy_health_cache_key(normalized_trade_date, request_params)
+        cache_key = self._build_strategy_health_cache_key(request_params)
         state = self._load_strategy_health_state(cache_key)
         health = self._extract_strategy_health_from_state(state)
         runtime_metadata = self._build_strategy_health_runtime_metadata(state)
         if _safe_str((state or {}).get("status")) == "final" and health is not None:
-            return health, runtime_metadata
-        if strategy_health_mode == STRATEGY_HEALTH_MODE_CACHED_ONLY:
-            return health, runtime_metadata
-
-        if wait_for_strategy_health and strategy_health_mode == STRATEGY_HEALTH_MODE_STRICT_FINAL:
-            state = self._compute_strategy_health_to_completion(
-                cache_key=cache_key,
-                trade_date=normalized_trade_date,
-                request_params=request_params,
-                progress_callback=strategy_health_progress_callback,
-            )
-            runtime_metadata = self._build_strategy_health_runtime_metadata(state)
-            return self._extract_strategy_health_from_state(state), runtime_metadata
-
-        if wait_for_strategy_health:
-            if self.strategy_health_async:
-                scheduled = self._schedule_strategy_health_compute(
-                    cache_key=cache_key,
-                    trade_date=normalized_trade_date,
-                    request_params=request_params,
-                    force_immediate=True,
-                )
-                if scheduled:
-                    state = self._wait_for_strategy_health_state(
-                        cache_key,
-                        timeout_seconds=STRATEGY_HEALTH_WAIT_TIMEOUT_SECONDS,
-                    )
-                    runtime_metadata = self._build_strategy_health_runtime_metadata(state)
-                    health = self._extract_strategy_health_from_state(state)
-                    if health is not None:
-                        return health, runtime_metadata
-                    return None, runtime_metadata
-
-            state = self._compute_strategy_health_to_completion(
-                cache_key=cache_key,
-                trade_date=normalized_trade_date,
-                request_params=request_params,
-                progress_callback=strategy_health_progress_callback,
-            )
-            runtime_metadata = self._build_strategy_health_runtime_metadata(state)
-            return self._extract_strategy_health_from_state(state), runtime_metadata
-
-        if self.strategy_health_async and self._schedule_strategy_health_compute(
-            cache_key=cache_key,
-            trade_date=normalized_trade_date,
-            request_params=request_params,
-        ):
-            state = self._load_strategy_health_state(cache_key)
-            runtime_metadata = self._build_strategy_health_runtime_metadata(state, fallback_is_warming=True)
-            health = self._extract_strategy_health_from_state(state)
             return health, runtime_metadata
 
         state = self._compute_strategy_health_to_completion(
             cache_key=cache_key,
             trade_date=normalized_trade_date,
             request_params=request_params,
-            progress_callback=strategy_health_progress_callback,
         )
         runtime_metadata = self._build_strategy_health_runtime_metadata(state)
         return self._extract_strategy_health_from_state(state), runtime_metadata
 
-    def _build_proxy_strategy_health(
-        self,
-        candidates: List[Dict[str, Any]],
-        themes: List[Dict[str, Any]],
-        portfolio: List[Dict[str, Any]],
-        *,
-        is_warming: bool = False,
-    ) -> Dict[str, Any]:
-        top_theme_score = _safe_float(themes[0].get("score"))
-        secondary_theme_score = _safe_float(themes[1].get("score")) if len(themes) > 1 else 0.0
-        ready_count = sum(item.get("suggested_action") == "ready" for item in portfolio)
-        clear_count = sum(item.get("buy_point_status") == "clear" for item in portfolio)
-        avg_risk = mean(_safe_float(item.get("risk_score")) for item in portfolio)
-        avg_rank_score = mean(_official_sort_score(item) for item in portfolio)
-        candidate_count = len(candidates)
-        top_theme_count = int(themes[0].get("candidate_count", 0))
-        dominant_share = top_theme_count / max(candidate_count, 1)
-        has_leader = any(item.get("_role_key") == "leader" for item in candidates)
-        has_front = any(item.get("_role_key") == "front" for item in candidates)
-
-        short_score = _clamp_float(
-            top_theme_score * 0.45
-            + ready_count * 12.0
-            + clear_count * 8.0
-            + avg_rank_score * 0.20
-            + dominant_share * 10.0
-            - avg_risk * 0.30
-        )
-        long_score = _clamp_float(
-            top_theme_score * 0.35
-            + secondary_theme_score * 0.10
-            + avg_rank_score * 0.25
-            + (10.0 if has_leader else 0.0)
-            + (8.0 if has_front else 0.0)
-            + min(candidate_count, 5) * 3.0
-            + dominant_share * 8.0
-            - avg_risk * 0.15
-        )
-
-        short_window = self._proxy_strategy_health_metrics(
-            "short_20d",
-            score=short_score,
-            healthy_threshold=68.0,
-            recovering_threshold=58.0,
-        )
-        long_window = self._proxy_strategy_health_metrics(
-            "long_60d",
-            score=long_score,
-            healthy_threshold=64.0,
-            recovering_threshold=54.0,
-        )
-        health = self._compose_strategy_health(short_window, long_window)
-        if is_warming:
-            health["reason"] = f"{health['reason']} {STRATEGY_HEALTH_WARMING_REASON}"
-        return health
+    def _build_strategy_health_cache_key(self, request_params: Dict[str, Any]) -> str:
+        request_signature = self._build_strategy_health_request_signature(request_params)
+        return f"v2|health_state|{request_signature}"
 
     @staticmethod
     def _attach_strategy_health_runtime_metadata(
@@ -5080,22 +4892,20 @@ class MomentumSecondaryDecisionService:
         if _safe_str(working_state.get("status")) == "final":
             return working_state
 
-        trade_dates = working_state.get("trade_dates")
-        if not isinstance(trade_dates, list) or not trade_dates:
-            trade_dates = self._load_strategy_health_trade_dates(
-                end_trade_date=trade_date,
-                limit=STRATEGY_HEALTH_TARGET_SAMPLE_COUNT + 12,
-            )
-            working_state["trade_dates"] = trade_dates
-            working_state["total_trade_date_count"] = len(trade_dates)
-            if not trade_dates:
-                working_state["status"] = "failed"
-                working_state["last_error"] = "no_trade_dates"
-                working_state["updated_at"] = datetime.now().isoformat()
-                self._store_strategy_health_state(cache_key, working_state)
-                self._notify_strategy_health_progress(progress_callback, working_state)
-                return working_state
-
+        trade_dates = self._load_strategy_health_trade_dates(
+            end_trade_date=trade_date,
+            limit=STRATEGY_HEALTH_TARGET_SAMPLE_COUNT + 12,
+        )
+        working_state["trade_dates"] = trade_dates
+        working_state["total_trade_date_count"] = len(trade_dates)
+        working_state["next_trade_date_index"] = 0
+        if not trade_dates:
+            working_state["status"] = "failed"
+            working_state["last_error"] = "no_trade_dates"
+            working_state["updated_at"] = datetime.now().isoformat()
+            self._store_strategy_health_state(cache_key, working_state)
+            self._notify_strategy_health_progress(progress_callback, working_state)
+            return working_state
         started_at = time_module.monotonic()
         last_progress_notify_at = started_at
         validations = working_state.get("validations")
@@ -5114,6 +4924,10 @@ class MomentumSecondaryDecisionService:
             working_state["processed_trade_date_count"] = next_index + 1
             working_state["last_evaluated_trade_date"] = historical_trade_date
 
+            existing_dates = {v.get("trade_date") for v in validations if isinstance(v, dict)}
+            if historical_trade_date in existing_dates:
+                continue
+
             try:
                 validation = self._evaluate_strategy_health_trade_date(
                     historical_trade_date=historical_trade_date,
@@ -5128,6 +4942,9 @@ class MomentumSecondaryDecisionService:
 
             if validation is not None:
                 validations.append(validation)
+                if len(validations) > STRATEGY_HEALTH_TARGET_SAMPLE_COUNT:
+                    validations = validations[:STRATEGY_HEALTH_TARGET_SAMPLE_COUNT]
+                    working_state["validations"] = validations
                 if len(validations) == 1 or len(validations) % 5 == 0:
                     logger.info(
                         "Momentum strategy health progress: trade_date=%s samples=%d last_sample=%s",
@@ -5373,37 +5190,6 @@ class MomentumSecondaryDecisionService:
             "summary": f"{STRATEGY_HEALTH_WINDOW_LABELS[window]}当前没有形成可用历史样本。",
         }
 
-    def _proxy_strategy_health_metrics(
-        self,
-        window: str,
-        *,
-        score: float,
-        healthy_threshold: float,
-        recovering_threshold: float,
-    ) -> Dict[str, Any]:
-        if score >= healthy_threshold:
-            status = "healthy"
-        elif score >= recovering_threshold:
-            status = "recovering"
-        else:
-            status = "weak"
-
-        sample_count = STRATEGY_HEALTH_WINDOW_TARGETS[window]["lookback"]
-        success_rate = round(score, 1)
-        return {
-            "window": window,
-            "status": status,
-            "score": round(score, 1),
-            "threshold": STRATEGY_HEALTH_WINDOW_THRESHOLDS[window],
-            "sample_count": sample_count,
-            "success_count": int(round(sample_count * success_rate / 100)),
-            "success_rate": success_rate,
-            "avg_profit_window_pct": round(max(0.5, score / 30), 2),
-            "avg_max_drawdown_pct": round(max(1.0, 6 - score / 18), 2),
-            "avg_selected_count": 2.0,
-            "summary": f"{STRATEGY_HEALTH_WINDOW_LABELS[window]}暂时仍使用代理结果，等待历史样本补齐。",
-        }
-
     def _compose_strategy_health(
         self,
         short_window: Dict[str, Any],
@@ -5517,9 +5303,6 @@ class MomentumSecondaryDecisionService:
         }
         return "|".join(f"{key}={value}" for key, value in normalized.items())
 
-    def _build_strategy_health_cache_key(self, trade_date: str, request_params: Dict[str, Any]) -> str:
-        request_signature = self._build_strategy_health_request_signature(request_params)
-        return f"trade_date={trade_date}|{request_signature}"
 
     def _build_strategy_health_sample_cache_key(self, historical_trade_date: str, request_params: Dict[str, Any]) -> str:
         request_signature = self._build_strategy_health_request_signature(request_params)

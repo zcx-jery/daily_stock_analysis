@@ -104,8 +104,6 @@ def get_momentum_secondary_decision_service(request: Request) -> MomentumSeconda
         service = MomentumSecondaryDecisionService(
             screener_service=screener_service,
             stock_service=stock_service,
-            strategy_health_async=True,
-            strategy_health_async_delay_seconds=0.0,
         )
         request.app.state.momentum_secondary_decision_service = service
     return service
@@ -136,8 +134,7 @@ def initialize_momentum_backtest_service(
             # interactive screener page's shared async/warming instance.
             decision_service = MomentumSecondaryDecisionService(
                 screener_service=screener_service,
-                strategy_health_async=False,
-            )
+                )
             service = MomentumBacktestService(
                 screener_service=screener_service,
                 decision_service=decision_service,
@@ -170,7 +167,6 @@ def get_momentum_screening_run_service(request: Request) -> MomentumScreeningRun
             request.app.state.momentum_screener_service = screener_service
         decision_service = MomentumSecondaryDecisionService(
             screener_service=screener_service,
-            strategy_health_async=False,
         )
         service = MomentumScreeningRunService(
             screener_service=screener_service,

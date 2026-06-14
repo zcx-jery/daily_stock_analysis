@@ -317,11 +317,6 @@ def cancel_momentum_screening_run(
 )
 def build_momentum_secondary_decision(
     payload: MomentumScreenerRequest,
-    wait_for_strategy_health: bool = Query(
-        False,
-        description="Whether to wait for real 20/60-day strategy health validation before responding.",
-    ),
-    service: MomentumSecondaryDecisionService = Depends(get_momentum_secondary_decision_service),
 ) -> MomentumSecondaryDecisionResponse:
     """构建强势筛选二次决策结果。"""
     try:
@@ -329,7 +324,6 @@ def build_momentum_secondary_decision(
             top_n=MOMENTUM_DEFAULT_TOP_N,
             trade_date=payload.trade_date,
             profile="standard",
-            wait_for_strategy_health=wait_for_strategy_health,
         )
         return MomentumSecondaryDecisionResponse(**result)
     except ValueError as e:
@@ -345,6 +339,7 @@ def build_momentum_secondary_decision(
         )
 
 
+
 @router.post(
     "/screener/momentum/decision/intraday",
     response_model=MomentumSecondaryDecisionIntradayResponse,
@@ -358,10 +353,6 @@ def build_momentum_secondary_decision(
 )
 def build_momentum_intraday_signal(
     payload: MomentumScreenerRequest,
-    wait_for_strategy_health: bool = Query(
-        False,
-        description="Whether to wait for real 20/60-day strategy health validation before responding.",
-    ),
     service: MomentumSecondaryDecisionService = Depends(get_momentum_secondary_decision_service),
 ) -> MomentumSecondaryDecisionIntradayResponse:
     """构建强势筛选盘中信号结果。"""
@@ -370,7 +361,6 @@ def build_momentum_intraday_signal(
             top_n=MOMENTUM_DEFAULT_TOP_N,
             trade_date=payload.trade_date,
             profile="standard",
-            wait_for_strategy_health=wait_for_strategy_health,
         )
         return MomentumSecondaryDecisionIntradayResponse(**result)
     except ValueError as e:
@@ -384,6 +374,7 @@ def build_momentum_intraday_signal(
             status_code=500,
             detail={"error": "internal_error", "message": f"盘中信号失败: {str(e)}"},
         )
+
 
 
 @router.post(
