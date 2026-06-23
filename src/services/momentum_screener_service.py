@@ -54,7 +54,6 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
     except (TypeError, ValueError):
         return default
 
-
 def _safe_str(value: Any, default: str = "") -> str:
     if value is None:
         return default
@@ -91,6 +90,9 @@ class MomentumScreenerService:
     _shared_history_cache: Dict[str, Dict[str, Any]] = {}
     _history_cache_ttl_seconds: int = 12 * 60 * 60
     _history_cache_dirname: str = "momentum_histories"
+    _sector_stats_cache_ttl_seconds: int = 30 * 24 * 60 * 60
+    _sector_stats_cache_dirname: str = "momentum_sector_stats"
+    _sector_stats_saved: set = set()
 
     def __init__(
         self,
@@ -129,6 +131,9 @@ class MomentumScreenerService:
             if history_cache_dir is not None
             else Path.cwd() / "data" / "cache" / self.__class__._history_cache_dirname
         )
+        self._sector_stats_cache_dir = (
+            Path.cwd() / "data" / "cache" / self.__class__._sector_stats_cache_dirname
+        )
         if not self.fetcher.is_available():
             raise RuntimeError("Tushare 数据源不可用，请检查 TUSHARE_TOKEN 配置")
 
@@ -140,6 +145,7 @@ class MomentumScreenerService:
         cls._shared_candidate_pool_cache.clear()
         cls._shared_screening_result_cache.clear()
         cls._shared_history_cache.clear()
+        cls._sector_stats_saved.clear()
 
     @classmethod
     def get_sector_cache_stats(cls) -> Dict[str, int]:
@@ -1292,9 +1298,9 @@ class MomentumScreenerService:
             if profile_map:
                 scored_features["v13_profile"] = profile_map.get(_safe_str(row.get("ts_code")), {})
             if profile == "aggressive":
-                results.append(self._score_aggressive(row, scored_features))
+                results.append(self._score_aggressive(row, scored_features, trade_date))
             else:
-                results.append(self._score_standard(row, scored_features))
+                results.append(self._score_standard(row, scored_features, trade_date))
             processed_rows = len(results)
             self._emit_progress(
                 progress_callback,
@@ -2384,6 +2390,24 @@ class MomentumScreenerService:
             "main_inflow_rank_pct": ctx["main_inflow_rank_pct"],
             "sector": ctx["sector"],
             "sector_stats": ctx["sector_stats"],
+
+            # === ???? ? ?????? ===
+            "consecutive_yang": self._count_consecutive_yang(pct_series),
+            "ma5_above_days": int((close_series.tail(5) > close_series.tail(5).rolling(5, min_periods=1).mean()).sum()) if len(close_series) >= 5 else 0,
+            "ma10_above_days": int((close_series.tail(10) > close_series.tail(10).rolling(10, min_periods=1).mean()).sum()) if len(close_series) >= 10 else 0,
+            "close_to_ma5_ratios": [round(c / max(m, 0.01), 4) for c, m in zip(close_series.tail(5), close_series.tail(5).rolling(5, min_periods=1).mean())] if len(close_series) >= 5 else [],
+            "volatility_5d": self._compute_volatility_5d(close_series),
+
+            # === ???? ? ?????????? ===
+            "segments": self._compute_segments(close_series, pct_series),
+
+            # === ???? ? ???? ===
+            "vol_5d_avg": float(volume_series.tail(5).mean()) if len(volume_series) >= 5 else 0.0,
+            "vol_prev_5d_avg": float(volume_series.tail(11).iloc[:6].mean()) if len(volume_series) >= 11 else 0.0,
+            "cum_ret_5d_direction": float(pct_series.tail(5).sum()),
+
+            # === ???? ? ???? ===
+            "strong_day_indices": self._find_strong_day_indices(pct_series),
         }
 
     @staticmethod
@@ -2785,7 +2809,259 @@ class MomentumScreenerService:
             "mainline_intensity_bonus": adjusted["mainline_intensity_bonus"],
         }
 
-    def _score_standard(self, row: pd.Series, features: Dict[str, Any]) -> Dict[str, Any]:
+    # ================================================================
+    #  ????????
+    # ================================================================
+
+    def _score_price_path_quality(self, row: pd.Series, features: Dict[str, Any]) -> Dict[str, Any]:
+        """K??????????12?"""
+        items = {}
+
+        # ---- ??1??????? (???? 20%) ----
+        ma5_above = features.get("ma5_above_days", 0)
+        ma10_above = features.get("ma10_above_days", 0)
+        consecutive_yang = features.get("consecutive_yang", 0)
+        volatility_5d = features.get("volatility_5d", 0.0)
+
+        ma5_score = min(ma5_above / 5.0, 1.0) * 0.4
+        ma10_score = min(ma10_above / 10.0, 1.0) * 0.3
+        yang_score = min(consecutive_yang / 5.0, 1.0) * 0.3
+        combined = ma5_score + ma10_score + yang_score
+
+        stability = 1.0 - min(1.0, volatility_5d / 0.05) if volatility_5d > 0 else 1.0
+
+        # ?? / ????
+        close_ratios = features.get("close_to_ma5_ratios", [])
+        if len(close_ratios) >= 3:
+            recent_ratios = close_ratios[-3:]
+            if sum(1 for r in recent_ratios if r > 1.02) >= 2 and recent_ratios[-1] > 1.02:
+                ratio_bonus = 1.2
+            elif sum(1 for r in recent_ratios if r < 1.01) > len(recent_ratios) / 2:
+                ratio_bonus = 0.8
+            else:
+                ratio_bonus = 1.0
+        else:
+            ratio_bonus = 1.0
+
+        run_score = max(0.0, min(1.0, combined * stability * ratio_bonus))
+        items["consecutive_run"] = round(run_score * 0.20, 4)
+
+        # ---- ??2??????? (???? 35%) ----
+        segments = features.get("segments", {})
+        seg_scores = {}
+        for name, seg in segments.items():
+            ret = seg.get("return", 0.0)
+            dd = seg.get("max_dd", 0.0)
+            amp = seg.get("avg_amp", 0.0)
+            # ??????
+            if ret > 0.10:
+                ret_s = 1.0
+            elif ret > 0.05:
+                ret_s = 0.8
+            elif ret > 0.02:
+                ret_s = 0.6
+            elif ret > 0:
+                ret_s = 0.4
+            elif ret > -0.03:
+                ret_s = 0.2
+            else:
+                ret_s = 0.0
+            # ??????
+            if dd < 0.03:
+                dd_s = 1.0
+            elif dd < 0.05:
+                dd_s = 0.7
+            elif dd < 0.08:
+                dd_s = 0.4
+            elif dd < 0.12:
+                dd_s = 0.2
+            else:
+                dd_s = 0.0
+            # ???????2-5% ???
+            if 0.02 <= amp <= 0.05:
+                amp_s = 1.0
+            elif 0.01 <= amp <= 0.07:
+                amp_s = 0.7
+            elif amp > 0:
+                amp_s = 0.3
+            else:
+                amp_s = 0.5
+            seg_scores[name] = ret_s * 0.4 + dd_s * 0.35 + amp_s * 0.25
+
+        # ????: near > mid > far
+        segment_total = (
+            seg_scores.get("near", 0.5) * 0.50
+            + seg_scores.get("mid", 0.5) * 0.30
+            + seg_scores.get("far", 0.5) * 0.20
+        )
+        items["mild_uptrend"] = round(segment_total * 0.35, 4)
+
+        # ---- ??3????? (???? 30%) ----
+        vol_5d = features.get("vol_5d_avg", 0.0)
+        vol_prev_5d = features.get("vol_prev_5d_avg", 0.0)
+        cum_5d = features.get("cum_ret_5d_direction", 0.0)
+
+        # ??????
+        if vol_prev_5d > 0 and vol_5d > 0:
+            vol_ratio = vol_5d / vol_prev_5d
+            if 1.0 < vol_ratio <= 1.5:
+                vol_score = 1.0
+            elif 0.8 <= vol_ratio <= 1.0:
+                vol_score = 0.7
+            elif 1.5 < vol_ratio <= 2.5:
+                vol_score = 0.6
+            elif vol_ratio > 2.5:
+                vol_score = 0.3
+            else:
+                vol_score = 0.4
+        else:
+            vol_score = 0.5
+
+        # ????
+        if cum_5d > 0.05 and vol_score >= 0.6:
+            direction_score = 1.0
+        elif cum_5d > 0:
+            direction_score = 0.6
+        elif cum_5d > -0.03:
+            direction_score = 0.3
+        else:
+            direction_score = 0.1
+
+        vol_rhythm = vol_score * 0.6 + direction_score * 0.4
+        items["volume_rhythm"] = round(vol_rhythm * 0.30, 4)
+
+        # ---- ??4????? (???? 15%) ----
+        strong_indices = features.get("strong_day_indices", [])
+        if strong_indices:
+            recent_strong = sum(1 for d in strong_indices if d <= 10)
+            if recent_strong >= 3:
+                density_score = 1.0
+            elif recent_strong >= 2:
+                density_score = 0.8
+            elif recent_strong >= 1:
+                density_score = 0.5
+            else:
+                density_score = 0.2
+        else:
+            density_score = 0.0
+        items["intensity_density"] = round(density_score * 0.15, 4)
+
+        # ---- ?? ----
+        sub_total = sum(items.values())
+        final_score = round(sub_total * 12.0, 2)
+        return {"score": final_score, "max_score": 12.0, "items": items}
+
+    def _load_sector_stats_cache(self, sector_name: str, trade_date: str) -> List[Dict[str, Any]]:
+        """??????????????? N ??????"""
+        if not sector_name:
+            return []
+        cache_file = self._sector_stats_cache_dir / f"{sector_name}.json"
+        if not cache_file.exists():
+            return []
+        try:
+            data = json.loads(cache_file.read_text(encoding="utf-8"))
+            records = data.get("records", [])
+            # ??? trade_date ??????
+            records = [r for r in records if r.get("date", "") <= trade_date]
+            records.sort(key=lambda r: r.get("date", ""), reverse=True)
+            return records[:20]
+        except Exception:
+            return []
+
+    def _save_sector_stats_cache(self, sector_name: str, record: Dict[str, Any]) -> None:
+        """????????????????????"""
+        if not sector_name:
+            return
+        self._sector_stats_cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_file = self._sector_stats_cache_dir / f"{sector_name}.json"
+        data = {"records": []}
+        if cache_file.exists():
+            try:
+                data = json.loads(cache_file.read_text(encoding="utf-8"))
+            except Exception:
+                data = {"records": []}
+        # ???????????
+        records = data.get("records", [])
+        records = [r for r in records if r.get("date") != record.get("date")]
+        records.append(record)
+        records.sort(key=lambda r: r.get("date", ""))
+        data["records"] = records[-60:]  # ???? 60 ?
+        cache_file.write_text(json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
+
+
+    def _score_sector_momentum(
+        self, row: pd.Series, features: Dict[str, Any], trade_date: str
+    ) -> Dict[str, Any]:
+        """???????????10?"""
+        items = {}
+        sector_stats = features.get("sector_stats", {})
+        cache_key = sector_stats.get("sector", "")
+        recent = self._load_sector_stats_cache(cache_key, trade_date)
+
+        # ---- ??1????? (?? 50%) ----
+        curr_rank = sector_stats.get("sector_rank", 999)
+        if recent and len(recent) >= 2:
+            prev_rank = _safe_float(recent[-2].get("sector_rank"), 999.0)
+            ranks = [int(prev_rank), int(curr_rank)]
+            if ranks[0] - ranks[1] >= 3:
+                rank_score = 1.0  # ????
+            elif ranks[0] - ranks[1] >= 1:
+                rank_score = 0.7
+            elif ranks[0] == ranks[1] and ranks[0] <= 5:
+                rank_score = 0.8  # ????
+            elif ranks[0] == ranks[1]:
+                rank_score = 0.5
+            elif ranks[0] - ranks[1] > 5:
+                rank_score = 0.2  # ????
+            else:
+                rank_score = 0.5
+        else:
+            rank_score = 0.5
+
+        items["rank_trend"] = round(rank_score * 0.50, 4)
+
+        # ---- ??2???/?? (?? 50%) ----
+        if recent and len(recent) >= 2:
+            curr_count = int(sector_stats.get("strong_count", 0))
+            prev_count = int(_safe_float(recent[-2].get("strong_count")))
+            rank_curr = int(curr_rank)
+            rank_prev = int(_safe_float(recent[-2].get("sector_rank"), 999.0))
+
+            if curr_count > prev_count and rank_curr < rank_prev:
+                spread_score = 1.0  # ????
+            elif curr_count > prev_count:
+                spread_score = 0.7
+            elif curr_count <= prev_count and rank_curr < rank_prev:
+                spread_score = 0.6  # ????
+            elif curr_count < prev_count and rank_curr > rank_prev:
+                spread_score = 0.2  # ??
+            else:
+                spread_score = 0.5
+        else:
+            spread_score = 0.5
+
+        items["spread_trend"] = round(spread_score * 0.50, 4)
+
+        sub_total = sum(items.values())
+        final_score = round(sub_total * 10.0, 2)
+
+        # ????????????????
+        sector = sector_stats.get("sector", "")
+        if sector and sector not in self.__class__._sector_stats_saved:
+            snapshot = {
+                "date": trade_date,
+                "sector": sector,
+                "strong_count": int(sector_stats.get("strong_count", 0)),
+                "sector_rank": int(curr_rank),
+                "leader_map": sector_stats.get("leader_map", {}),
+            }
+            self._save_sector_stats_cache(sector, snapshot)
+            self.__class__._sector_stats_saved.add(sector)
+
+        return {"score": final_score, "max_score": 10.0, "items": items}
+
+
+    def _score_standard(self, row: pd.Series, features: Dict[str, Any], trade_date: str = "") -> Dict[str, Any]:
         breakdown = {
             "strength_confirmation": self._score_strength_confirmation(row, features),
             "volume_price_structure": self._score_volume_price(row, features),
@@ -2793,21 +3069,25 @@ class MomentumScreenerService:
             "sector_resonance": self._score_sector_resonance(row, features),
             "capital_support": self._score_capital_support(row, features),
             "elasticity_activity": self._score_elasticity(row, features),
+            "price_path_quality": self._score_price_path_quality(row, features),
+            "sector_momentum": self._score_sector_momentum(row, features, trade_date),
         }
         risk_penalty, risk_tags = self._score_risk_penalty(row, features)
 
         base_score = sum(item["score"] for item in breakdown.values())
         final_score = max(0.0, base_score - risk_penalty)
         continuation_score = (
-            (breakdown["strength_confirmation"]["score"] / 20.0) * 0.28
-            + (breakdown["volume_price_structure"]["score"] / 18.0) * 0.27
-            + (breakdown["sector_resonance"]["score"] / 25.0) * 0.25
-            + (breakdown["capital_support"]["score"] / 17.0) * 0.20
+            (breakdown["strength_confirmation"]["score"] / 20.0) * 0.22
+            + (breakdown["volume_price_structure"]["score"] / 18.0) * 0.22
+            + (breakdown["sector_resonance"]["score"] / 25.0) * 0.22
+            + (breakdown["capital_support"]["score"] / 17.0) * 0.18
+            + (breakdown["price_path_quality"]["score"] / 12.0) * 0.16
         ) * 100
         extension_score = (
-            (breakdown["trend_position"]["score"] / 12.0) * 0.38
-            + (breakdown["sector_resonance"]["score"] / 25.0) * 0.34
-            + (breakdown["elasticity_activity"]["score"] / 8.0) * 0.28
+            (breakdown["trend_position"]["score"] / 12.0) * 0.32
+            + (breakdown["sector_resonance"]["score"] / 25.0) * 0.28
+            + (breakdown["elasticity_activity"]["score"] / 8.0) * 0.22
+            + (breakdown["sector_momentum"]["score"] / 10.0) * 0.18
         ) * 100
         risk_score = (risk_penalty / 25.0) * 100
         rank_score = continuation_score * 0.65 + extension_score * 0.25 - risk_score * 0.10
@@ -2934,7 +3214,7 @@ class MomentumScreenerService:
 
         return round(entry_low, 2), round(max(entry_low, entry_high), 2)
 
-    def _score_aggressive(self, row: pd.Series, features: Dict[str, Any]) -> Dict[str, Any]:
+    def _score_aggressive(self, row: pd.Series, features: Dict[str, Any], trade_date: str = "") -> Dict[str, Any]:
         breakdown = {
             "strength_confirmation": self._score_aggressive_strength_confirmation(row, features),
             "capital_support": self._score_aggressive_capital_support(row, features),
@@ -2942,23 +3222,27 @@ class MomentumScreenerService:
             "volume_price_track": self._score_aggressive_volume_track(row, features),
             "sector_resonance": self._score_aggressive_sector_resonance(row, features),
             "trend_elasticity": self._score_aggressive_trend_elasticity(row, features),
+            "price_path_quality": self._score_price_path_quality(row, features),
+            "sector_momentum": self._score_sector_momentum(row, features, trade_date),
         }
         risk_penalty, risk_tags = self._score_aggressive_risk_penalty(row, features)
 
         base_score = sum(item["score"] for item in breakdown.values())
         final_score = max(0.0, base_score - risk_penalty)
         continuation_score = (
-            (breakdown["strength_confirmation"]["score"] / 30.0) * 0.35
-            + (breakdown["capital_support"]["score"] / 20.0) * 0.25
-            + (breakdown["volume_price_track"]["score"] / 14.0) * 0.20
-            + (breakdown["sector_resonance"]["score"] / 10.0) * 0.10
-            + (breakdown["trend_elasticity"]["score"] / 8.0) * 0.10
+            (breakdown["strength_confirmation"]["score"] / 30.0) * 0.30
+            + (breakdown["capital_support"]["score"] / 20.0) * 0.22
+            + (breakdown["volume_price_track"]["score"] / 14.0) * 0.18
+            + (breakdown["sector_resonance"]["score"] / 10.0) * 0.08
+            + (breakdown["trend_elasticity"]["score"] / 8.0) * 0.08
+            + (breakdown["price_path_quality"]["score"] / 12.0) * 0.14
         ) * 100
         extension_score = (
-            (breakdown["strength_confirmation"]["score"] / 30.0) * 0.25
-            + (breakdown["sector_resonance"]["score"] / 10.0) * 0.20
-            + (breakdown["trend_elasticity"]["score"] / 8.0) * 0.30
-            + (breakdown["buyability"]["score"] / 18.0) * 0.25
+            (breakdown["strength_confirmation"]["score"] / 30.0) * 0.20
+            + (breakdown["sector_resonance"]["score"] / 10.0) * 0.18
+            + (breakdown["trend_elasticity"]["score"] / 8.0) * 0.25
+            + (breakdown["buyability"]["score"] / 18.0) * 0.22
+            + (breakdown["sector_momentum"]["score"] / 10.0) * 0.15
         ) * 100
         buyability_score = (
             (breakdown["buyability"]["score"] / 18.0) * 0.50
@@ -3779,7 +4063,8 @@ class MomentumScreenerService:
             },
         }
 
-    def _score_risk_penalty(self, row: pd.Series, features: Dict[str, Any]) -> tuple[float, List[str]]:
+    def _legacy_score_risk_penalty_inactive(self, row: pd.Series, features: Dict[str, Any]) -> tuple[float, List[str]]:
+        """DEPRECATED: ?? _score_risk_penalty (V1.3 fusion) ????????"""
         penalties: List[tuple[str, int]] = []
         upper_shadow_ratio = _safe_float(features["upper_shadow_ratio"])
         volume_expand_5 = _safe_float(features["volume_expand_5"], 1.0)
@@ -3966,6 +4251,73 @@ class MomentumScreenerService:
 
         reasons.sort(key=lambda item: item[1], reverse=True)
         return [name for name, _ in reasons[:3]]
+
+    # ---------- ???????? ----------
+
+    @staticmethod
+    def _count_consecutive_yang(pct_series) -> int:
+        """????????????????pct_chg > 0??"""
+        count = 0
+        for val in reversed(pct_series.values):
+            if val > 0:
+                count += 1
+            else:
+                break
+        return count
+
+    @staticmethod
+    def _compute_volatility_5d(close_series) -> float:
+        """???5???????"""
+        if len(close_series) < 5:
+            return 0.0
+        daily_returns = close_series.tail(5).pct_change().dropna()
+        if len(daily_returns) < 2:
+            return 0.0
+        return float(daily_returns.std() * (252 ** 0.5))
+
+    @staticmethod
+    def _compute_segments(close_series, pct_series):
+        """???20????(D[-20:-11])??(D[-10:-6])??(D[-5:-1])???
+        ???????????????????"""
+        n = len(close_series)
+        slices = {
+            "far":  slice(max(0, n-21), n-12),
+            "mid":  slice(max(0, n-11), n-7),
+            "near": slice(max(0, n-6),  n-2),
+        }
+        result = {}
+        for name, sl in slices.items():
+            seg_close = close_series.iloc[sl]
+            seg_pct = pct_series.iloc[sl]
+            if len(seg_close) < 2:
+                result[name] = {"return": 0.0, "max_dd": 0.0, "avg_amp": 0.0}
+                continue
+            start_close = seg_close.iloc[0]
+            end_close = seg_close.iloc[-1]
+            seg_return = float((end_close - start_close) / max(start_close, 0.01)) if start_close > 0 else 0.0
+            # max drawdown
+            peak = seg_close.iloc[0]
+            max_dd = 0.0
+            for c in seg_close:
+                peak = max(peak, c)
+                if peak > 0:
+                    dd = (peak - c) / peak
+                    if dd > max_dd:
+                        max_dd = dd
+            max_dd = float(min(max_dd, 1.0))
+            avg_amp = float(abs(seg_pct).mean()) if len(seg_pct) > 0 else 0.0
+            result[name] = {"return": round(seg_return, 6), "max_dd": round(max_dd, 6), "avg_amp": round(avg_amp, 6)}
+        return result
+
+    @staticmethod
+    def _find_strong_day_indices(pct_series) -> list:
+        """????60??????pct_chg >= 7??????????0=????"""
+        window = pct_series.tail(60)
+        indices = []
+        for i, val in enumerate(reversed(window.values)):
+            if val >= 7.0:
+                indices.append(i)
+        return indices
 
     @staticmethod
     def _classify_leader_level(rank: int) -> str:
