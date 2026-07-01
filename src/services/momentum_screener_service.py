@@ -2987,6 +2987,62 @@ class MomentumScreenerService:
         records.sort(key=lambda r: r.get("date", ""))
         data["records"] = records[-60:]  # ???? 60 ?
         cache_file.write_text(json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")
+    def _warm_sector_stats_cache(
+        self, sector_name: str, trade_date: str
+    ) -> List[Dict[str, Any]]:
+        """???????????????????????????"""
+        if not sector_name or not trade_date:
+            return []
+
+        fetcher = getattr(self, 'fetcher', None)
+        if fetcher is None:
+            return self._load_sector_stats_cache(sector_name, trade_date)
+
+        try:
+            trade_dates_all = fetcher._get_trade_dates(trade_date)
+        except Exception:
+            return self._load_sector_stats_cache(sector_name, trade_date)
+
+        # ? trade_date ????? 5 ????
+        prev_dates = [d for d in trade_dates_all if d < trade_date][:5]
+        if not prev_dates:
+            return self._load_sector_stats_cache(sector_name, trade_date)
+
+        # ??????????
+        missing_dates = []
+        for d in prev_dates:
+            cached = self._load_sector_stats_cache(sector_name, d)
+            if not cached or all(r.get('date') != d for r in cached):
+                missing_dates.append(d)
+
+        if not missing_dates:
+            return self._load_sector_stats_cache(sector_name, trade_date)
+
+        logger.info(
+            'Warming sector stats cache for %s: %d missing dates %s',
+            sector_name, len(missing_dates), missing_dates[0]
+        )
+
+        # ?????????? screening
+        for d in sorted(missing_dates):
+            try:
+                # ??????? top_n?????????
+                result = self.screen(
+                    top_n=10,
+                    trade_date=d,
+                    profile='standard',
+                    use_sector_context=True,
+                    max_scored_candidates=10,
+                )
+                # screen ????? _score_sector_momentum -> _save_sector_stats_cache ????
+                logger.debug('Warmed sector stats for %s on %s', sector_name, d)
+            except Exception:
+                logger.warning(
+                    'Failed to warm sector stats for %s on %s', sector_name, d, exc_info=True
+                )
+
+        return self._load_sector_stats_cache(sector_name, trade_date)
+
 
 
     def _score_sector_momentum(
@@ -2997,6 +3053,9 @@ class MomentumScreenerService:
         sector_stats = features.get("sector_stats", {})
         cache_key = sector_stats.get("sector", "")
         recent = self._load_sector_stats_cache(cache_key, trade_date)
+        if len(recent) < 2:
+            # ????2??????????????
+            recent = self._warm_sector_stats_cache(cache_key, trade_date)
 
         # ---- ??1????? (?? 50%) ----
         curr_rank = sector_stats.get("sector_rank", 999)
