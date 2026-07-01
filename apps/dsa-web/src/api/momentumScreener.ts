@@ -25,7 +25,6 @@ type MomentumRunApiRequest = MomentumApiRequest & {
 };
 
 type DecisionRequestOptions = {
-  waitForStrategyHealth?: boolean;
 };
 
 export const momentumScreenerApi = {
@@ -92,7 +91,7 @@ export const momentumScreenerApi = {
 
   async screenWithDecision(
     payload: MomentumScreenerRequest,
-    options: DecisionRequestOptions = {},
+    _options: DecisionRequestOptions = {},
   ): Promise<MomentumScreenerDecisionResponse> {
     const request: MomentumApiRequest = {
       top_n: payload.topN,
@@ -101,15 +100,14 @@ export const momentumScreenerApi = {
     };
 
     const response = await apiClient.post('/api/v1/stocks/screener/momentum/decision', request, {
-      params: options.waitForStrategyHealth ? { wait_for_strategy_health: true } : undefined,
-      timeout: options.waitForStrategyHealth ? 600000 : 180000,
+      timeout: 180000,
     });
     return toCamelCase<MomentumScreenerDecisionResponse>(response.data);
   },
 
   async fetchIntradaySignal(
     payload: MomentumScreenerRequest,
-    options: DecisionRequestOptions = {},
+    _options: DecisionRequestOptions = {},
   ): Promise<MomentumScreenerIntradayResponse> {
     const request: MomentumApiRequest = {
       top_n: payload.topN,
@@ -118,8 +116,7 @@ export const momentumScreenerApi = {
     };
 
     const response = await apiClient.post('/api/v1/stocks/screener/momentum/decision/intraday', request, {
-      params: options.waitForStrategyHealth ? { wait_for_strategy_health: true } : undefined,
-      timeout: options.waitForStrategyHealth ? 600000 : 180000,
+      timeout: 180000,
     });
     return toCamelCase<MomentumScreenerIntradayResponse>(response.data);
   },

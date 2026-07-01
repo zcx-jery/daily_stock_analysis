@@ -1458,8 +1458,6 @@ describe('MomentumScreenerPage', () => {
 
   it('shows a visible secondary decision refresh button and warming guidance', async () => {
     const warmingResponse = buildDecisionResponse(standardResponse);
-    warmingResponse.decision.strategyHealth.dataSource = 'proxy';
-    warmingResponse.decision.strategyHealth.isWarming = true;
     mockGetRunResult.mockResolvedValue({
       runId: 'screening-run-001',
       status: 'completed',

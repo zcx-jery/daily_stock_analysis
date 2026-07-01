@@ -491,17 +491,6 @@ export interface MomentumStrategyHealthWindow {
   summary: string;
 }
 
-export interface MomentumStrategyHealthProgress {
-  status: 'proxy' | 'queued' | 'running' | 'partial' | 'final' | 'failed';
-  processedTradeDateCount: number;
-  totalTradeDateCount: number;
-  validSampleCount: number;
-  targetSampleCount: number;
-  progressPct: number;
-  lastEvaluatedTradeDate?: string | null;
-  updatedAt?: string | null;
-}
-
 export interface MomentumStrategyHealth {
   status: MomentumStrategyHealthStatus;
   label: string;
@@ -512,10 +501,6 @@ export interface MomentumStrategyHealth {
   longWindow: MomentumStrategyHealthWindow;
   blockers: string[];
   recoveryConditions: string[];
-  dataSource?: 'historical' | 'proxy';
-  isWarming?: boolean;
-  validationStatus?: 'proxy' | 'partial' | 'final';
-  progress?: MomentumStrategyHealthProgress;
 }
 
 export interface MomentumSecondaryDecision {

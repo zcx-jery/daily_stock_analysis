@@ -374,49 +374,6 @@ function intradayStatusBadgeVariant(
   return 'default';
 }
 
-function resolveStrategyHealthValidationStatus(
-  health: MomentumSecondaryDecision['strategyHealth'],
-): 'proxy' | 'partial' | 'final' {
-  if (health.validationStatus) {
-    return health.validationStatus;
-  }
-  return health.dataSource === 'proxy' ? 'proxy' : 'final';
-}
-
-function shouldShowStrategyHealthRefresh(health: MomentumSecondaryDecision['strategyHealth']): boolean {
-  return health.isWarming === true || resolveStrategyHealthValidationStatus(health) !== 'final';
-}
-
-function buildStrategyHealthDataSourceLabel(health: MomentumSecondaryDecision['strategyHealth']): string {
-  const validationStatus = resolveStrategyHealthValidationStatus(health);
-  if (validationStatus === 'partial') {
-    return '历史验证 Partial';
-  }
-  if (validationStatus === 'proxy') {
-    return health.isWarming ? '历史验证计算中' : '代理健康度';
-  }
-  return '历史验证 Final';
-}
-
-function buildStrategyHealthProgressSummary(health: MomentumSecondaryDecision['strategyHealth']): string | null {
-  const progress = health.progress;
-  if (!progress) {
-    return null;
-  }
-
-  const processed =
-    progress.totalTradeDateCount > 0
-      ? `已处理 ${progress.processedTradeDateCount}/${progress.totalTradeDateCount} 个历史交易日`
-      : null;
-  const samples =
-    progress.validSampleCount > 0
-      ? `累计有效样本 ${progress.validSampleCount}/${progress.targetSampleCount}`
-      : null;
-  const lastTradeDate = progress.lastEvaluatedTradeDate ? `最近样本 ${progress.lastEvaluatedTradeDate}` : null;
-
-  return [processed, samples, lastTradeDate].filter(Boolean).join('，') || null;
-}
-
 function screeningRunBadgeVariant(
   status: MomentumScreeningRunResponse['status'],
 ): 'success' | 'info' | 'warning' | 'danger' | 'default' {
@@ -1599,15 +1556,7 @@ const ActionChecklistPanel: React.FC<{
 
 const DecisionConfidencePanel: React.FC<{
   decision: MomentumSecondaryDecision;
-  onRefresh: () => void;
-  refreshing: boolean;
-  refreshDisabled: boolean;
-}> = ({ decision, onRefresh, refreshing, refreshDisabled }) => {
-  const { attackPermission, themeConfidence, strategyHealth: health } = decision;
-  const validationStatus = resolveStrategyHealthValidationStatus(health);
-  const showRefresh = shouldShowStrategyHealthRefresh(health);
-  const healthDataSourceLabel = buildStrategyHealthDataSourceLabel(health);
-  const progressSummary = buildStrategyHealthProgressSummary(health);
+}> = ({ decision }) => {  const { attackPermission, themeConfidence, strategyHealth: health } = decision;
 
   return (
     <div className="rounded-2xl border border-border/50 bg-card/50 p-4">
@@ -1624,26 +1573,10 @@ const DecisionConfidencePanel: React.FC<{
             <Badge variant={themeConfidenceBadgeVariant(themeConfidence.status)}>
               60日 {themeConfidence.label}
             </Badge>
-            <Badge variant={validationStatus === 'final' ? 'success' : 'warning'}>
-              {healthDataSourceLabel}
-            </Badge>
           </div>
           <p className="mt-2 text-sm leading-6 text-secondary-text">
             20日决定今天进攻上限，60日只提示主线结构可信度，不再直接压低今日动作级别。
           </p>
-          {progressSummary ? (
-            <p className="mt-2 text-xs leading-6 text-secondary-text">{progressSummary}</p>
-          ) : null}
-          {validationStatus === 'partial' ? (
-            <p className="mt-2 text-xs leading-6 text-secondary-text">
-              当前展示的是 partial 历史验证结果，后台仍会继续补齐更早样本，刷新后可切换到最新进度或 final 结果。
-            </p>
-          ) : null}
-          {health.isWarming ? (
-            <p className="mt-2 text-xs leading-6 text-secondary-text">
-              首轮请求已切换为后台预热模式，页面先给你代理结果；等真实 20/60 日历史结果算完后，点击下方刷新即可看到正式结论。
-            </p>
-          ) : null}
         </div>
       </div>
 
@@ -1659,33 +1592,6 @@ const DecisionConfidencePanel: React.FC<{
         </div>
       ) : null}
 
-      {showRefresh ? (
-        <div className="mt-4 rounded-2xl border border-cyan/20 bg-cyan/5 p-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="min-w-0">
-              <p className="text-sm font-medium text-foreground">刷新 20/60 结果</p>
-              <p className="mt-1 text-xs leading-6 text-secondary-text">
-                {health.isWarming
-                  ? '后台正在计算真实历史验证；点击后会直接等待正式结果返回，不再只看代理结果。'
-                  : '当前仍不是 final 结果；点击后会优先尝试返回真实 20/60 历史验证结果。'}
-              </p>
-            </div>
-            <Button
-              data-testid="momentum-secondary-refresh-inline"
-              variant="outline"
-              size="sm"
-              className="shrink-0"
-              disabled={refreshDisabled}
-              isLoading={refreshing}
-              loadingText="等待真实结果..."
-              onClick={onRefresh}
-            >
-              <RefreshCw className="h-4 w-4" />
-              刷新 20/60 结果
-            </Button>
-          </div>
-        </div>
-      ) : null}
 
       <div className="mt-4 grid gap-4 md:grid-cols-2">
         <div className="rounded-2xl border border-border/40 bg-hover/10 p-4">
@@ -1799,7 +1705,6 @@ const SecondaryDecisionPanel: React.FC<SecondaryDecisionPanelProps> = ({
           </Button>
           <Button
             data-testid="momentum-secondary-refresh"
-            variant={shouldShowStrategyHealthRefresh(decision.strategyHealth) ? 'outline' : 'ghost'}
             size="sm"
             className="shrink-0"
             disabled={refreshDisabled}
@@ -1861,9 +1766,6 @@ const SecondaryDecisionPanel: React.FC<SecondaryDecisionPanelProps> = ({
 
           <DecisionConfidencePanel
             decision={decision}
-            onRefresh={onRefresh}
-            refreshing={refreshing}
-            refreshDisabled={refreshDisabled}
           />
 
           <ActionChecklistPanel checklist={decision.actionChecklist} />
@@ -2518,7 +2420,6 @@ const MomentumScreenerPage: React.FC = () => {
 
     try {
       const data = await momentumScreenerApi.screenWithDecision(lastSubmittedPayload, {
-        waitForStrategyHealth: true,
       });
       setResponse(data.screening);
       setDecision(data.decision);

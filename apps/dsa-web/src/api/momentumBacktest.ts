@@ -32,7 +32,7 @@ export const momentumBacktestApi = {
     const response = await apiClient.post<Record<string, unknown>>('/api/v1/stocks/screener/momentum/backtests', {
       start_trade_date: payload.startTradeDate,
       end_trade_date: payload.endTradeDate,
-      strict_strategy_health: payload.strictStrategyHealth,
+
     });
     return toCamelCase<MomentumBacktestCreateResponse>(response.data);
   },
