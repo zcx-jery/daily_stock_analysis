@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import hashlib
 import json
@@ -20,7 +20,6 @@ from src.services.momentum_screener_service import (
     MomentumScreenerService,
 )
 from src.services.momentum_secondary_decision_service import (
-    STRATEGY_HEALTH_MODE_CACHED_ONLY,
     MomentumSecondaryDecisionService,
 )
 from src.storage import MomentumScreeningRun
@@ -65,8 +64,7 @@ class MomentumScreeningRunService:
         self.screener_service = screener_service or MomentumScreenerService()
         self.decision_service = decision_service or MomentumSecondaryDecisionService(
             screener_service=self.screener_service,
-            strategy_health_async=False,
-        )
+            )
         self.repository = repository or MomentumScreeningRunRepository()
         self.stage_heartbeat_interval_seconds = 5.0
         self._run_lock = threading.Lock()
@@ -406,12 +404,6 @@ class MomentumScreeningRunService:
                 decision = self.decision_service.build_from_screening(
                     screening,
                     request_params=request_params,
-                    wait_for_strategy_health=False,
-                    strategy_health_mode=STRATEGY_HEALTH_MODE_CACHED_ONLY,
-                    strategy_health_progress_callback=self._build_secondary_decision_progress_callback(
-                        run_id=run_id,
-                        label_state=decision_label_state,
-                    ),
                 )
             finally:
                 stop_decision_heartbeat()
