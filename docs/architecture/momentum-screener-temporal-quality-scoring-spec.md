@@ -6,8 +6,8 @@
 - 英文名称：Momentum Screener Temporal Quality Scoring Spec
 - 所属系统：`daily_stock_analysis`
 - 文档类型：产品 SPEC / 原始约束文档
-- 当前状态：`draft v0.1`
-- 最后更新：`2026-06-23`
+- 当前状态：`v1.0`
+- 最后更新：`2026-07-01`
 - 关联文档：
   - [强势筛选二次决策与执行辅助 SPEC](./momentum-screener-secondary-decision-spec.md)
   - [强势筛选 V1.3 主线增强版产品设计](./momentum-screener-v1-3-mainline-enhancement-product-design.md)

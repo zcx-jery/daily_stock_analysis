@@ -6,8 +6,8 @@
 - 英文名称：Momentum Screener Temporal Quality Scoring — Product Design
 - 所属系统：`daily_stock_analysis`
 - 文档类型：产品设计
-- 当前状态：`draft v0.1`
-- 最后更新：`2026-06-23`
+- 当前状态：`v1.0`
+- 最后更新：`2026-07-01`
 - 关联文档：
   - [强势筛选时序质量评分 SPEC](./momentum-screener-temporal-quality-scoring-spec.md)
   - [强势筛选二次决策与执行辅助 SPEC](./momentum-screener-secondary-decision-spec.md)

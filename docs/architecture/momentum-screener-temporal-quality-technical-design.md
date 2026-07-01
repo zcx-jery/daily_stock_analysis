@@ -6,8 +6,8 @@
 - 英文名称：Momentum Screener Temporal Quality Scoring — Technical Design
 - 所属系统：`daily_stock_analysis`
 - 文档类型：技术开发文档 / 实现设计
-- 当前状态：`draft v0.1`
-- 最后更新：`2026-06-23`
+- 当前状态：`v1.0`
+- 最后更新：`2026-07-01`
 - 关联文档：
   - [时序质量评分 SPEC](./momentum-screener-temporal-quality-scoring-spec.md)
   - [时序质量评分产品设计](./momentum-screener-temporal-quality-product-design.md)
@@ -188,7 +188,7 @@ return {"score": round(sub_total * 12, 2), "max_score": 12, "items": {...}}
 ```json
 {
   "储存与物流": [
-    {"trade_date": "2026-06-23", "sector_rank": 3, "sector_total": 86, "strong_count": 8, "limit_count": 2, "avg_pct": 3.45},
+    {"trade_date": "2026-07-01", "sector_rank": 3, "sector_total": 86, "strong_count": 8, "limit_count": 2, "avg_pct": 3.45},
     {"trade_date": "2026-06-22", "sector_rank": 5, "sector_total": 82, "strong_count": 6, "limit_count": 1, "avg_pct": 2.87}
   ]
 }
@@ -212,7 +212,7 @@ def _load_sector_stats_cache(self, sector_name, end_trade_date, days):
 
 ```json
 {
-  "trade_date": "2026-06-23",
+  "trade_date": "2026-07-01",
   "sectors": {
     "储存与物流": {"sector_rank": 3, "sector_total": 86, "strong_count": 8, "limit_count": 2, "avg_pct": 3.45},
     "...": {}
