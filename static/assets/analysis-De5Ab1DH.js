@@ -1,0 +1,1 @@
+const e=(r,t="zh")=>t==="en"?r<=20?"Very Bearish":r<=40?"Bearish":r<=60?"Neutral":r<=80?"Bullish":"Very Bullish":r<=20?"极度悲观":r<=40?"悲观":r<=60?"中性":r<=80?"乐观":"极度乐观",n=r=>r<=20?"#ef4444":r<=40?"#f97316":r<=60?"#eab308":r<=80?"#22c55e":"#10b981";export{e as a,n as g};
