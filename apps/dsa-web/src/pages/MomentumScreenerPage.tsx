@@ -1617,12 +1617,19 @@ const DecisionConfidencePanel: React.FC<{
           <p className={`mt-3 text-lg font-semibold ${scoreTone(attackPermission.score)}`}>
             {attackPermission.score.toFixed(1)}
           </p>
-          <div className="mt-3 grid gap-2 text-xs text-secondary-text sm:grid-cols-2">
-            <p>有效样本 {attackPermission.validSampleCount}</p>
-            <p>命中率 {attackPermission.hitRate.toFixed(1)}%</p>
-            <p>利润窗口 {attackPermission.avgProfitWindowPct.toFixed(2)}%</p>
-            <p>平均回撤 {attackPermission.avgMaxDrawdownPct.toFixed(2)}%</p>
-          </div>
+          {attackPermission.validSampleCount > 0 ? (
+            <div className="mt-3 grid gap-2 text-xs text-secondary-text sm:grid-cols-2">
+              <p>有效样本 {attackPermission.validSampleCount}</p>
+              <p>命中率 {attackPermission.hitRate.toFixed(1)}%</p>
+              <p>利润窗口 {attackPermission.avgProfitWindowPct.toFixed(2)}%</p>
+              <p>平均回撤 {attackPermission.avgMaxDrawdownPct.toFixed(2)}%</p>
+            </div>
+          ) : (
+            <div className="mt-3 grid gap-2 text-xs text-secondary-text sm:grid-cols-2">
+              <p>窗口得分 {health.shortWindow.score.toFixed(1)} / {health.shortWindow.threshold.toFixed(0)}</p>
+              <p>状态 {health.shortWindow.statusLabel}</p>
+            </div>
+          )}
           <p className="mt-3 text-sm leading-6 text-secondary-text">{attackPermission.summary}</p>
         </div>
 
@@ -1636,10 +1643,17 @@ const DecisionConfidencePanel: React.FC<{
           <p className={`mt-3 text-lg font-semibold ${scoreTone(themeConfidence.score)}`}>
             {themeConfidence.score.toFixed(1)}
           </p>
-          <div className="mt-3 grid gap-2 text-xs text-secondary-text sm:grid-cols-2">
-            <p>有效样本 {themeConfidence.validSampleCount}</p>
-            <p>结构参考 {themeConfidence.coreHitRate.toFixed(1)}%</p>
-          </div>
+          {themeConfidence.validSampleCount > 0 ? (
+            <div className="mt-3 grid gap-2 text-xs text-secondary-text sm:grid-cols-2">
+              <p>有效样本 {themeConfidence.validSampleCount}</p>
+              <p>结构参考 {themeConfidence.coreHitRate.toFixed(1)}%</p>
+            </div>
+          ) : (
+            <div className="mt-3 grid gap-2 text-xs text-secondary-text sm:grid-cols-2">
+              <p>窗口得分 {health.longWindow.score.toFixed(1)} / {health.longWindow.threshold.toFixed(0)}</p>
+              <p>状态 {health.longWindow.statusLabel}</p>
+            </div>
+          )}
           <p className="mt-3 text-sm leading-6 text-secondary-text">{themeConfidence.summary}</p>
         </div>
       </div>
