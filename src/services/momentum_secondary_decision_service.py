@@ -3184,6 +3184,36 @@ class MomentumSecondaryDecisionService:
         hit_rate = round(_safe_float(short_window.get("success_rate"), 0.0), 1)
         avg_profit_window_pct = round(_safe_float(short_window.get("avg_profit_window_pct"), 0.0), 2)
         avg_max_drawdown_pct = round(_safe_float(short_window.get("avg_max_drawdown_pct"), 0.0), 2)
+
+        # When no historical backtest samples are available, fall back to score-only
+        # evaluation based on the rule-based strategy_health short_window score.
+        if sample_count == 0:
+            if short_window_score >= ATTACK_PERMISSION_SCORE_THRESHOLDS["open"]:
+                status = "open"
+                summary = "暂无历史回测样本，基于当日规则评估的窗口得分已达进攻区间，可谨慎进攻。"
+            elif short_window_score >= ATTACK_PERMISSION_SCORE_THRESHOLDS["recovering"]:
+                status = "recovering"
+                summary = "暂无历史回测样本，基于当日规则评估的窗口得分处于恢复区间，建议观察。"
+            else:
+                status = "paused"
+                summary = "暂无历史回测样本，且当日规则评估的窗口得分不足，建议暂停进攻。"
+            score = short_window_score
+            return {
+                "window": "short_20d",
+                "window_label": "20 日进攻许可",
+                "status": status,
+                "status_label": ATTACK_PERMISSION_STATUS_LABELS.get(status, status),
+                "label": ATTACK_PERMISSION_STATUS_LABELS.get(status, "暂停进攻"),
+                "score": score,
+                "short_window_score": short_window_score,
+                "valid_sample_count": sample_count,
+                "hit_rate": hit_rate,
+                "avg_profit_window_pct": avg_profit_window_pct,
+                "avg_max_drawdown_pct": avg_max_drawdown_pct,
+                "reason": summary,
+                "summary": summary,
+            }
+
         score = round(
             _clamp_float(
                 hit_rate * 0.75
@@ -3250,6 +3280,31 @@ class MomentumSecondaryDecisionService:
         sample_count = int(_safe_float(long_window.get("sample_count"), 0))
         score = round(_safe_float(long_window.get("score"), 0.0), 1)
         core_hit_rate = round(_safe_float(long_window.get("success_rate"), 0.0), 1)
+
+        # When no historical backtest samples are available, fall back to score-only
+        # evaluation based on the rule-based strategy_health long_window score.
+        if sample_count == 0:
+            if score >= THEME_CONFIDENCE_SCORE_THRESHOLDS["credible"]:
+                status = "credible"
+                summary = "暂无历史回测样本，基于当日规则评估的窗口得分已达可信区间，可继续参考主线方向。"
+            elif score >= THEME_CONFIDENCE_SCORE_THRESHOLDS["recovering"]:
+                status = "recovering"
+                summary = "暂无历史回测样本，基于当日规则评估的窗口得分处于恢复区间，主线参考需谨慎。"
+            else:
+                status = "questionable"
+                summary = "暂无历史回测样本，且当日规则评估的窗口得分不足，主线可信度偏低。"
+            return {
+                "status": status,
+                "status_label": THEME_CONFIDENCE_STATUS_LABELS[status],
+                "label": THEME_CONFIDENCE_STATUS_LABELS[status],
+                "score": score,
+                "window": "long_60d",
+                "window_label": "60 日主线可信度",
+                "valid_sample_count": sample_count,
+                "core_hit_rate": core_hit_rate,
+                "reason": summary,
+                "summary": summary,
+            }
 
         if (
             sample_count >= THEME_CONFIDENCE_MIN_SAMPLES["credible"]
@@ -4482,22 +4537,36 @@ STRATEGY_HEALTH_MODE_CACHED_ONLY = "cached_only"
             "reason": "当前没有形成可验证的候选池，20 日进攻许可直接暂停。",
             "recommendation_cap": "disabled",
             "can_full_recommend": False,
-            "short_window": self._build_strategy_health_window(
-                "short_20d",
-                metrics={"score": 0.0, "threshold": 68.0, "status": "weak",
-                         "window": "short_20d", "sample_count": 0, "success_count": 0,
-                         "success_rate": 0.0, "avg_profit_window_pct": 0.0,
-                         "avg_max_drawdown_pct": 0.0, "avg_selected_count": 0.0,
-                         "summary": "20 日窗口当前没有可用结论。"},
-            ),
-            "long_window": self._build_strategy_health_window(
-                "long_60d",
-                metrics={"score": 0.0, "threshold": 64.0, "status": "weak",
-                         "window": "long_60d", "sample_count": 0, "success_count": 0,
-                         "success_rate": 0.0, "avg_profit_window_pct": 0.0,
-                         "avg_max_drawdown_pct": 0.0, "avg_selected_count": 0.0,
-                         "summary": "60 日窗口当前没有可信结构。"},
-            ),
+            "short_window": {
+                "window": "short_20d",
+                "window_label": STRATEGY_HEALTH_WINDOW_LABELS["short_20d"],
+                "status": "weak",
+                "status_label": STRATEGY_HEALTH_WINDOW_STATUS_LABELS["weak"],
+                "score": 0.0,
+                "threshold": 68.0,
+                "sample_count": 0,
+                "success_count": 0,
+                "success_rate": 0.0,
+                "avg_profit_window_pct": 0.0,
+                "avg_max_drawdown_pct": 0.0,
+                "avg_selected_count": 0.0,
+                "summary": "20 日窗口当前没有可用结论。",
+            },
+            "long_window": {
+                "window": "long_60d",
+                "window_label": STRATEGY_HEALTH_WINDOW_LABELS["long_60d"],
+                "status": "weak",
+                "status_label": STRATEGY_HEALTH_WINDOW_STATUS_LABELS["weak"],
+                "score": 0.0,
+                "threshold": 64.0,
+                "sample_count": 0,
+                "success_count": 0,
+                "success_rate": 0.0,
+                "avg_profit_window_pct": 0.0,
+                "avg_max_drawdown_pct": 0.0,
+                "avg_selected_count": 0.0,
+                "summary": "60 日窗口当前没有可信结构。",
+            },
             "blockers": [
                 "20 日窗口当前没有形成可用结论。",
                 "60 日窗口当前没有形成可信结构。",
@@ -4623,6 +4692,12 @@ STRATEGY_HEALTH_MODE_CACHED_ONLY = "cached_only"
         score: float,
         threshold: float,
         status: str,
+        sample_count: int = 0,
+        success_count: int = 0,
+        success_rate: float = 0.0,
+        avg_profit_window_pct: float = 0.0,
+        avg_max_drawdown_pct: float = 0.0,
+        avg_selected_count: float = 0.0,
     ) -> Dict[str, Any]:
         if status == "healthy":
             summary = f"{STRATEGY_HEALTH_WINDOW_LABELS[window]}已达健康阈值，可继续支撑当前判断。"
@@ -4630,6 +4705,9 @@ STRATEGY_HEALTH_MODE_CACHED_ONLY = "cached_only"
             summary = f"{STRATEGY_HEALTH_WINDOW_LABELS[window]}开始修复，但还没恢复到完整强推荐状态。"
         else:
             summary = f"{STRATEGY_HEALTH_WINDOW_LABELS[window]}当前不足，今天需要明确降级。"
+        # When no historical backtest data is available, provide a fallback summary.
+        if sample_count == 0:
+            summary = f"{STRATEGY_HEALTH_WINDOW_LABELS[window]}基于当日规则评估（暂无历史回测样本），{summary}"
 
         return {
             "window": window,
@@ -4638,6 +4716,12 @@ STRATEGY_HEALTH_MODE_CACHED_ONLY = "cached_only"
             "status_label": STRATEGY_HEALTH_WINDOW_STATUS_LABELS[status],
             "score": round(score, 1),
             "threshold": round(threshold, 1),
+            "sample_count": sample_count,
+            "success_count": success_count,
+            "success_rate": round(success_rate, 1),
+            "avg_profit_window_pct": round(avg_profit_window_pct, 2),
+            "avg_max_drawdown_pct": round(avg_max_drawdown_pct, 2),
+            "avg_selected_count": round(avg_selected_count, 1),
             "summary": summary,
         }
 
@@ -4769,8 +4853,7 @@ STRATEGY_HEALTH_MODE_CACHED_ONLY = "cached_only"
         avg_profit_window_pct = mean(item["profit_window_pct"] for item in validations)
         avg_max_drawdown_pct = mean(item["max_drawdown_pct"] for item in validations)
         avg_selected_count = mean(item["selected_count"] for item in validations)
-        status = self._determine_strategy_window_status(
-            window=window,
+        status = self._classify_historical_window_status(
             sample_count=sample_count,
             success_rate=success_rate,
             avg_profit_window_pct=avg_profit_window_pct,
@@ -4841,7 +4924,7 @@ STRATEGY_HEALTH_MODE_CACHED_ONLY = "cached_only"
             f"平均利润窗口 {avg_profit_window_pct:.2f}% ，平均回撤 {avg_max_drawdown_pct:.2f}% ，{suffix}"
         )
 
-    def _determine_strategy_window_status(
+    def _classify_historical_window_status(
         self,
         *,
         window: str,

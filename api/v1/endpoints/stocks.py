@@ -317,6 +317,7 @@ def cancel_momentum_screening_run(
 )
 def build_momentum_secondary_decision(
     payload: MomentumScreenerRequest,
+    service: MomentumSecondaryDecisionService = Depends(get_momentum_secondary_decision_service),
 ) -> MomentumSecondaryDecisionResponse:
     """构建强势筛选二次决策结果。"""
     try:
