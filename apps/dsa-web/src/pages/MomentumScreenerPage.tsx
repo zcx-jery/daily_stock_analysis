@@ -478,6 +478,9 @@ function buildScreeningRunStageHint(run: MomentumScreeningRunResponse): string |
   if (stageKey === 'secondary_decision') {
     return '排序已经完成，当前在生成主线、默认组合、买点与风险解释。';
   }
+  if (stageKey === 'strategy_health_backtest') {
+    return '正在对历史交易日逐个回测验证，用真实前向价格计算 20/60 日窗口的样本成功率、利润窗口和回撤。这一步会比较慢，但能保证数据准确。';
+  }
   if (stageKey === 'result_persist') {
     return '结果已经算完，正在把筛选结果、诊断和二次决策写回任务记录。';
   }

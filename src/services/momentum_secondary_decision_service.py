@@ -464,6 +464,8 @@ class MomentumSecondaryDecisionService:
         screening: Dict[str, Any],
         *,
         request_params: Optional[Dict[str, Any]] = None,
+        compute_historical_health: bool = False,
+        health_progress_callback: Optional[Callable[[int, int], None]] = None,
     ) -> Dict[str, Any]:
         results = self._extract_decision_source_results(screening)
         profile = _safe_str(screening.get("profile"), "standard")
@@ -568,6 +570,21 @@ class MomentumSecondaryDecisionService:
             trade_date=trade_date,
             request_params=request_params,
         )
+
+        # When historical validation is requested, compute real backtest samples
+        # and override the rule-based strategy_health with historically-validated data.
+        if compute_historical_health and request_params:
+            try:
+                historical_health = self._compute_historical_strategy_health(
+                    trade_date=trade_date,
+                    request_params=request_params,
+                    progress_callback=health_progress_callback,
+                )
+                if historical_health is not None:
+                    strategy_health = historical_health
+            except Exception:
+                logger.exception("Historical strategy health computation failed, using rule-based fallback")
+
         attack_permission = self._build_attack_permission(strategy_health)
         theme_confidence = self._build_theme_confidence(strategy_health)
         market_environment = self._build_market_environment(
@@ -3702,22 +3719,67 @@ class MomentumSecondaryDecisionService:
         if success_rate < 40.0 and profit_window_pct < 0.5:
             return "weak"
         return "medium"
-    def _resolve_previous_trade_dates(self, *, end_trade_date: str, limit: int) -> List[str]:
-        """?? end_trade_date ???? limit ???????"""
-        if not end_trade_date or self.screener_service is None:
+    @staticmethod
+    def _resolve_previous_trade_dates(*, end_trade_date: str, limit: int, screener_service=None) -> List[str]:
+        """Resolve up to *limit* trade dates before *end_trade_date*.
+
+        Tries the fetcher's ``get_trade_cal`` first, then falls back to
+        ``exchange_calendars`` (XSHG calendar), and finally a simple
+        weekday-based approximation.
+        """
+        if not end_trade_date:
             return []
-        fetcher = getattr(self.screener_service, 'fetcher', None)
-        if fetcher is None:
-            return []
+
+        # 1. Try fetcher's get_trade_cal
+        if screener_service is not None:
+            fetcher = getattr(screener_service, 'fetcher', None)
+            if fetcher is not None:
+                trade_cal = getattr(fetcher, 'get_trade_cal', None)
+                if callable(trade_cal):
+                    try:
+                        cal = trade_cal(end_date=end_trade_date, limit=limit + 1)
+                        dates = [str(d) if not isinstance(d, str) else d for d in cal if str(d) < end_trade_date]
+                        return sorted(dates, reverse=True)[:limit]
+                    except Exception:
+                        logger.debug(
+                            'Fetcher get_trade_cal failed for %s, trying exchange_calendars',
+                            end_trade_date,
+                            exc_info=True,
+                        )
+
+        # 2. Try exchange_calendars
         try:
-            # ??? fetcher ??????
-            trade_cal = getattr(fetcher, 'get_trade_cal', None)
-            if callable(trade_cal):
-                cal = trade_cal(end_date=end_trade_date, limit=limit + 1)
-                dates = [d for d in cal if d < end_trade_date]
-                return sorted(dates, reverse=True)[:limit]
+            import exchange_calendars as ec  # noqa: PLC0415
+            cal = ec.get_calendar('XSHG')
+            end_dt = datetime.strptime(end_trade_date, '%Y-%m-%d')
+            start_dt = end_dt - timedelta(days=max(limit * 2, 90))
+            sessions = cal.sessions_in_range(start_dt.strftime('%Y-%m-%d'), end_trade_date)
+            dates = [
+                s.strftime('%Y-%m-%d') if hasattr(s, 'strftime') else str(s)[:10]
+                for s in sessions
+                if str(s)[:10] < end_trade_date
+            ]
+            return sorted(dates, reverse=True)[:limit]
         except Exception:
-            logger.debug('Failed to resolve previous trade dates for %s', end_trade_date, exc_info=True)
+            logger.debug(
+                'exchange_calendars fallback failed for %s, using weekday approximation',
+                end_trade_date,
+                exc_info=True,
+            )
+
+        # 3. Weekday-based fallback (Mon-Fri, no holiday awareness)
+        try:
+            end_dt = datetime.strptime(end_trade_date, '%Y-%m-%d')
+            dates: List[str] = []
+            cursor = end_dt - timedelta(days=1)
+            while len(dates) < limit:
+                if cursor.weekday() < 5:  # Mon=0 .. Fri=4
+                    dates.append(cursor.strftime('%Y-%m-%d'))
+                cursor -= timedelta(days=1)
+            return dates
+        except Exception:
+            logger.debug('Weekday fallback failed for %s', end_trade_date, exc_info=True)
+
         return []
 
 
@@ -3728,7 +3790,9 @@ class MomentumSecondaryDecisionService:
         profile: str,
         request_params: Dict[str, Any],
     ) -> Dict[str, Any]:
-        previous_dates = self._resolve_previous_trade_dates(end_trade_date=trade_date, limit=1)
+        previous_dates = self._resolve_previous_trade_dates(
+            end_trade_date=trade_date, limit=1, screener_service=self.screener_service,
+        )
         if not previous_dates or self.screener_service is None:
             return {
                 "key": "profitability",
@@ -4740,6 +4804,179 @@ STRATEGY_HEALTH_MODE_CACHED_ONLY = "cached_only"
 
 
 
+    def _evaluate_strategy_health_trade_date(
+        self,
+        *,
+        historical_trade_date: str,
+        request_params: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Run a mini-screening for one historical trade date and validate the portfolio."""
+        if self.screener_service is None:
+            return None
+
+        strategy_health_top_n = max(
+            int(_safe_float(request_params.get("top_n"), STRATEGY_HEALTH_MAX_SCORED_CANDIDATES)),
+            STRATEGY_HEALTH_MAX_SCORED_CANDIDATES,
+        )
+        screening = self.screener_service.screen(
+            top_n=strategy_health_top_n,
+            min_change_pct=_safe_float(request_params.get("min_change_pct"), MOMENTUM_DEFAULT_MIN_CHANGE_PCT),
+            min_amount=_safe_float(request_params.get("min_amount"), MOMENTUM_DEFAULT_MIN_AMOUNT),
+            min_turnover=_safe_float(request_params.get("min_turnover"), MOMENTUM_DEFAULT_MIN_TURNOVER),
+            exclude_st=bool(request_params.get("exclude_st", True)),
+            main_board_only=bool(request_params.get("main_board_only", False)),
+            trade_date=historical_trade_date,
+            profile=_safe_str(request_params.get("profile"), "standard"),
+            use_sector_context=False,
+            max_scored_candidates=STRATEGY_HEALTH_MAX_SCORED_CANDIDATES,
+        )
+        results = self._extract_decision_source_results(screening)
+        if not results:
+            return None
+
+        candidates = [self._build_candidate_view(item) for item in results]
+        themes = self._build_theme_summaries(candidates)
+        if not themes:
+            return None
+        theme_score_map = {theme["name"]: theme["score"] for theme in themes}
+        portfolio = self._build_portfolio(candidates, themes, theme_score_map)
+        actionable_items = [item for item in portfolio if item.get("suggested_action") != "observe_only"]
+        if not actionable_items:
+            return None
+
+        candidate_map = {item["ts_code"]: item for item in candidates}
+        item_results: List[Dict[str, Any]] = []
+        skipped_item_count = 0
+        for item in actionable_items:
+            try:
+                evaluated = self._evaluate_strategy_health_portfolio_item(
+                    trade_date=historical_trade_date,
+                    portfolio_item=item,
+                    candidate=candidate_map.get(item["ts_code"]),
+                )
+            except Exception:  # noqa: BLE001
+                skipped_item_count += 1
+                continue
+            if evaluated is not None:
+                item_results.append(evaluated)
+            else:
+                skipped_item_count += 1
+
+        if not item_results:
+            return None
+
+        success_count = sum(1 for item in item_results if item["success"])
+        required_success_count = max(1, ceil(len(item_results) * 2 / 3))
+        avg_profit_window_pct = mean(item["profit_window_pct"] for item in item_results)
+        avg_max_drawdown_pct = mean(item["max_drawdown_pct"] for item in item_results)
+        combo_success = (
+            success_count >= required_success_count
+            and avg_profit_window_pct >= 2.0
+            and avg_max_drawdown_pct <= 3.0
+        )
+        return {
+            "trade_date": historical_trade_date,
+            "selected_count": len(item_results),
+            "success_count": success_count,
+            "required_success_count": required_success_count,
+            "success": combo_success,
+            "profit_window_pct": avg_profit_window_pct,
+            "max_drawdown_pct": avg_max_drawdown_pct,
+            "skipped_item_count": skipped_item_count,
+        }
+
+    def _compute_historical_strategy_health(
+        self,
+        *,
+        trade_date: str,
+        request_params: Dict[str, Any],
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Synchronously compute 20/60-day historical backtest validation.
+
+        Iterates through previous trade dates, runs a mini-screening for each,
+        validates portfolio items against forward prices, and aggregates into
+        short-window (20 days) and long-window (60 days) health metrics.
+        """
+        if self.screener_service is None:
+            return None
+
+        target_sample_count = STRATEGY_HEALTH_WINDOW_TARGETS["long_60d"]["lookback"]
+        trade_dates = self._resolve_previous_trade_dates(
+            end_trade_date=trade_date,
+            limit=target_sample_count + 12,
+            screener_service=self.screener_service,
+        )
+        if not trade_dates:
+            logger.warning("No previous trade dates available for strategy health: trade_date=%s", trade_date)
+            return None
+
+        logger.info(
+            "Computing historical strategy health: trade_date=%s total_dates=%d",
+            trade_date,
+            len(trade_dates),
+        )
+
+        validations: List[Dict[str, Any]] = []
+        started_at = time_module.monotonic()
+        for i, hist_date in enumerate(trade_dates):
+            # Budget check: stop if we've been running too long
+            elapsed = time_module.monotonic() - started_at
+            if len(validations) >= 5 and elapsed >= 90.0:
+                logger.info(
+                    "Strategy health compute reached time budget: samples=%d elapsed=%.1fs",
+                    len(validations),
+                    elapsed,
+                )
+                break
+
+            try:
+                result = self._evaluate_strategy_health_trade_date(
+                    historical_trade_date=hist_date,
+                    request_params=request_params,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to evaluate strategy health sample: trade_date=%s",
+                    hist_date,
+                )
+                continue
+
+            if result is not None:
+                validations.append(result)
+                if len(validations) % 10 == 0:
+                    logger.info(
+                        "Strategy health progress: samples=%d last_date=%s",
+                        len(validations),
+                        hist_date,
+                    )
+
+            # Notify progress every 5 dates
+            if progress_callback and (i + 1) % 5 == 0:
+                try:
+                    progress_callback(i + 1, len(trade_dates))
+                except Exception:
+                    pass
+
+            if len(validations) >= target_sample_count:
+                break
+
+            # After we have minimum partial samples, check budget again
+            if len(validations) >= 5 and elapsed >= 90.0:
+                break
+
+        logger.info(
+            "Strategy health compute finished: samples=%d total_scanned=%d elapsed=%.1fs",
+            len(validations),
+            len(trade_dates),
+            time_module.monotonic() - started_at,
+        )
+
+        if not validations:
+            return None
+
+        return self._summarize_strategy_health_validations(validations)
+
     def _evaluate_strategy_health_portfolio_item(
         self,
         *,
@@ -4839,6 +5076,22 @@ STRATEGY_HEALTH_MODE_CACHED_ONLY = "cached_only"
             )
             return None
 
+    @staticmethod
+    def _empty_strategy_health_metrics(window: str) -> Dict[str, Any]:
+        return {
+            "window": window,
+            "status": "weak",
+            "score": 0.0,
+            "threshold": STRATEGY_HEALTH_WINDOW_THRESHOLDS[window],
+            "sample_count": 0,
+            "success_count": 0,
+            "success_rate": 0.0,
+            "avg_profit_window_pct": 0.0,
+            "avg_max_drawdown_pct": 0.0,
+            "avg_selected_count": 0.0,
+            "summary": f"{STRATEGY_HEALTH_WINDOW_LABELS[window]}当前没有形成可用历史样本。",
+        }
+
     def _summarize_strategy_health_window(
         self,
         window: str,
@@ -4854,6 +5107,7 @@ STRATEGY_HEALTH_MODE_CACHED_ONLY = "cached_only"
         avg_max_drawdown_pct = mean(item["max_drawdown_pct"] for item in validations)
         avg_selected_count = mean(item["selected_count"] for item in validations)
         status = self._classify_historical_window_status(
+            window=window,
             sample_count=sample_count,
             success_rate=success_rate,
             avg_profit_window_pct=avg_profit_window_pct,
@@ -4949,6 +5203,112 @@ STRATEGY_HEALTH_MODE_CACHED_ONLY = "cached_only"
         ):
             return "recovering"
         return "weak"
+
+    def _compose_strategy_health(
+        self,
+        short_window: Dict[str, Any],
+        long_window: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        short_status = _safe_str(short_window.get("status"))
+        long_status = _safe_str(long_window.get("status"))
+
+        if short_status == "healthy" and long_status == "healthy":
+            status = "healthy"
+            reason = "20 日可用性与 60 日结构可信度同时健康，允许维持完整强推荐。"
+            recommendation_cap = "full"
+        elif short_status == "healthy" and long_status != "healthy":
+            status = "recovery_mode"
+            reason = "20 日窗口先恢复，但 60 日结构可信度还没完全修复，先降级到观察 / 少量推荐。"
+            recommendation_cap = "limited"
+        elif short_status == "weak" and long_status == "weak":
+            status = "disabled"
+            reason = "20 日与 60 日窗口同时失效，系统今天应明确停用并劝退。"
+            recommendation_cap = "disabled"
+        else:
+            status = "partial_healthy"
+            reason = "当前只有一侧窗口健康，系统只保留 1-2 只有限推荐或观察。"
+            recommendation_cap = "limited"
+
+        blockers: List[str] = []
+        recovery_conditions: List[str] = []
+
+        if short_status == "weak":
+            sample_count = int(short_window.get("sample_count", 0))
+            success_rate = _safe_float(short_window.get("success_rate"))
+            blockers.append(
+                f"20 日窗口当前可用性不足，今天不应继续给出强执行结论。"
+                f" 当前样本 {sample_count} 天，成功率 {success_rate:.1f}% 。"
+            )
+            recovery_conditions.append("20 日窗口需要先恢复到最近结果能稳定输出 1-2 只可执行票。")
+        elif short_status == "recovering":
+            recovery_conditions.append("20 日窗口仍在恢复中，需要继续观察是否能稳定维持当前可用性。")
+
+        if long_status == "weak":
+            sample_count = int(long_window.get("sample_count", 0))
+            success_rate = _safe_float(long_window.get("success_rate"))
+            blockers.append(
+                f"60 日窗口结构可信度不足，当前更适合观察或少量推荐。"
+                f" 当前样本 {sample_count} 天，成功率 {success_rate:.1f}% 。"
+            )
+            recovery_conditions.append("60 日窗口需要恢复到主线、角色与组合结构重新稳定。")
+        elif long_status == "recovering":
+            recovery_conditions.append("60 日窗口仍在恢复中，需要继续验证主线与组合结构是否稳定。")
+
+        return {
+            "status": status,
+            "label": STRATEGY_HEALTH_LABELS[status],
+            "reason": reason,
+            "recommendation_cap": recommendation_cap,
+            "can_full_recommend": recommendation_cap == "full",
+            "short_window": {
+                "window": short_window.get("window", "short_20d"),
+                "window_label": STRATEGY_HEALTH_WINDOW_LABELS["short_20d"],
+                "status": short_status,
+                "status_label": STRATEGY_HEALTH_WINDOW_STATUS_LABELS.get(short_status, short_status),
+                "score": round(_safe_float(short_window.get("score")), 1),
+                "threshold": round(_safe_float(short_window.get("threshold"), STRATEGY_HEALTH_WINDOW_THRESHOLDS["short_20d"]), 1),
+                "sample_count": int(short_window.get("sample_count", 0)),
+                "success_count": int(short_window.get("success_count", 0)),
+                "success_rate": round(_safe_float(short_window.get("success_rate")), 1),
+                "avg_profit_window_pct": round(_safe_float(short_window.get("avg_profit_window_pct")), 2),
+                "avg_max_drawdown_pct": round(_safe_float(short_window.get("avg_max_drawdown_pct")), 2),
+                "avg_selected_count": round(_safe_float(short_window.get("avg_selected_count")), 1),
+                "summary": _safe_str(short_window.get("summary")),
+            },
+            "long_window": {
+                "window": long_window.get("window", "long_60d"),
+                "window_label": STRATEGY_HEALTH_WINDOW_LABELS["long_60d"],
+                "status": long_status,
+                "status_label": STRATEGY_HEALTH_WINDOW_STATUS_LABELS.get(long_status, long_status),
+                "score": round(_safe_float(long_window.get("score")), 1),
+                "threshold": round(_safe_float(long_window.get("threshold"), STRATEGY_HEALTH_WINDOW_THRESHOLDS["long_60d"]), 1),
+                "sample_count": int(long_window.get("sample_count", 0)),
+                "success_count": int(long_window.get("success_count", 0)),
+                "success_rate": round(_safe_float(long_window.get("success_rate")), 1),
+                "avg_profit_window_pct": round(_safe_float(long_window.get("avg_profit_window_pct")), 2),
+                "avg_max_drawdown_pct": round(_safe_float(long_window.get("avg_max_drawdown_pct")), 2),
+                "avg_selected_count": round(_safe_float(long_window.get("avg_selected_count")), 1),
+                "summary": _safe_str(long_window.get("summary")),
+            },
+            "blockers": blockers[:3],
+            "recovery_conditions": recovery_conditions[:4],
+        }
+
+    def _summarize_strategy_health_validations(
+        self,
+        validations: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        if not validations:
+            return None
+        short_window = self._summarize_strategy_health_window(
+            "short_20d",
+            validations[: STRATEGY_HEALTH_WINDOW_TARGETS["short_20d"]["lookback"]],
+        )
+        long_window = self._summarize_strategy_health_window(
+            "long_60d",
+            validations[: STRATEGY_HEALTH_WINDOW_TARGETS["long_60d"]["lookback"]],
+        )
+        return self._compose_strategy_health(short_window, long_window)
 
     def _apply_historical_validity_to_action(
         self,

@@ -40,6 +40,7 @@ RUN_STAGE_LABELS = {
     "v13_context": "加载 V1.3 真实题材画像",
     "scoring": "执行评分排序",
     "secondary_decision": "生成二次决策",
+    "strategy_health_backtest": "计算20/60日历史回测验证",
     "result_persist": "写入筛选结果",
     "cancel_requested": "取消请求处理中",
     "cancelled": "任务已取消",
@@ -401,9 +402,25 @@ class MomentumScreeningRunService:
                 label_state=decision_label_state,
             )
             try:
+                # Build a progress callback for the strategy health backtest stage
+                health_label_state = {"value": RUN_STAGE_LABELS["strategy_health_backtest"]}
+                def _health_progress(processed: int, total: int) -> None:
+                    pct = min(round(processed / max(total, 1) * 100), 99)
+                    health_label_state["value"] = (
+                        f"{RUN_STAGE_LABELS['strategy_health_backtest']} ({processed}/{total})"
+                    )
+                    self._update_stage(
+                        run_id,
+                        stage_key="strategy_health_backtest",
+                        label_state=health_label_state,
+                        progress_pct=94.0 + pct * 0.04,
+                    )
+
                 decision = self.decision_service.build_from_screening(
                     screening,
                     request_params=request_params,
+                    compute_historical_health=True,
+                    health_progress_callback=_health_progress,
                 )
             finally:
                 stop_decision_heartbeat()
