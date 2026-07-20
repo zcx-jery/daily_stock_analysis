@@ -172,7 +172,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
         )
         run_full_analysis.assert_called_once_with(runtime_config, args, None)
 
-    def test_reload_runtime_config_preserves_process_env_overrides(self) -> None:
+    def test_reload_runtime_config_applies_env_file_values(self) -> None:
         self.env_path.write_text(
             "OPENAI_API_KEY=stale-file\nSCHEDULE_TIME=09:30\n",
             encoding="utf-8",
@@ -194,13 +194,13 @@ class MainScheduleModeTestCase(unittest.TestCase):
         ), patch.object(
             main,
             "_RUNTIME_ENV_FILE_KEYS",
-            {"SCHEDULE_TIME"},
+            {"OPENAI_API_KEY", "SCHEDULE_TIME"},
         ), patch(
             "main.get_config",
             return_value=runtime_config,
         ) as get_config_mock:
             reloaded_config = main._reload_runtime_config()
-            self.assertEqual(os.environ["OPENAI_API_KEY"], "runtime-secret")
+            self.assertEqual(os.environ["OPENAI_API_KEY"], "stale-file")
             self.assertEqual(os.environ["SCHEDULE_TIME"], "09:30")
 
         self.assertIs(reloaded_config, runtime_config)

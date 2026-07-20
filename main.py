@@ -85,10 +85,7 @@ def _read_active_env_values() -> Optional[Dict[str, str]]:
 
 
 _ACTIVE_ENV_FILE_VALUES = _read_active_env_values() or {}
-_RUNTIME_ENV_FILE_KEYS = {
-    key for key in _ACTIVE_ENV_FILE_VALUES
-    if key not in _INITIAL_PROCESS_ENV
-}
+_RUNTIME_ENV_FILE_KEYS = set(_ACTIVE_ENV_FILE_VALUES.keys())
 
 # setup_env() already ran at import time above.
 _env_bootstrapped = True
@@ -187,10 +184,7 @@ def _reload_env_file_values_preserving_overrides() -> None:
     if latest_values is None:
         return
 
-    managed_keys = {
-        key for key in latest_values
-        if key not in _INITIAL_PROCESS_ENV
-    }
+    managed_keys = set(latest_values.keys())
 
     for key in _RUNTIME_ENV_FILE_KEYS - managed_keys:
         os.environ.pop(key, None)
