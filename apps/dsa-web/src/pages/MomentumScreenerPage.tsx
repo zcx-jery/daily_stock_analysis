@@ -1554,6 +1554,16 @@ const ActionChecklistPanel: React.FC<{
   </div>
 );
 
+function strategyHealthBadgeVariant(
+  status: MomentumSecondaryDecision['strategyHealth']['status'],
+): 'success' | 'warning' | 'danger' | 'default' {
+  if (status === 'healthy') return 'success';
+  if (status === 'partial_healthy') return 'default';
+  if (status === 'recovery_mode') return 'warning';
+  if (status === 'disabled') return 'danger';
+  return 'default';
+}
+
 const DecisionConfidencePanel: React.FC<{
   decision: MomentumSecondaryDecision;
 }> = ({ decision }) => {  const { attackPermission, themeConfidence, strategyHealth: health } = decision;
@@ -1572,6 +1582,9 @@ const DecisionConfidencePanel: React.FC<{
             </Badge>
             <Badge variant={themeConfidenceBadgeVariant(themeConfidence.status)}>
               60日 {themeConfidence.label}
+            </Badge>
+            <Badge variant={strategyHealthBadgeVariant(health.status)}>
+              {health.label}
             </Badge>
           </div>
           <p className="mt-2 text-sm leading-6 text-secondary-text">
