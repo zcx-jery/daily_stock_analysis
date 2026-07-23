@@ -2781,58 +2781,47 @@ class TushareFetcher(BaseFetcher):
             if not trade_dates:
                 return None
 
-            if current_date in trade_dates:
-                if current_clock < '09:30' or current_clock > '16:30':
-                    use_realtime = False
-                else:
-                    use_realtime = True
-            else:
-                use_realtime = False
+            is_trade_day = current_date in trade_dates
 
-            # 若实盘的时候使用 则使用其他可以实盘获取的数据源 akshare、efinance
-            if use_realtime:
+            # 盘中（09:30-16:30）和盘后（>16:30）优先用 rt_k
+            # rt_k 盘后也能返回完整当天数据，比 daily 通配符查询更可靠
+            if is_trade_day and current_clock >= '09:30':
                 try:
                     df = self._call_api_with_rate_limit("rt_k", ts_code='3*.SZ,6*.SH,0*.SZ,92*.BJ')
                     if df is not None and not df.empty:
+                        logger.info("[Tushare] rt_k 获取实时/盘后数据成功, rows=%d", len(df))
                         return self._calc_market_stats(df)
-                    
                 except Exception as e:
-                    logger.error(f"[Tushare] ts.pro_api().rt_k 尝试获取实时数据失败: {e}")
-                    return None
+                    logger.warning("[Tushare] ts.pro_api().rt_k 失败: %s，回退到 daily", e)
+
+            # 盘前（<09:30）或非交易日或 rt_k 失败时，用 daily 接口
+            if is_trade_day and current_clock < '09:30':
+                last_date = self._pick_trade_date(trade_dates, use_today=False)
+            elif is_trade_day:
+                last_date = self._pick_trade_date(trade_dates, use_today=True)
             else:
+                last_date = self._pick_trade_date(trade_dates, use_today=True)
 
-                if current_date not in trade_dates:
-                    last_date = self._pick_trade_date(trade_dates, use_today=True)  # 拿最近的日期
-                else:
-                    if current_clock < '09:30': 
-                        last_date = self._pick_trade_date(trade_dates, use_today=False)  # 拿取前一天的数据
-                    else:  # 即 '> 16:30'                  
-                        last_date = self._pick_trade_date(trade_dates, use_today=True)  # 拿取当天的数据
+            if last_date is None:
+                return None
 
-                if last_date is None:
-                    return None
-
-                try:
-                    df = self._call_api_with_rate_limit(
-                        "daily",
-                        ts_code='3*.SZ,6*.SH,0*.SZ,92*.BJ',
-                        start_date=last_date,
-                        end_date=last_date,
-                    )
-                    # 为防止不同接口返回的列名大小写不一致（例如 rt_k 返回小写，daily 返回大写），统一将列名转为小写
+            try:
+                df = self._call_api_with_rate_limit(
+                    "daily",
+                    ts_code='3*.SZ,6*.SH,0*.SZ,92*.BJ',
+                    start_date=last_date,
+                    end_date=last_date,
+                )
+                if df is not None and not df.empty:
                     df.columns = [col.lower() for col in df.columns]
-
-                    # 获取股票基础信息（包含代码和名称）
                     df_basic = self._call_api_with_rate_limit("stock_basic", fields='ts_code,name')
                     df = pd.merge(df, df_basic, on='ts_code', how='left')
-                    # 将 daily的 amount 列的值乘以 1000 来和其他数据源保持一致
                     if 'amount' in df.columns:
                         df['amount'] = df['amount'] * 1000
-
-                    if df is not None and not df.empty:
-                        return self._calc_market_stats(df)
-                except Exception as e:
-                    logger.error(f"[Tushare] ts.pro_api().daily 获取数据失败: {e}")
+                    logger.info("[Tushare] daily 获取数据成功, rows=%d", len(df))
+                    return self._calc_market_stats(df)
+            except Exception as e:
+                logger.warning("[Tushare] ts.pro_api().daily 获取数据失败: %s", e)
                     
 
             
