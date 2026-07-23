@@ -29,7 +29,7 @@ import random
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pandas as pd
 import requests
@@ -1620,6 +1620,35 @@ class AkshareFetcher(BaseFetcher):
             logger.error(f"[Akshare] 获取指数行情失败: {e}")
             return None
 
+    @staticmethod
+    def _run_akshare_with_timeout(
+        fn: Callable[[], Any],
+        timeout_seconds: float = 45.0,
+        label: str = "akshare call",
+    ) -> Optional[Any]:
+        """Run a potentially-blocking akshare call with a timeout guard.
+
+        Akshare internally uses ``requests.get()`` without a timeout, so network
+        hangs (especially with Sina APIs) can freeze the caller indefinitely.
+        This wrapper uses a thread to enforce a deadline.
+        """
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(fn)
+            try:
+                return future.result(timeout=timeout_seconds)
+            except FutureTimeoutError:
+                logger.error(
+                    "[Akshare] 调用 %s 超时（%.0fs），已强制取消",
+                    label,
+                    timeout_seconds,
+                )
+                return None
+            except Exception as exc:
+                logger.warning("[Akshare] 调用 %s 异常: %s", label, exc)
+                return None
+
     def get_market_stats(self) -> Optional[Dict[str, Any]]:
         """
         获取市场涨跌统计
@@ -1636,7 +1665,9 @@ class AkshareFetcher(BaseFetcher):
             self._enforce_rate_limit()
 
             logger.info("[API调用] ak.stock_zh_a_spot_em() 获取市场统计...")
-            df = ak.stock_zh_a_spot_em()
+            df = self._run_akshare_with_timeout(
+                ak.stock_zh_a_spot_em, timeout_seconds=30.0, label="stock_zh_a_spot_em",
+            )
             if df is not None and not df.empty:
                 return self._calc_market_stats(df)
         except Exception as e:
@@ -1648,7 +1679,9 @@ class AkshareFetcher(BaseFetcher):
             self._enforce_rate_limit()
 
             logger.info("[API调用] ak.stock_zh_a_spot() 获取市场统计(新浪)...")
-            df = ak.stock_zh_a_spot()
+            df = self._run_akshare_with_timeout(
+                ak.stock_zh_a_spot, timeout_seconds=30.0, label="stock_zh_a_spot (sina)",
+            )
             if df is not None and not df.empty:
                 return self._calc_market_stats(df)
         except Exception as e:
