@@ -2783,8 +2783,8 @@ class TushareFetcher(BaseFetcher):
 
             is_trade_day = current_date in trade_dates
 
-            # 盘中（09:30-16:30）和盘后（>16:30）优先用 rt_k
-            # rt_k 盘后也能返回完整当天数据，比 daily 通配符查询更可靠
+            # 盘中（09:30-16:30）和盘后（>16:30）尝试 rt_k
+            # rt_k 盘后也能返回完整当天数据，但需要 2000 积分权限
             if is_trade_day and current_clock >= '09:30':
                 try:
                     df = self._call_api_with_rate_limit("rt_k", ts_code='3*.SZ,6*.SH,0*.SZ,92*.BJ')
@@ -2792,6 +2792,11 @@ class TushareFetcher(BaseFetcher):
                         logger.info("[Tushare] rt_k 获取实时/盘后数据成功, rows=%d", len(df))
                         return self._calc_market_stats(df)
                 except Exception as e:
+                    # 如果没有 rt_k 权限（需 2000 积分），直接返回 None 让其他数据源处理，
+                    # 不要回退到不可靠的 daily 通配符查询
+                    if '权限' in str(e):
+                        logger.info("[Tushare] 当前账号没有 rt_k 权限（需 2000 积分），跳过 Tushare 市场统计")
+                        return None
                     logger.warning("[Tushare] ts.pro_api().rt_k 失败: %s，回退到 daily", e)
 
             # 盘前（<09:30）或非交易日或 rt_k 失败时，用 daily 接口

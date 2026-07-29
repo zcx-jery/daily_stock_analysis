@@ -1623,18 +1623,20 @@ class AkshareFetcher(BaseFetcher):
     @staticmethod
     def _run_akshare_with_timeout(
         fn: Callable[[], Any],
-        timeout_seconds: float = 45.0,
+        timeout_seconds: float = 30.0,
         label: str = "akshare call",
     ) -> Optional[Any]:
         """Run a potentially-blocking akshare call with a timeout guard.
 
         Akshare internally uses ``requests.get()`` without a timeout, so network
         hangs (especially with Sina APIs) can freeze the caller indefinitely.
-        This wrapper uses a thread to enforce a deadline.
+        This wrapper uses a short-lived thread and does NOT wait for it after
+        the timeout expires (Python threads cannot be killed, but we abandon them).
         """
         from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
-        with ThreadPoolExecutor(max_workers=1) as executor:
+        executor = ThreadPoolExecutor(max_workers=1)
+        try:
             future = executor.submit(fn)
             try:
                 return future.result(timeout=timeout_seconds)
@@ -1644,10 +1646,13 @@ class AkshareFetcher(BaseFetcher):
                     label,
                     timeout_seconds,
                 )
+                future.cancel()
                 return None
-            except Exception as exc:
-                logger.warning("[Akshare] 调用 %s 异常: %s", label, exc)
-                return None
+        finally:
+            # IMPORTANT: shutdown(wait=False) so we don't block waiting for
+            # the abandoned thread. The thread will eventually complete on its
+            # own and be cleaned up by the interpreter.
+            executor.shutdown(wait=False)
 
     def get_market_stats(self) -> Optional[Dict[str, Any]]:
         """
