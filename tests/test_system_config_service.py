@@ -49,13 +49,13 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.manager = ConfigManager(env_path=self.env_path)
         self.service = SystemConfigService(manager=self.manager)
 
-    def test_get_config_returns_raw_sensitive_values(self) -> None:
+    def test_get_config_masks_sensitive_values(self) -> None:
         payload = self.service.get_config(include_schema=True)
         items = {item["key"]: item for item in payload["items"]}
 
         self.assertIn("GEMINI_API_KEY", items)
-        self.assertEqual(items["GEMINI_API_KEY"]["value"], "secret-key-value")
-        self.assertFalse(items["GEMINI_API_KEY"]["is_masked"])
+        self.assertEqual(items["GEMINI_API_KEY"]["value"], "******")
+        self.assertTrue(items["GEMINI_API_KEY"]["is_masked"])
         self.assertTrue(items["GEMINI_API_KEY"]["raw_value_exists"])
 
     def test_export_desktop_env_returns_raw_text(self) -> None:
@@ -159,6 +159,25 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         current_map = self.manager.read_config_map()
         self.assertEqual(current_map["STOCK_LIST"], "600519,300750")
         self.assertEqual(current_map["GEMINI_API_KEY"], "secret-key-value")
+
+    def test_update_normalizes_realtime_source_priority_display_label(self) -> None:
+        response = self.service.update(
+            config_version=self.manager.get_config_version(),
+            items=[{"key": "REALTIME_SOURCE_PRIORITY", "value": "Tushare Pro, Tencent, Akshare Sina"}],
+            reload_now=False,
+        )
+
+        self.assertTrue(response["success"])
+        current_map = self.manager.read_config_map()
+        self.assertEqual(current_map["REALTIME_SOURCE_PRIORITY"], "tushare,tencent,akshare_sina")
+
+    def test_validate_reports_invalid_realtime_source_priority_token(self) -> None:
+        validation = self.service.validate(
+            items=[{"key": "REALTIME_SOURCE_PRIORITY", "value": "tushare,NotAProvider"}]
+        )
+
+        self.assertFalse(validation["valid"])
+        self.assertTrue(any(issue["code"] == "invalid_realtime_source" for issue in validation["issues"]))
 
     def test_validate_reports_invalid_time(self) -> None:
         validation = self.service.validate(items=[{"key": "SCHEDULE_TIME", "value": "25:70"}])

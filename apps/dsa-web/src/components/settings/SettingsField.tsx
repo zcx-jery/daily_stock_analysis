@@ -216,9 +216,14 @@ export const SettingsField: React.FC<SettingsFieldProps> = ({
           {title}
         </label>
         {schema?.isSensitive ? (
-          <Badge variant="history" size="sm">
-            敏感
-          </Badge>
+          <>
+            <Badge variant="history" size="sm">
+              敏感
+            </Badge>
+            <Badge variant={item.rawValueExists ? 'success' : 'default'} size="sm">
+              {item.rawValueExists ? '已配置' : '未配置'}
+            </Badge>
+          </>
         ) : null}
         {!schema?.isEditable ? (
           <Badge variant="default" size="sm">
@@ -249,7 +254,9 @@ export const SettingsField: React.FC<SettingsFieldProps> = ({
 
       {schema?.isSensitive ? (
         <p className="mt-3 text-[11px] leading-5 text-secondary-text">
-          敏感内容默认隐藏，可点击眼睛图标查看明文。
+          {item.rawValueExists
+            ? '已配置的密钥显示为 ******，保持不变即可不修改；输入新值即更新。'
+            : '未配置，输入新值以设置。'}
           {isMultiValue ? ' 支持添加多个输入框进行增删。' : ''}
         </p>
       ) : null}

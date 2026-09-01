@@ -21,8 +21,19 @@ case "$command_name" in
     compose up -d "$@"
     ;;
   rebuild)
-    compose build --no-cache "$@"
-    compose up -d "$@"
+    if [[ "${DSA_DOCKER_NO_CACHE:-}" == "1" || "${DSA_DOCKER_NO_CACHE:-}" == "true" ]]; then
+      compose build --no-cache "$@"
+    else
+      compose build "$@"
+    fi
+    compose up -d --force-recreate "$@"
+    if ! bash scripts/docker-cleanup.sh; then
+      echo "Docker cleanup failed; falling back to dangling image prune" >&2
+      docker image prune -f >/dev/null || true
+    fi
+    ;;
+  cleanup)
+    bash scripts/docker-cleanup.sh
     ;;
   restart)
     compose restart "$@"
@@ -37,7 +48,7 @@ case "$command_name" in
     compose ps "$@"
     ;;
   *)
-    echo "Usage: scripts/deploy-docker.sh [up|rebuild|restart|down|logs|ps] [service...]" >&2
+    echo "Usage: scripts/deploy-docker.sh [up|rebuild|cleanup|restart|down|logs|ps] [service...]" >&2
     exit 1
     ;;
 esac

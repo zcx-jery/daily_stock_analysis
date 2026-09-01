@@ -19,6 +19,7 @@ import logging
 import re
 import time
 from datetime import datetime, date, timedelta
+from pathlib import Path
 from typing import Optional, List, Dict, Any, TYPE_CHECKING, Tuple, Callable, TypeVar
 
 import pandas as pd
@@ -42,6 +43,7 @@ from sqlalchemy import (
     desc,
     event,
     func,
+    inspect,
 )
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import (
@@ -396,6 +398,232 @@ class BacktestSummary(Base):
     )
 
 
+class MomentumBacktestRun(Base):
+    """V1 momentum screener backtest run metadata."""
+
+    __tablename__ = 'momentum_backtest_runs'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String(64), nullable=False, unique=True, index=True)
+    status = Column(String(16), nullable=False, default='running', index=True)
+    profile = Column(String(16), nullable=False, default='standard', index=True)
+    engine_version = Column(String(32), nullable=False, default='v1')
+    strategy_health_mode = Column(String(24), nullable=False, default='cached_only')
+    entry_baseline_version = Column(String(32), nullable=False)
+    market_scope_version = Column(String(64), nullable=False)
+    top_n = Column(Integer, nullable=False, default=30)
+    start_trade_date = Column(Date, nullable=False, index=True)
+    end_trade_date = Column(Date, nullable=False, index=True)
+    total_trade_dates = Column(Integer, nullable=False, default=0)
+    processed_trade_dates = Column(Integer, nullable=False, default=0)
+    failed_trade_dates = Column(Integer, nullable=False, default=0)
+    current_trade_date = Column(Date, index=True)
+    current_stage_key = Column(String(32))
+    current_stage_label = Column(String(64))
+    heartbeat_at = Column(DateTime, index=True)
+    started_at = Column(DateTime, index=True)
+    finished_at = Column(DateTime, index=True)
+    cancel_requested = Column(Boolean, nullable=False, default=False, index=True)
+    summary_json = Column(Text)
+    error_message = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
+
+    __table_args__ = (
+        Index('ix_momentum_backtest_runs_profile_created', 'profile', 'created_at'),
+    )
+
+
+class MomentumScreeningRun(Base):
+    """Taskized momentum screener run metadata and persisted result payloads."""
+
+    __tablename__ = 'momentum_screening_runs'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String(64), nullable=False, unique=True, index=True)
+    status = Column(String(16), nullable=False, default='queued', index=True)
+    profile = Column(String(16), nullable=False, default='standard', index=True)
+    truth_mode = Column(String(16), nullable=False, default='full', index=True)
+    engine_version = Column(String(32), nullable=False, default='v1_taskized')
+    entry_baseline_version = Column(String(32), nullable=False)
+    market_scope_version = Column(String(64), nullable=False)
+    screening_cache_version = Column(String(64), nullable=False)
+    top_n = Column(Integer, nullable=False, default=30)
+    requested_trade_date = Column(String(16), index=True)
+    trade_date = Column(Date, index=True)
+    min_change_pct = Column(Float, nullable=False, default=4.0)
+    min_amount = Column(Float, nullable=False, default=2e8)
+    min_turnover = Column(Float, nullable=False, default=2.0)
+    exclude_st = Column(Boolean, nullable=False, default=True)
+    main_board_only = Column(Boolean, nullable=False, default=False)
+    use_sector_context = Column(Boolean, nullable=False, default=True)
+    max_scored_candidates = Column(Integer)
+    request_fingerprint = Column(String(96), nullable=False, index=True)
+    request_params_json = Column(Text)
+    progress_pct = Column(Float, nullable=False, default=0.0)
+    processed_item_count = Column(Integer, nullable=False, default=0)
+    total_item_count = Column(Integer, nullable=False, default=0)
+    current_stage_key = Column(String(32))
+    current_stage_label = Column(String(80))
+    cache_hits_json = Column(Text)
+    cache_misses_json = Column(Text)
+    screening_payload_json = Column(Text)
+    decision_payload_json = Column(Text)
+    error_message = Column(Text)
+    heartbeat_at = Column(DateTime, index=True)
+    started_at = Column(DateTime, index=True)
+    finished_at = Column(DateTime, index=True)
+    cancel_requested = Column(Boolean, nullable=False, default=False, index=True)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
+
+    __table_args__ = (
+        Index('ix_momentum_screening_runs_profile_created', 'profile', 'created_at'),
+        Index('ix_momentum_screening_runs_fingerprint_created', 'request_fingerprint', 'created_at'),
+    )
+
+
+class MomentumBacktestDailySummary(Base):
+    """Frozen day-level backtest decision summary."""
+
+    __tablename__ = 'momentum_backtest_daily_summaries'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String(64), ForeignKey('momentum_backtest_runs.run_id'), nullable=False, index=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    action_level = Column(String(24), nullable=False, index=True)
+    action_label = Column(String(32), nullable=False)
+    recommendation_cap = Column(String(16), nullable=False)
+    action_checklist_mode = Column(String(16), nullable=False, default='disabled')
+    market_environment_level = Column(String(16), nullable=False)
+    opportunity_quality_level = Column(String(16), nullable=False)
+    historical_validity_level = Column(String(16), nullable=False)
+    candidate_count = Column(Integer, nullable=False, default=0)
+    result_count = Column(Integer, nullable=False, default=0)
+    selected_count = Column(Integer, nullable=False, default=0)
+    buy_ready_count = Column(Integer, nullable=False, default=0)
+    main_ts_code = Column(String(16), index=True)
+    secondary_ts_code = Column(String(16), index=True)
+    watch_ts_code = Column(String(16), index=True)
+    screening_payload_json = Column(Text)
+    decision_payload_json = Column(Text)
+    diagnosis_json = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        UniqueConstraint('run_id', 'trade_date', name='uix_momentum_backtest_daily_summary_run_date'),
+        Index('ix_momentum_backtest_daily_summary_run_action', 'run_id', 'action_level'),
+    )
+
+
+class MomentumBacktestCandidateRecord(Base):
+    """Frozen candidate-top10 records for one replayed trade date."""
+
+    __tablename__ = 'momentum_backtest_candidate_records'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String(64), ForeignKey('momentum_backtest_runs.run_id'), nullable=False, index=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    view_scope = Column(String(24), nullable=False, default='candidate_top10')
+    rank = Column(Integer, nullable=False)
+    ts_code = Column(String(16), nullable=False, index=True)
+    name = Column(String(64), nullable=False)
+    theme = Column(String(64))
+    role = Column(String(32))
+    market_segment = Column(String(24))
+    rank_score = Column(Float)
+    final_score = Column(Float)
+    continuation_score = Column(Float)
+    extension_score = Column(Float)
+    risk_score = Column(Float)
+    buyability_score = Column(Float)
+    candidate_payload_json = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            'run_id',
+            'trade_date',
+            'view_scope',
+            'ts_code',
+            name='uix_momentum_backtest_candidate_run_date_scope_code',
+        ),
+        Index('ix_momentum_backtest_candidate_run_date_rank', 'run_id', 'trade_date', 'rank'),
+    )
+
+
+class MomentumBacktestDecisionRecord(Base):
+    """Frozen decision-top3 / slot view records for one replayed trade date."""
+
+    __tablename__ = 'momentum_backtest_decision_records'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String(64), ForeignKey('momentum_backtest_runs.run_id'), nullable=False, index=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    slot = Column(String(16), nullable=False)
+    rank = Column(Integer)
+    ts_code = Column(String(16), nullable=False, index=True)
+    name = Column(String(64), nullable=False)
+    theme = Column(String(64))
+    role = Column(String(32))
+    decision_score = Column(Float)
+    rank_score = Column(Float)
+    risk_score = Column(Float)
+    buy_point_status = Column(String(16))
+    suggested_action = Column(String(24))
+    entry_range_low = Column(Float)
+    entry_range_high = Column(Float)
+    opportunity_tag = Column(String(64))
+    decision_payload_json = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    __table_args__ = (
+        UniqueConstraint('run_id', 'trade_date', 'slot', name='uix_momentum_backtest_decision_run_date_slot'),
+        Index('ix_momentum_backtest_decision_run_date_rank', 'run_id', 'trade_date', 'rank'),
+    )
+
+
+class MomentumBacktestOutcomeRecord(Base):
+    """Forward outcome validation for candidate/decision records."""
+
+    __tablename__ = 'momentum_backtest_outcome_records'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String(64), ForeignKey('momentum_backtest_runs.run_id'), nullable=False, index=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    view_scope = Column(String(24), nullable=False)
+    slot = Column(String(16))
+    ts_code = Column(String(16), nullable=False, index=True)
+    name = Column(String(64), nullable=False)
+    buy_triggered = Column(Boolean, nullable=False, default=False)
+    reference_entry_price = Column(Float)
+    trigger_price = Column(Float)
+    trigger_trade_date = Column(Date, index=True)
+    t1_trade_date = Column(Date, index=True)
+    t1_close_return_pct = Column(Float)
+    t1_profit_window_pct = Column(Float)
+    t1_max_drawdown_pct = Column(Float)
+    t2_trade_date = Column(Date, index=True)
+    t2_close_return_pct = Column(Float)
+    t2_profit_window_pct = Column(Float)
+    t2_max_drawdown_pct = Column(Float)
+    real_strength_label = Column(String(24))
+    outcome_payload_json = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            'run_id',
+            'trade_date',
+            'view_scope',
+            'ts_code',
+            name='uix_momentum_backtest_outcome_run_date_scope_code',
+        ),
+        Index('ix_momentum_backtest_outcome_run_date_scope', 'run_id', 'trade_date', 'view_scope'),
+    )
+
+
 class PortfolioAccount(Base):
     """Portfolio account metadata."""
 
@@ -691,6 +919,7 @@ class DatabaseManager:
         
         # 创建所有表
         Base.metadata.create_all(self._engine)
+        self._ensure_momentum_backtest_schema()
 
         self._initialized = True
         logger.info(f"数据库初始化完成: {db_url}")
@@ -709,10 +938,14 @@ class DatabaseManager:
     def reset_instance(cls) -> None:
         """重置单例（用于测试）"""
         if cls._instance is not None:
-            if hasattr(cls._instance, '_engine') and cls._instance._engine is not None:
-                cls._instance._engine.dispose()
+            cls._instance.close()
             cls._instance._initialized = False
             cls._instance = None
+
+    def close(self) -> None:
+        """Close pooled database connections held by this manager."""
+        if hasattr(self, '_engine') and self._engine is not None:
+            self._engine.dispose()
 
     @classmethod
     def _cleanup_engine(cls, engine) -> None:
@@ -751,6 +984,70 @@ class DatabaseManager:
     def _is_file_sqlite_database(self) -> bool:
         database = (self._engine.url.database or "").strip()
         return bool(database) and database.lower() != ":memory:"
+
+    def verify_sqlite_integrity(self) -> Dict[str, Any]:
+        """Run SQLite PRAGMA integrity_check when the active database is SQLite."""
+        if not self._is_sqlite_engine:
+            return {"ok": True, "skipped": True, "reason": "non_sqlite"}
+        database = self._engine.url.database
+        if self._sqlite_file_db and database:
+            db_path = Path(database)
+            if db_path.exists() and db_path.stat().st_size > 512 * 1024 * 1024:
+                return {
+                    "ok": True,
+                    "skipped": True,
+                    "reason": "database_too_large_for_startup_integrity_check",
+                    "database": database,
+                    "size_bytes": db_path.stat().st_size,
+                }
+        try:
+            with self._engine.connect() as connection:
+                rows = connection.exec_driver_sql("PRAGMA integrity_check").fetchall()
+            messages = [str(row[0]) for row in rows if row and row[0] is not None]
+            ok = bool(messages) and all(message.lower() == "ok" for message in messages)
+            return {
+                "ok": ok,
+                "skipped": False,
+                "messages": messages,
+                "database": database,
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("SQLite integrity_check failed: %s", exc)
+            return {
+                "ok": False,
+                "skipped": False,
+                "messages": [str(exc)],
+                "database": database,
+            }
+
+    def _ensure_momentum_backtest_schema(self) -> None:
+        """为已有 SQLite 数据库补齐回测任务中心新增列。"""
+        if not self._is_sqlite_engine:
+            return
+        inspector = inspect(self._engine)
+        if 'momentum_backtest_runs' not in inspector.get_table_names():
+            return
+        existing_columns = {column['name'] for column in inspector.get_columns('momentum_backtest_runs')}
+        required_columns = {
+            'current_trade_date': "ALTER TABLE momentum_backtest_runs ADD COLUMN current_trade_date DATE",
+            'current_stage_key': "ALTER TABLE momentum_backtest_runs ADD COLUMN current_stage_key VARCHAR(32)",
+            'current_stage_label': "ALTER TABLE momentum_backtest_runs ADD COLUMN current_stage_label VARCHAR(64)",
+            'heartbeat_at': "ALTER TABLE momentum_backtest_runs ADD COLUMN heartbeat_at DATETIME",
+            'started_at': "ALTER TABLE momentum_backtest_runs ADD COLUMN started_at DATETIME",
+            'finished_at': "ALTER TABLE momentum_backtest_runs ADD COLUMN finished_at DATETIME",
+            'cancel_requested': "ALTER TABLE momentum_backtest_runs ADD COLUMN cancel_requested BOOLEAN NOT NULL DEFAULT 0",
+            'strategy_health_mode': "ALTER TABLE momentum_backtest_runs ADD COLUMN strategy_health_mode VARCHAR(24) NOT NULL DEFAULT 'cached_only'",
+        }
+        missing_columns = [
+            statement
+            for column_name, statement in required_columns.items()
+            if column_name not in existing_columns
+        ]
+        if not missing_columns:
+            return
+        with self._engine.begin() as connection:
+            for statement in missing_columns:
+                connection.exec_driver_sql(statement)
 
     def _run_write_transaction(
         self,

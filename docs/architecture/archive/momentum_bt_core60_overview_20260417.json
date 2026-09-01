@@ -1,0 +1,3431 @@
+{
+  "meta": {
+    "run_id": "momentum_bt_core60_2f1bb82d78",
+    "status": "completed",
+    "profile": "standard",
+    "engine_version": "v1",
+    "entry_baseline_version": "v1_5_3_3",
+    "market_scope_version": "v1_a_share_main_chinext_star",
+    "top_n": 30,
+    "start_trade_date": "2026-01-15",
+    "end_trade_date": "2026-04-17",
+    "total_trade_dates": 60,
+    "processed_trade_dates": 60,
+    "failed_trade_dates": 0,
+    "current_trade_date": "2026-04-17",
+    "current_stage_key": "day_completed",
+    "current_stage_label": "2026-04-17 completed in 82.35s",
+    "heartbeat_at": "2026-04-21T16:42:37.466030",
+    "started_at": "2026-04-21T13:29:32.289684",
+    "finished_at": "2026-04-21T16:42:37.466044",
+    "cancel_requested": false,
+    "summary": {
+      "completed_trade_dates": 60,
+      "action_breakdown": {
+        "normal_go": 15,
+        "observe_only": 9,
+        "cautious_go": 24,
+        "strong_go": 12
+      },
+      "market_environment_breakdown": {
+        "strong": 38,
+        "medium": 22
+      },
+      "opportunity_quality_breakdown": {
+        "strong": 41,
+        "weak": 2,
+        "medium": 17
+      },
+      "historical_validity_breakdown": {
+        "healthy": 56,
+        "general": 4
+      },
+      "avg_candidate_count": 178.0833,
+      "avg_selected_count": 3.0,
+      "avg_buy_ready_count": 1.6,
+      "candidate_top10_buy_trigger_rate": 84.5,
+      "candidate_top10_positive_t2_rate": 53.33,
+      "candidate_top10_avg_t2_profit_window_pct": 6.5859,
+      "candidate_top10_avg_t2_max_drawdown_pct": 4.6348,
+      "decision_top3_buy_trigger_rate": 84.44,
+      "decision_top3_positive_t1_rate": 49.44,
+      "decision_top3_positive_t2_rate": 48.33,
+      "decision_top3_avg_t1_profit_window_pct": 4.6343,
+      "decision_top3_avg_t2_profit_window_pct": 6.5154,
+      "decision_top3_avg_t2_max_drawdown_pct": 5.2643,
+      "benchmark_comparison": [
+        {
+          "key": "official_top3",
+          "label": "官方 Top3",
+          "sample_count": 180,
+          "trigger_rate_pct": 84.44,
+          "positive_t2_rate_pct": 48.33,
+          "avg_t2_profit_window_pct": 6.5154,
+          "avg_t2_max_drawdown_pct": 5.2643,
+          "alpha_vs_official_top3_pct": 0.0,
+          "alpha_vs_candidate_top10_pct": -0.0705
+        },
+        {
+          "key": "candidate_top10",
+          "label": "候选池 Top10",
+          "sample_count": 600,
+          "trigger_rate_pct": 84.5,
+          "positive_t2_rate_pct": 53.33,
+          "avg_t2_profit_window_pct": 6.5859,
+          "avg_t2_max_drawdown_pct": 4.6348,
+          "alpha_vs_official_top3_pct": 0.0705,
+          "alpha_vs_candidate_top10_pct": 0.0
+        },
+        {
+          "key": "raw_rank_top3",
+          "label": "原始排序 Top3",
+          "sample_count": 180,
+          "trigger_rate_pct": 84.44,
+          "positive_t2_rate_pct": 57.22,
+          "avg_t2_profit_window_pct": 6.7952,
+          "avg_t2_max_drawdown_pct": 4.5228,
+          "alpha_vs_official_top3_pct": 0.2798,
+          "alpha_vs_candidate_top10_pct": 0.2093
+        },
+        {
+          "key": "leader_baseline",
+          "label": "主线龙头基准",
+          "sample_count": 365,
+          "trigger_rate_pct": 83.29,
+          "positive_t2_rate_pct": 52.6,
+          "avg_t2_profit_window_pct": 6.7856,
+          "avg_t2_max_drawdown_pct": 4.8473,
+          "alpha_vs_official_top3_pct": 0.2702,
+          "alpha_vs_candidate_top10_pct": 0.1997
+        },
+        {
+          "key": "main_slot",
+          "label": "主仓基准",
+          "sample_count": 60,
+          "trigger_rate_pct": 80.0,
+          "positive_t2_rate_pct": 53.33,
+          "avg_t2_profit_window_pct": 6.8298,
+          "avg_t2_max_drawdown_pct": 4.9893,
+          "alpha_vs_official_top3_pct": 0.3144,
+          "alpha_vs_candidate_top10_pct": 0.2439
+        },
+        {
+          "key": "stay_out",
+          "label": "空仓基准",
+          "sample_count": 60,
+          "trigger_rate_pct": 0.0,
+          "positive_t2_rate_pct": 0.0,
+          "avg_t2_profit_window_pct": 0.0,
+          "avg_t2_max_drawdown_pct": 0.0,
+          "alpha_vs_official_top3_pct": -6.5154,
+          "alpha_vs_candidate_top10_pct": -6.5859
+        }
+      ],
+      "layer_diagnostics": [
+        {
+          "key": "candidate_pool",
+          "label": "候选池",
+          "level": "general",
+          "score": 62.0,
+          "summary": "候选池 Top10 T+2 正收益率 53.33%，平均利润窗口 6.59%。",
+          "metrics": {
+            "sample_count": 600,
+            "positive_t2_rate_pct": 53.33,
+            "avg_t2_profit_window_pct": 6.5859,
+            "avg_t2_max_drawdown_pct": 4.6348
+          }
+        },
+        {
+          "key": "ranking",
+          "label": "排序",
+          "level": "weak",
+          "score": 36.0,
+          "summary": "官方 Top3 相对原始排序 Top3 的 T+2 利润窗口超额 -0.28%，主仓/次仓/观察仓利润窗口依次为 6.83% / 6.37% / 6.35%。",
+          "metrics": {
+            "top3_vs_raw_rank_top3_alpha_pct": -0.2798,
+            "main_slot_positive_t2_rate_pct": 53.33,
+            "secondary_slot_positive_t2_rate_pct": 45.0,
+            "watch_slot_positive_t2_rate_pct": 46.67
+          }
+        },
+        {
+          "key": "execution",
+          "label": "买点执行",
+          "level": "weak",
+          "score": 36.0,
+          "summary": "默认组合买点触发率 84.44%，触发后 T+2 正收益率 49.34%，平均回撤 5.34%。",
+          "metrics": {
+            "buy_trigger_rate_pct": 84.44,
+            "buy_signal_win_rate_t2_pct": 49.34,
+            "profit_window_t2_pct": 6.4273,
+            "max_drawdown_after_trigger_pct": 5.3428
+          }
+        },
+        {
+          "key": "gate",
+          "label": "总闸门",
+          "level": "weak",
+          "score": 36.0,
+          "summary": "限制出手日 9 / 60，错杀率 55.56%，放行准确率 39.22%，最常见拖后腿模块为 风险可控度，弱项 3 天。",
+          "metrics": {
+            "restricted_trade_days": 9.0,
+            "tradable_days": 51.0,
+            "missed_opportunity_rate_pct": 55.5556,
+            "allowed_trade_precision_pct": 39.2157,
+            "top_gate_blocker_days": 3.0
+          }
+        },
+        {
+          "key": "regime_fit",
+          "label": "环境适配",
+          "level": "weak",
+          "score": 36.0,
+          "summary": "强/中/弱市场的 T+2 正收益率分布为 42.11% / -- / --，当前分桶离散度 0.00%。",
+          "metrics": {
+            "strong_regime_positive_t2_rate_pct": 42.11,
+            "general_regime_positive_t2_rate_pct": null,
+            "weak_regime_positive_t2_rate_pct": null,
+            "regime_spread_pct": 0.0
+          }
+        }
+      ],
+      "gate_module_breakdown": [
+        {
+          "key": "risk_control",
+          "label": "风险可控度",
+          "group_key": "opportunity_quality",
+          "group_label": "机会质量",
+          "sample_days": 60,
+          "strong_days": 32,
+          "medium_days": 25,
+          "weak_days": 3,
+          "blocker_days": 3,
+          "restricted_days": 3,
+          "avg_score": 69.0667,
+          "weak_day_candidate_positive_t2_rate_pct": 60.0,
+          "weak_day_decision_positive_t2_rate_pct": 100.0,
+          "weak_day_candidate_avg_t2_profit_window_pct": 8.5961,
+          "weak_day_decision_avg_t2_profit_window_pct": 11.8159,
+          "strong_day_decision_avg_t2_profit_window_pct": 5.5149,
+          "summary": "弱项 3 天，其中限制出手 3 天；弱项日默认组合 T+2 利润窗口均值 11.82%。"
+        },
+        {
+          "key": "portfolio_quality",
+          "label": "组合质量",
+          "group_key": "opportunity_quality",
+          "group_label": "机会质量",
+          "sample_days": 60,
+          "strong_days": 54,
+          "medium_days": 4,
+          "weak_days": 2,
+          "blocker_days": 2,
+          "restricted_days": 2,
+          "avg_score": 78.8,
+          "weak_day_candidate_positive_t2_rate_pct": 70.0,
+          "weak_day_decision_positive_t2_rate_pct": 100.0,
+          "weak_day_candidate_avg_t2_profit_window_pct": 5.6378,
+          "weak_day_decision_avg_t2_profit_window_pct": 8.0432,
+          "strong_day_decision_avg_t2_profit_window_pct": 6.386,
+          "summary": "弱项 2 天，其中限制出手 2 天；弱项日默认组合 T+2 利润窗口均值 8.04%。"
+        },
+        {
+          "key": "buy_point_clarity",
+          "label": "买点清晰度",
+          "group_key": "opportunity_quality",
+          "group_label": "机会质量",
+          "sample_days": 60,
+          "strong_days": 54,
+          "medium_days": 4,
+          "weak_days": 2,
+          "blocker_days": 2,
+          "restricted_days": 2,
+          "avg_score": 80.4,
+          "weak_day_candidate_positive_t2_rate_pct": 70.0,
+          "weak_day_decision_positive_t2_rate_pct": 100.0,
+          "weak_day_candidate_avg_t2_profit_window_pct": 5.6378,
+          "weak_day_decision_avg_t2_profit_window_pct": 8.0432,
+          "strong_day_decision_avg_t2_profit_window_pct": 6.386,
+          "summary": "弱项 2 天，其中限制出手 2 天；弱项日默认组合 T+2 利润窗口均值 8.04%。"
+        },
+        {
+          "key": "profitability",
+          "label": "赚钱效应",
+          "group_key": "market_environment",
+          "group_label": "市场环境",
+          "sample_days": 60,
+          "strong_days": 21,
+          "medium_days": 39,
+          "weak_days": 0,
+          "blocker_days": 0,
+          "restricted_days": 0,
+          "avg_score": 58.9667,
+          "weak_day_candidate_positive_t2_rate_pct": null,
+          "weak_day_decision_positive_t2_rate_pct": null,
+          "weak_day_candidate_avg_t2_profit_window_pct": null,
+          "weak_day_decision_avg_t2_profit_window_pct": null,
+          "strong_day_decision_avg_t2_profit_window_pct": 5.8261,
+          "summary": "弱项 0 天，其中限制出手 0 天；弱项日默认组合 T+2 利润窗口均值 --。"
+        },
+        {
+          "key": "role_structure",
+          "label": "角色结构",
+          "group_key": "opportunity_quality",
+          "group_label": "机会质量",
+          "sample_days": 60,
+          "strong_days": 13,
+          "medium_days": 47,
+          "weak_days": 0,
+          "blocker_days": 0,
+          "restricted_days": 0,
+          "avg_score": 61.6833,
+          "weak_day_candidate_positive_t2_rate_pct": null,
+          "weak_day_decision_positive_t2_rate_pct": null,
+          "weak_day_candidate_avg_t2_profit_window_pct": null,
+          "weak_day_decision_avg_t2_profit_window_pct": null,
+          "strong_day_decision_avg_t2_profit_window_pct": 6.9695,
+          "summary": "弱项 0 天，其中限制出手 0 天；弱项日默认组合 T+2 利润窗口均值 --。"
+        },
+        {
+          "key": "theme_breadth",
+          "label": "主线扩散",
+          "group_key": "market_environment",
+          "group_label": "市场环境",
+          "sample_days": 60,
+          "strong_days": 6,
+          "medium_days": 54,
+          "weak_days": 0,
+          "blocker_days": 0,
+          "restricted_days": 0,
+          "avg_score": 62.0,
+          "weak_day_candidate_positive_t2_rate_pct": null,
+          "weak_day_decision_positive_t2_rate_pct": null,
+          "weak_day_candidate_avg_t2_profit_window_pct": null,
+          "weak_day_decision_avg_t2_profit_window_pct": null,
+          "strong_day_decision_avg_t2_profit_window_pct": 8.0356,
+          "summary": "弱项 0 天，其中限制出手 0 天；弱项日默认组合 T+2 利润窗口均值 --。"
+        },
+        {
+          "key": "theme_clarity",
+          "label": "主线清晰度",
+          "group_key": "opportunity_quality",
+          "group_label": "机会质量",
+          "sample_days": 60,
+          "strong_days": 6,
+          "medium_days": 54,
+          "weak_days": 0,
+          "blocker_days": 0,
+          "restricted_days": 0,
+          "avg_score": 62.2,
+          "weak_day_candidate_positive_t2_rate_pct": null,
+          "weak_day_decision_positive_t2_rate_pct": null,
+          "weak_day_candidate_avg_t2_profit_window_pct": null,
+          "weak_day_decision_avg_t2_profit_window_pct": null,
+          "strong_day_decision_avg_t2_profit_window_pct": 8.0356,
+          "summary": "弱项 0 天，其中限制出手 0 天；弱项日默认组合 T+2 利润窗口均值 --。"
+        },
+        {
+          "key": "sentiment",
+          "label": "市场情绪",
+          "group_key": "market_environment",
+          "group_label": "市场环境",
+          "sample_days": 60,
+          "strong_days": 57,
+          "medium_days": 3,
+          "weak_days": 0,
+          "blocker_days": 0,
+          "restricted_days": 0,
+          "avg_score": 80.9,
+          "weak_day_candidate_positive_t2_rate_pct": null,
+          "weak_day_decision_positive_t2_rate_pct": null,
+          "weak_day_candidate_avg_t2_profit_window_pct": null,
+          "weak_day_decision_avg_t2_profit_window_pct": null,
+          "strong_day_decision_avg_t2_profit_window_pct": 6.4608,
+          "summary": "弱项 0 天，其中限制出手 0 天；弱项日默认组合 T+2 利润窗口均值 --。"
+        },
+        {
+          "key": "index_trend",
+          "label": "指数趋势",
+          "group_key": "market_environment",
+          "group_label": "市场环境",
+          "sample_days": 60,
+          "strong_days": 60,
+          "medium_days": 0,
+          "weak_days": 0,
+          "blocker_days": 0,
+          "restricted_days": 0,
+          "avg_score": 88.0,
+          "weak_day_candidate_positive_t2_rate_pct": null,
+          "weak_day_decision_positive_t2_rate_pct": null,
+          "weak_day_candidate_avg_t2_profit_window_pct": null,
+          "weak_day_decision_avg_t2_profit_window_pct": null,
+          "strong_day_decision_avg_t2_profit_window_pct": 6.5154,
+          "summary": "弱项 0 天，其中限制出手 0 天；弱项日默认组合 T+2 利润窗口均值 --。"
+        },
+        {
+          "key": "historical_validity",
+          "label": "历史有效性",
+          "group_key": "historical_validity",
+          "group_label": "历史有效性",
+          "sample_days": 60,
+          "strong_days": 56,
+          "medium_days": 4,
+          "weak_days": 0,
+          "blocker_days": 0,
+          "restricted_days": 0,
+          "avg_score": 89.9417,
+          "weak_day_candidate_positive_t2_rate_pct": null,
+          "weak_day_decision_positive_t2_rate_pct": null,
+          "weak_day_candidate_avg_t2_profit_window_pct": null,
+          "weak_day_decision_avg_t2_profit_window_pct": null,
+          "strong_day_decision_avg_t2_profit_window_pct": 6.4063,
+          "summary": "弱项 0 天，其中限制出手 0 天；弱项日默认组合 T+2 利润窗口均值 --。"
+        }
+      ],
+      "regime_breakdown": [
+        {
+          "level": "strong",
+          "label": "强市",
+          "trade_days": 38,
+          "decision_positive_t2_rate_pct": 42.11,
+          "decision_avg_t2_profit_window_pct": 5.7159,
+          "decision_avg_t2_max_drawdown_pct": 5.3964,
+          "missed_opportunity_rate_pct": 100.0,
+          "allowed_trade_precision_pct": 35.1351,
+          "stand_aside_rate_pct": 0.0
+        },
+        {
+          "level": "general",
+          "label": "中性市",
+          "trade_days": 0,
+          "decision_positive_t2_rate_pct": null,
+          "decision_avg_t2_profit_window_pct": null,
+          "decision_avg_t2_max_drawdown_pct": null,
+          "missed_opportunity_rate_pct": null,
+          "allowed_trade_precision_pct": null,
+          "stand_aside_rate_pct": null
+        },
+        {
+          "level": "weak",
+          "label": "弱市",
+          "trade_days": 0,
+          "decision_positive_t2_rate_pct": null,
+          "decision_avg_t2_profit_window_pct": null,
+          "decision_avg_t2_max_drawdown_pct": null,
+          "missed_opportunity_rate_pct": null,
+          "allowed_trade_precision_pct": null,
+          "stand_aside_rate_pct": null
+        }
+      ]
+    },
+    "error_message": null,
+    "created_at": "2026-04-21T13:29:31.288173",
+    "updated_at": "2026-04-21T16:43:09.059814"
+  },
+  "summary": {
+    "completed_trade_dates": 60,
+    "action_breakdown": {
+      "normal_go": 15,
+      "observe_only": 9,
+      "cautious_go": 24,
+      "strong_go": 12
+    },
+    "market_environment_breakdown": {
+      "strong": 38,
+      "medium": 22
+    },
+    "opportunity_quality_breakdown": {
+      "strong": 41,
+      "weak": 2,
+      "medium": 17
+    },
+    "historical_validity_breakdown": {
+      "healthy": 56,
+      "general": 4
+    },
+    "avg_candidate_count": 178.0833,
+    "avg_selected_count": 3.0,
+    "avg_buy_ready_count": 1.6,
+    "candidate_top10_buy_trigger_rate": 84.5,
+    "candidate_top10_positive_t2_rate": 53.33,
+    "candidate_top10_avg_t2_profit_window_pct": 6.5859,
+    "candidate_top10_avg_t2_max_drawdown_pct": 4.6348,
+    "decision_top3_buy_trigger_rate": 84.44,
+    "decision_top3_positive_t1_rate": 49.44,
+    "decision_top3_positive_t2_rate": 48.33,
+    "decision_top3_avg_t1_profit_window_pct": 4.6343,
+    "decision_top3_avg_t2_profit_window_pct": 6.5154,
+    "decision_top3_avg_t2_max_drawdown_pct": 5.2643,
+    "benchmark_comparison": [
+      {
+        "key": "official_top3",
+        "label": "官方 Top3",
+        "sample_count": 180,
+        "trigger_rate_pct": 84.44,
+        "positive_t2_rate_pct": 48.33,
+        "avg_t2_profit_window_pct": 6.5154,
+        "avg_t2_max_drawdown_pct": 5.2643,
+        "alpha_vs_official_top3_pct": 0.0,
+        "alpha_vs_candidate_top10_pct": -0.0705
+      },
+      {
+        "key": "candidate_top10",
+        "label": "候选池 Top10",
+        "sample_count": 600,
+        "trigger_rate_pct": 84.5,
+        "positive_t2_rate_pct": 53.33,
+        "avg_t2_profit_window_pct": 6.5859,
+        "avg_t2_max_drawdown_pct": 4.6348,
+        "alpha_vs_official_top3_pct": 0.0705,
+        "alpha_vs_candidate_top10_pct": 0.0
+      },
+      {
+        "key": "raw_rank_top3",
+        "label": "原始排序 Top3",
+        "sample_count": 180,
+        "trigger_rate_pct": 84.44,
+        "positive_t2_rate_pct": 57.22,
+        "avg_t2_profit_window_pct": 6.7952,
+        "avg_t2_max_drawdown_pct": 4.5228,
+        "alpha_vs_official_top3_pct": 0.2798,
+        "alpha_vs_candidate_top10_pct": 0.2093
+      },
+      {
+        "key": "leader_baseline",
+        "label": "主线龙头基准",
+        "sample_count": 365,
+        "trigger_rate_pct": 83.29,
+        "positive_t2_rate_pct": 52.6,
+        "avg_t2_profit_window_pct": 6.7856,
+        "avg_t2_max_drawdown_pct": 4.8473,
+        "alpha_vs_official_top3_pct": 0.2702,
+        "alpha_vs_candidate_top10_pct": 0.1997
+      },
+      {
+        "key": "main_slot",
+        "label": "主仓基准",
+        "sample_count": 60,
+        "trigger_rate_pct": 80.0,
+        "positive_t2_rate_pct": 53.33,
+        "avg_t2_profit_window_pct": 6.8298,
+        "avg_t2_max_drawdown_pct": 4.9893,
+        "alpha_vs_official_top3_pct": 0.3144,
+        "alpha_vs_candidate_top10_pct": 0.2439
+      },
+      {
+        "key": "stay_out",
+        "label": "空仓基准",
+        "sample_count": 60,
+        "trigger_rate_pct": 0.0,
+        "positive_t2_rate_pct": 0.0,
+        "avg_t2_profit_window_pct": 0.0,
+        "avg_t2_max_drawdown_pct": 0.0,
+        "alpha_vs_official_top3_pct": -6.5154,
+        "alpha_vs_candidate_top10_pct": -6.5859
+      }
+    ],
+    "layer_diagnostics": [
+      {
+        "key": "candidate_pool",
+        "label": "候选池",
+        "level": "general",
+        "score": 62.0,
+        "summary": "候选池 Top10 T+2 正收益率 53.33%，平均利润窗口 6.59%。",
+        "metrics": {
+          "sample_count": 600,
+          "positive_t2_rate_pct": 53.33,
+          "avg_t2_profit_window_pct": 6.5859,
+          "avg_t2_max_drawdown_pct": 4.6348
+        }
+      },
+      {
+        "key": "ranking",
+        "label": "排序",
+        "level": "weak",
+        "score": 36.0,
+        "summary": "官方 Top3 相对原始排序 Top3 的 T+2 利润窗口超额 -0.28%，主仓/次仓/观察仓利润窗口依次为 6.83% / 6.37% / 6.35%。",
+        "metrics": {
+          "top3_vs_raw_rank_top3_alpha_pct": -0.2798,
+          "main_slot_positive_t2_rate_pct": 53.33,
+          "secondary_slot_positive_t2_rate_pct": 45.0,
+          "watch_slot_positive_t2_rate_pct": 46.67
+        }
+      },
+      {
+        "key": "execution",
+        "label": "买点执行",
+        "level": "weak",
+        "score": 36.0,
+        "summary": "默认组合买点触发率 84.44%，触发后 T+2 正收益率 49.34%，平均回撤 5.34%。",
+        "metrics": {
+          "buy_trigger_rate_pct": 84.44,
+          "buy_signal_win_rate_t2_pct": 49.34,
+          "profit_window_t2_pct": 6.4273,
+          "max_drawdown_after_trigger_pct": 5.3428
+        }
+      },
+      {
+        "key": "gate",
+        "label": "总闸门",
+        "level": "weak",
+        "score": 36.0,
+        "summary": "限制出手日 9 / 60，错杀率 55.56%，放行准确率 39.22%，最常见拖后腿模块为 风险可控度，弱项 3 天。",
+        "metrics": {
+          "restricted_trade_days": 9.0,
+          "tradable_days": 51.0,
+          "missed_opportunity_rate_pct": 55.5556,
+          "allowed_trade_precision_pct": 39.2157,
+          "top_gate_blocker_days": 3.0
+        }
+      },
+      {
+        "key": "regime_fit",
+        "label": "环境适配",
+        "level": "weak",
+        "score": 36.0,
+        "summary": "强/中/弱市场的 T+2 正收益率分布为 42.11% / -- / --，当前分桶离散度 0.00%。",
+        "metrics": {
+          "strong_regime_positive_t2_rate_pct": 42.11,
+          "general_regime_positive_t2_rate_pct": null,
+          "weak_regime_positive_t2_rate_pct": null,
+          "regime_spread_pct": 0.0
+        }
+      }
+    ],
+    "gate_module_breakdown": [
+      {
+        "key": "risk_control",
+        "label": "风险可控度",
+        "group_key": "opportunity_quality",
+        "group_label": "机会质量",
+        "sample_days": 60,
+        "strong_days": 32,
+        "medium_days": 25,
+        "weak_days": 3,
+        "blocker_days": 3,
+        "restricted_days": 3,
+        "avg_score": 69.0667,
+        "weak_day_candidate_positive_t2_rate_pct": 60.0,
+        "weak_day_decision_positive_t2_rate_pct": 100.0,
+        "weak_day_candidate_avg_t2_profit_window_pct": 8.5961,
+        "weak_day_decision_avg_t2_profit_window_pct": 11.8159,
+        "strong_day_decision_avg_t2_profit_window_pct": 5.5149,
+        "summary": "弱项 3 天，其中限制出手 3 天；弱项日默认组合 T+2 利润窗口均值 11.82%。"
+      },
+      {
+        "key": "portfolio_quality",
+        "label": "组合质量",
+        "group_key": "opportunity_quality",
+        "group_label": "机会质量",
+        "sample_days": 60,
+        "strong_days": 54,
+        "medium_days": 4,
+        "weak_days": 2,
+        "blocker_days": 2,
+        "restricted_days": 2,
+        "avg_score": 78.8,
+        "weak_day_candidate_positive_t2_rate_pct": 70.0,
+        "weak_day_decision_positive_t2_rate_pct": 100.0,
+        "weak_day_candidate_avg_t2_profit_window_pct": 5.6378,
+        "weak_day_decision_avg_t2_profit_window_pct": 8.0432,
+        "strong_day_decision_avg_t2_profit_window_pct": 6.386,
+        "summary": "弱项 2 天，其中限制出手 2 天；弱项日默认组合 T+2 利润窗口均值 8.04%。"
+      },
+      {
+        "key": "buy_point_clarity",
+        "label": "买点清晰度",
+        "group_key": "opportunity_quality",
+        "group_label": "机会质量",
+        "sample_days": 60,
+        "strong_days": 54,
+        "medium_days": 4,
+        "weak_days": 2,
+        "blocker_days": 2,
+        "restricted_days": 2,
+        "avg_score": 80.4,
+        "weak_day_candidate_positive_t2_rate_pct": 70.0,
+        "weak_day_decision_positive_t2_rate_pct": 100.0,
+        "weak_day_candidate_avg_t2_profit_window_pct": 5.6378,
+        "weak_day_decision_avg_t2_profit_window_pct": 8.0432,
+        "strong_day_decision_avg_t2_profit_window_pct": 6.386,
+        "summary": "弱项 2 天，其中限制出手 2 天；弱项日默认组合 T+2 利润窗口均值 8.04%。"
+      },
+      {
+        "key": "profitability",
+        "label": "赚钱效应",
+        "group_key": "market_environment",
+        "group_label": "市场环境",
+        "sample_days": 60,
+        "strong_days": 21,
+        "medium_days": 39,
+        "weak_days": 0,
+        "blocker_days": 0,
+        "restricted_days": 0,
+        "avg_score": 58.9667,
+        "weak_day_candidate_positive_t2_rate_pct": null,
+        "weak_day_decision_positive_t2_rate_pct": null,
+        "weak_day_candidate_avg_t2_profit_window_pct": null,
+        "weak_day_decision_avg_t2_profit_window_pct": null,
+        "strong_day_decision_avg_t2_profit_window_pct": 5.8261,
+        "summary": "弱项 0 天，其中限制出手 0 天；弱项日默认组合 T+2 利润窗口均值 --。"
+      },
+      {
+        "key": "role_structure",
+        "label": "角色结构",
+        "group_key": "opportunity_quality",
+        "group_label": "机会质量",
+        "sample_days": 60,
+        "strong_days": 13,
+        "medium_days": 47,
+        "weak_days": 0,
+        "blocker_days": 0,
+        "restricted_days": 0,
+        "avg_score": 61.6833,
+        "weak_day_candidate_positive_t2_rate_pct": null,
+        "weak_day_decision_positive_t2_rate_pct": null,
+        "weak_day_candidate_avg_t2_profit_window_pct": null,
+        "weak_day_decision_avg_t2_profit_window_pct": null,
+        "strong_day_decision_avg_t2_profit_window_pct": 6.9695,
+        "summary": "弱项 0 天，其中限制出手 0 天；弱项日默认组合 T+2 利润窗口均值 --。"
+      },
+      {
+        "key": "theme_breadth",
+        "label": "主线扩散",
+        "group_key": "market_environment",
+        "group_label": "市场环境",
+        "sample_days": 60,
+        "strong_days": 6,
+        "medium_days": 54,
+        "weak_days": 0,
+        "blocker_days": 0,
+        "restricted_days": 0,
+        "avg_score": 62.0,
+        "weak_day_candidate_positive_t2_rate_pct": null,
+        "weak_day_decision_positive_t2_rate_pct": null,
+        "weak_day_candidate_avg_t2_profit_window_pct": null,
+        "weak_day_decision_avg_t2_profit_window_pct": null,
+        "strong_day_decision_avg_t2_profit_window_pct": 8.0356,
+        "summary": "弱项 0 天，其中限制出手 0 天；弱项日默认组合 T+2 利润窗口均值 --。"
+      },
+      {
+        "key": "theme_clarity",
+        "label": "主线清晰度",
+        "group_key": "opportunity_quality",
+        "group_label": "机会质量",
+        "sample_days": 60,
+        "strong_days": 6,
+        "medium_days": 54,
+        "weak_days": 0,
+        "blocker_days": 0,
+        "restricted_days": 0,
+        "avg_score": 62.2,
+        "weak_day_candidate_positive_t2_rate_pct": null,
+        "weak_day_decision_positive_t2_rate_pct": null,
+        "weak_day_candidate_avg_t2_profit_window_pct": null,
+        "weak_day_decision_avg_t2_profit_window_pct": null,
+        "strong_day_decision_avg_t2_profit_window_pct": 8.0356,
+        "summary": "弱项 0 天，其中限制出手 0 天；弱项日默认组合 T+2 利润窗口均值 --。"
+      },
+      {
+        "key": "sentiment",
+        "label": "市场情绪",
+        "group_key": "market_environment",
+        "group_label": "市场环境",
+        "sample_days": 60,
+        "strong_days": 57,
+        "medium_days": 3,
+        "weak_days": 0,
+        "blocker_days": 0,
+        "restricted_days": 0,
+        "avg_score": 80.9,
+        "weak_day_candidate_positive_t2_rate_pct": null,
+        "weak_day_decision_positive_t2_rate_pct": null,
+        "weak_day_candidate_avg_t2_profit_window_pct": null,
+        "weak_day_decision_avg_t2_profit_window_pct": null,
+        "strong_day_decision_avg_t2_profit_window_pct": 6.4608,
+        "summary": "弱项 0 天，其中限制出手 0 天；弱项日默认组合 T+2 利润窗口均值 --。"
+      },
+      {
+        "key": "index_trend",
+        "label": "指数趋势",
+        "group_key": "market_environment",
+        "group_label": "市场环境",
+        "sample_days": 60,
+        "strong_days": 60,
+        "medium_days": 0,
+        "weak_days": 0,
+        "blocker_days": 0,
+        "restricted_days": 0,
+        "avg_score": 88.0,
+        "weak_day_candidate_positive_t2_rate_pct": null,
+        "weak_day_decision_positive_t2_rate_pct": null,
+        "weak_day_candidate_avg_t2_profit_window_pct": null,
+        "weak_day_decision_avg_t2_profit_window_pct": null,
+        "strong_day_decision_avg_t2_profit_window_pct": 6.5154,
+        "summary": "弱项 0 天，其中限制出手 0 天；弱项日默认组合 T+2 利润窗口均值 --。"
+      },
+      {
+        "key": "historical_validity",
+        "label": "历史有效性",
+        "group_key": "historical_validity",
+        "group_label": "历史有效性",
+        "sample_days": 60,
+        "strong_days": 56,
+        "medium_days": 4,
+        "weak_days": 0,
+        "blocker_days": 0,
+        "restricted_days": 0,
+        "avg_score": 89.9417,
+        "weak_day_candidate_positive_t2_rate_pct": null,
+        "weak_day_decision_positive_t2_rate_pct": null,
+        "weak_day_candidate_avg_t2_profit_window_pct": null,
+        "weak_day_decision_avg_t2_profit_window_pct": null,
+        "strong_day_decision_avg_t2_profit_window_pct": 6.4063,
+        "summary": "弱项 0 天，其中限制出手 0 天；弱项日默认组合 T+2 利润窗口均值 --。"
+      }
+    ],
+    "regime_breakdown": [
+      {
+        "level": "strong",
+        "label": "强市",
+        "trade_days": 38,
+        "decision_positive_t2_rate_pct": 42.11,
+        "decision_avg_t2_profit_window_pct": 5.7159,
+        "decision_avg_t2_max_drawdown_pct": 5.3964,
+        "missed_opportunity_rate_pct": 100.0,
+        "allowed_trade_precision_pct": 35.1351,
+        "stand_aside_rate_pct": 0.0
+      },
+      {
+        "level": "general",
+        "label": "中性市",
+        "trade_days": 0,
+        "decision_positive_t2_rate_pct": null,
+        "decision_avg_t2_profit_window_pct": null,
+        "decision_avg_t2_max_drawdown_pct": null,
+        "missed_opportunity_rate_pct": null,
+        "allowed_trade_precision_pct": null,
+        "stand_aside_rate_pct": null
+      },
+      {
+        "level": "weak",
+        "label": "弱市",
+        "trade_days": 0,
+        "decision_positive_t2_rate_pct": null,
+        "decision_avg_t2_profit_window_pct": null,
+        "decision_avg_t2_max_drawdown_pct": null,
+        "missed_opportunity_rate_pct": null,
+        "allowed_trade_precision_pct": null,
+        "stand_aside_rate_pct": null
+      }
+    ]
+  },
+  "issues": {
+    "run_id": "momentum_bt_core60_2f1bb82d78",
+    "total_issues": 92,
+    "severity_breakdown": {
+      "critical": 0,
+      "warning": 92,
+      "info": 0
+    },
+    "issue_key_breakdown": {
+      "main_slot_underperformed": 50,
+      "gate_missed_opportunity": 5,
+      "drawdown_pressure_high": 36,
+      "trigger_efficiency_low": 1
+    },
+    "items": [
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "300806.SZ",
+          "688502.SH"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 7.9822,
+          "best_candidate_t2_profit_window_pct": 15.1392
+        },
+        "trade_date": "2026-04-17",
+        "action_level": "normal_go",
+        "action_label": "可正常出手"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "600549.SH",
+          "000657.SZ"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 4.552,
+          "best_candidate_t2_profit_window_pct": 13.5514
+        },
+        "trade_date": "2026-04-16",
+        "action_level": "normal_go",
+        "action_label": "可正常出手"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "688166.SH",
+          "603629.SH"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 4.2397,
+          "best_candidate_t2_profit_window_pct": 19.8863
+        },
+        "trade_date": "2026-04-15",
+        "action_level": "observe_only",
+        "action_label": "仅观察"
+      },
+      {
+        "issue_key": "gate_missed_opportunity",
+        "severity": "warning",
+        "title": "总闸门可能错杀机会",
+        "summary": "当日被降到观察/不做，但候选池整体 T+2 利润窗口和正收益率仍偏强。",
+        "affected_codes": [
+          "688166.SH",
+          "603629.SH",
+          "002361.SZ"
+        ],
+        "metrics": {
+          "candidate_positive_t2_rate_pct": 60.0,
+          "candidate_avg_t2_profit_window_pct": 5.8398
+        },
+        "trade_date": "2026-04-15",
+        "action_level": "observe_only",
+        "action_label": "仅观察"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "002407.SZ",
+          "600664.SH"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 1.701,
+          "best_candidate_t2_profit_window_pct": 19.6078
+        },
+        "trade_date": "2026-04-14",
+        "action_level": "cautious_go",
+        "action_label": "谨慎出手"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "002240.SZ",
+          "001896.SZ"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 5.564,
+          "best_candidate_t2_profit_window_pct": 23.8963
+        },
+        "trade_date": "2026-04-13",
+        "action_level": "strong_go",
+        "action_label": "强烈可做"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "000762.SZ",
+          "001309.SZ"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 3.4503,
+          "best_candidate_t2_profit_window_pct": 13.4955
+        },
+        "trade_date": "2026-04-10",
+        "action_level": "cautious_go",
+        "action_label": "谨慎出手"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "002281.SZ",
+          "002384.SZ"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 8.2889,
+          "best_candidate_t2_profit_window_pct": 13.1368
+        },
+        "trade_date": "2026-04-09",
+        "action_level": "normal_go",
+        "action_label": "可正常出手"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "688630.SH",
+          "603306.SH"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 6.5928,
+          "best_candidate_t2_profit_window_pct": 16.461
+        },
+        "trade_date": "2026-04-08",
+        "action_level": "strong_go",
+        "action_label": "强烈可做"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "605299.SH",
+          "300548.SZ"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 4.2609,
+          "best_candidate_t2_profit_window_pct": 22.6316
+        },
+        "trade_date": "2026-04-07",
+        "action_level": "cautious_go",
+        "action_label": "谨慎出手"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "605299.SH",
+          "300651.SZ",
+          "002051.SZ"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 4.0913
+        },
+        "trade_date": "2026-04-07",
+        "action_level": "cautious_go",
+        "action_label": "谨慎出手"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "600869.SH",
+          "603067.SH",
+          "688226.SH"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 4.9664
+        },
+        "trade_date": "2026-04-03",
+        "action_level": "cautious_go",
+        "action_label": "谨慎出手"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "688336.SH",
+          "603122.SH"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 7.9571,
+          "best_candidate_t2_profit_window_pct": 18.5126
+        },
+        "trade_date": "2026-04-02",
+        "action_level": "cautious_go",
+        "action_label": "谨慎出手"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "300436.SZ",
+          "301312.SZ"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 7.5622,
+          "best_candidate_t2_profit_window_pct": 15.0044
+        },
+        "trade_date": "2026-04-01",
+        "action_level": "strong_go",
+        "action_label": "强烈可做"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "002082.SZ",
+          "002730.SZ"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 16.1538,
+          "best_candidate_t2_profit_window_pct": 18.2375
+        },
+        "trade_date": "2026-03-31",
+        "action_level": "cautious_go",
+        "action_label": "谨慎出手"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "002222.SZ",
+          "603358.SH"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 0.3959,
+          "best_candidate_t2_profit_window_pct": 12.2995
+        },
+        "trade_date": "2026-03-30",
+        "action_level": "normal_go",
+        "action_label": "可正常出手"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "002222.SZ",
+          "600219.SH",
+          "000807.SZ"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 6.3031
+        },
+        "trade_date": "2026-03-30",
+        "action_level": "normal_go",
+        "action_label": "可正常出手"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "002460.SZ",
+          "002432.SZ"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 3.3346,
+          "best_candidate_t2_profit_window_pct": 20.5445
+        },
+        "trade_date": "2026-03-27",
+        "action_level": "strong_go",
+        "action_label": "强烈可做"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "002460.SZ",
+          "002428.SZ",
+          "001896.SZ"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 6.4755
+        },
+        "trade_date": "2026-03-27",
+        "action_level": "strong_go",
+        "action_label": "强烈可做"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "002149.SZ",
+          "301292.SZ"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 17.5708,
+          "best_candidate_t2_profit_window_pct": 26.6967
+        },
+        "trade_date": "2026-03-26",
+        "action_level": "observe_only",
+        "action_label": "仅观察"
+      },
+      {
+        "issue_key": "gate_missed_opportunity",
+        "severity": "warning",
+        "title": "总闸门可能错杀机会",
+        "summary": "当日被降到观察/不做，但候选池整体 T+2 利润窗口和正收益率仍偏强。",
+        "affected_codes": [
+          "002082.SZ",
+          "002149.SZ",
+          "601908.SH"
+        ],
+        "metrics": {
+          "candidate_positive_t2_rate_pct": 60.0,
+          "candidate_avg_t2_profit_window_pct": 13.6986
+        },
+        "trade_date": "2026-03-26",
+        "action_level": "observe_only",
+        "action_label": "仅观察"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "301196.SZ",
+          "002082.SZ"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 7.8856,
+          "best_candidate_t2_profit_window_pct": 19.7792
+        },
+        "trade_date": "2026-03-25",
+        "action_level": "strong_go",
+        "action_label": "强烈可做"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "301196.SZ",
+          "600316.SH",
+          "601606.SH"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 5.2125
+        },
+        "trade_date": "2026-03-25",
+        "action_level": "strong_go",
+        "action_label": "强烈可做"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "688519.SH",
+          "000539.SZ"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 8.8145,
+          "best_candidate_t2_profit_window_pct": 20.951
+        },
+        "trade_date": "2026-03-24",
+        "action_level": "cautious_go",
+        "action_label": "谨慎出手"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "688519.SH",
+          "000035.SZ",
+          "301183.SZ"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 4.5346
+        },
+        "trade_date": "2026-03-24",
+        "action_level": "cautious_go",
+        "action_label": "谨慎出手"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "688268.SH",
+          "600032.SH"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 2.0744,
+          "best_candidate_t2_profit_window_pct": 20.1107
+        },
+        "trade_date": "2026-03-23",
+        "action_level": "observe_only",
+        "action_label": "仅观察"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "688268.SH",
+          "600032.SH",
+          "603105.SH"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 6.8343
+        },
+        "trade_date": "2026-03-23",
+        "action_level": "observe_only",
+        "action_label": "仅观察"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "688498.SH",
+          "301658.SZ"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 2.6972,
+          "best_candidate_t2_profit_window_pct": 12.0167
+        },
+        "trade_date": "2026-03-20",
+        "action_level": "observe_only",
+        "action_label": "仅观察"
+      },
+      {
+        "issue_key": "gate_missed_opportunity",
+        "severity": "warning",
+        "title": "总闸门可能错杀机会",
+        "summary": "当日被降到观察/不做，但候选池整体 T+2 利润窗口和正收益率仍偏强。",
+        "affected_codes": [
+          "688498.SH",
+          "300763.SZ",
+          "600726.SH"
+        ],
+        "metrics": {
+          "candidate_positive_t2_rate_pct": 80.0,
+          "candidate_avg_t2_profit_window_pct": 5.4358
+        },
+        "trade_date": "2026-03-20",
+        "action_level": "observe_only",
+        "action_label": "仅观察"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "688498.SH",
+          "301658.SZ",
+          "000509.SZ"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 6.495
+        },
+        "trade_date": "2026-03-20",
+        "action_level": "observe_only",
+        "action_label": "仅观察"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "300332.SZ",
+          "688268.SH"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 0.8487,
+          "best_candidate_t2_profit_window_pct": 15.9507
+        },
+        "trade_date": "2026-03-19",
+        "action_level": "observe_only",
+        "action_label": "仅观察"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "300332.SZ",
+          "688048.SH",
+          "688268.SH"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 5.4455
+        },
+        "trade_date": "2026-03-19",
+        "action_level": "observe_only",
+        "action_label": "仅观察"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "002432.SZ",
+          "300502.SZ"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 8.3828,
+          "best_candidate_t2_profit_window_pct": 14.817
+        },
+        "trade_date": "2026-03-18",
+        "action_level": "cautious_go",
+        "action_label": "谨慎出手"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "688295.SH",
+          "301667.SZ"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 8.2809,
+          "best_candidate_t2_profit_window_pct": 16.9591
+        },
+        "trade_date": "2026-03-17",
+        "action_level": "normal_go",
+        "action_label": "可正常出手"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "688295.SH",
+          "002470.SZ",
+          "301667.SZ"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 7.3327
+        },
+        "trade_date": "2026-03-17",
+        "action_level": "normal_go",
+        "action_label": "可正常出手"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "600667.SH",
+          "688525.SH"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 6.7841,
+          "best_candidate_t2_profit_window_pct": 10.4836
+        },
+        "trade_date": "2026-03-16",
+        "action_level": "observe_only",
+        "action_label": "仅观察"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "600667.SH",
+          "300209.SZ",
+          "300042.SZ"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 4.2845
+        },
+        "trade_date": "2026-03-16",
+        "action_level": "observe_only",
+        "action_label": "仅观察"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "300677.SZ",
+          "001309.SZ"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 3.7582,
+          "best_candidate_t2_profit_window_pct": 13.195
+        },
+        "trade_date": "2026-03-13",
+        "action_level": "observe_only",
+        "action_label": "仅观察"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "300677.SZ",
+          "601611.SH",
+          "601669.SH"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 11.9484
+        },
+        "trade_date": "2026-03-13",
+        "action_level": "observe_only",
+        "action_label": "仅观察"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "688097.SH",
+          "300672.SZ"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 5.5644,
+          "best_candidate_t2_profit_window_pct": 17.2606
+        },
+        "trade_date": "2026-03-12",
+        "action_level": "cautious_go",
+        "action_label": "谨慎出手"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "688097.SH",
+          "600821.SH",
+          "002150.SZ"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 8.6392
+        },
+        "trade_date": "2026-03-12",
+        "action_level": "cautious_go",
+        "action_label": "谨慎出手"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "002432.SZ",
+          "601016.SH"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 3.705,
+          "best_candidate_t2_profit_window_pct": 12.2931
+        },
+        "trade_date": "2026-03-11",
+        "action_level": "normal_go",
+        "action_label": "可正常出手"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "002432.SZ",
+          "603629.SH",
+          "301251.SZ"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 5.6624
+        },
+        "trade_date": "2026-03-11",
+        "action_level": "normal_go",
+        "action_label": "可正常出手"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "688048.SH",
+          "601778.SH"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 4.466,
+          "best_candidate_t2_profit_window_pct": 14.955
+        },
+        "trade_date": "2026-03-10",
+        "action_level": "cautious_go",
+        "action_label": "谨慎出手"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "300811.SZ",
+          "688048.SH",
+          "688498.SH"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 6.031
+        },
+        "trade_date": "2026-03-10",
+        "action_level": "cautious_go",
+        "action_label": "谨慎出手"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "003035.SZ",
+          "300257.SZ"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 9.499,
+          "best_candidate_t2_profit_window_pct": 26.8367
+        },
+        "trade_date": "2026-03-09",
+        "action_level": "normal_go",
+        "action_label": "可正常出手"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "001696.SZ",
+          "301205.SZ"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 1.811,
+          "best_candidate_t2_profit_window_pct": 14.8933
+        },
+        "trade_date": "2026-03-06",
+        "action_level": "cautious_go",
+        "action_label": "谨慎出手"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "001696.SZ",
+          "688176.SH",
+          "688331.SH"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 4.9103
+        },
+        "trade_date": "2026-03-06",
+        "action_level": "cautious_go",
+        "action_label": "谨慎出手"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "688031.SH",
+          "300072.SZ",
+          "300895.SZ"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 4.3185
+        },
+        "trade_date": "2026-03-05",
+        "action_level": "cautious_go",
+        "action_label": "谨慎出手"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "600821.SH",
+          "600875.SH"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 9.1371,
+          "best_candidate_t2_profit_window_pct": 13.7914
+        },
+        "trade_date": "2026-03-04",
+        "action_level": "observe_only",
+        "action_label": "仅观察"
+      },
+      {
+        "issue_key": "gate_missed_opportunity",
+        "severity": "warning",
+        "title": "总闸门可能错杀机会",
+        "summary": "当日被降到观察/不做，但候选池整体 T+2 利润窗口和正收益率仍偏强。",
+        "affected_codes": [
+          "688297.SH",
+          "600821.SH",
+          "600875.SH"
+        ],
+        "metrics": {
+          "candidate_positive_t2_rate_pct": 60.0,
+          "candidate_avg_t2_profit_window_pct": 4.748
+        },
+        "trade_date": "2026-03-04",
+        "action_level": "observe_only",
+        "action_label": "仅观察"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "600821.SH",
+          "600313.SH",
+          "600108.SH"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 6.9044
+        },
+        "trade_date": "2026-03-04",
+        "action_level": "observe_only",
+        "action_label": "仅观察"
+      },
+      {
+        "issue_key": "trigger_efficiency_low",
+        "severity": "warning",
+        "title": "买点触发效率偏低",
+        "summary": "候选池后续表现并不弱，但二次决策组合的触发率明显偏低，说明买点规则仍可能过严。",
+        "affected_codes": [
+          "601919.SH",
+          "600188.SH",
+          "600403.SH"
+        ],
+        "metrics": {
+          "decision_trigger_rate_pct": 33.33,
+          "candidate_avg_t2_profit_window_pct": 2.509
+        },
+        "trade_date": "2026-03-03",
+        "action_level": "normal_go",
+        "action_label": "可正常出手"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "601919.SH",
+          "601808.SH"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 0.0,
+          "best_candidate_t2_profit_window_pct": 8.6524
+        },
+        "trade_date": "2026-03-03",
+        "action_level": "normal_go",
+        "action_label": "可正常出手"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "601919.SH",
+          "600188.SH",
+          "600403.SH"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 9.8689
+        },
+        "trade_date": "2026-03-03",
+        "action_level": "normal_go",
+        "action_label": "可正常出手"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "603083.SH",
+          "300157.SZ"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 3.4458,
+          "best_candidate_t2_profit_window_pct": 20.5776
+        },
+        "trade_date": "2026-03-02",
+        "action_level": "cautious_go",
+        "action_label": "谨慎出手"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "603083.SH",
+          "002155.SZ",
+          "688205.SH"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 7.2806
+        },
+        "trade_date": "2026-03-02",
+        "action_level": "cautious_go",
+        "action_label": "谨慎出手"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "688480.SH",
+          "600487.SH"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 5.7876,
+          "best_candidate_t2_profit_window_pct": 10.9953
+        },
+        "trade_date": "2026-02-27",
+        "action_level": "strong_go",
+        "action_label": "强烈可做"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "688480.SH",
+          "600010.SH",
+          "300774.SZ"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 13.7807
+        },
+        "trade_date": "2026-02-27",
+        "action_level": "strong_go",
+        "action_label": "强烈可做"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "600111.SH",
+          "002008.SZ"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 4.0258,
+          "best_candidate_t2_profit_window_pct": 14.2122
+        },
+        "trade_date": "2026-02-25",
+        "action_level": "normal_go",
+        "action_label": "可正常出手"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "000338.SZ",
+          "300191.SZ"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 2.722,
+          "best_candidate_t2_profit_window_pct": 13.3863
+        },
+        "trade_date": "2026-02-24",
+        "action_level": "normal_go",
+        "action_label": "可正常出手"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "002080.SZ",
+          "301018.SZ"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 0.2206,
+          "best_candidate_t2_profit_window_pct": 9.8353
+        },
+        "trade_date": "2026-02-12",
+        "action_level": "normal_go",
+        "action_label": "可正常出手"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "300251.SZ",
+          "000818.SZ",
+          "300528.SZ"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 9.2277
+        },
+        "trade_date": "2026-02-10",
+        "action_level": "cautious_go",
+        "action_label": "谨慎出手"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "300620.SZ",
+          "600875.SH"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 0.7816,
+          "best_candidate_t2_profit_window_pct": 9.0343
+        },
+        "trade_date": "2026-02-09",
+        "action_level": "strong_go",
+        "action_label": "强烈可做"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "300620.SZ",
+          "300394.SZ",
+          "301232.SZ"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 8.1005
+        },
+        "trade_date": "2026-02-09",
+        "action_level": "strong_go",
+        "action_label": "强烈可做"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "301312.SZ",
+          "002957.SZ"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 5.9411,
+          "best_candidate_t2_profit_window_pct": 9.806
+        },
+        "trade_date": "2026-02-06",
+        "action_level": "cautious_go",
+        "action_label": "谨慎出手"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "301312.SZ",
+          "002506.SZ",
+          "300953.SZ"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 4.3121
+        },
+        "trade_date": "2026-02-06",
+        "action_level": "cautious_go",
+        "action_label": "谨慎出手"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "000636.SZ",
+          "688262.SH"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 1.6872,
+          "best_candidate_t2_profit_window_pct": 15.2152
+        },
+        "trade_date": "2026-02-05",
+        "action_level": "cautious_go",
+        "action_label": "谨慎出手"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "000636.SZ",
+          "300300.SZ",
+          "300373.SZ"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 6.1219
+        },
+        "trade_date": "2026-02-05",
+        "action_level": "cautious_go",
+        "action_label": "谨慎出手"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "688223.SH",
+          "000983.SZ",
+          "601699.SH"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 5.7446
+        },
+        "trade_date": "2026-02-04",
+        "action_level": "normal_go",
+        "action_label": "可正常出手"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "300842.SZ",
+          "300316.SZ"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 0.4098,
+          "best_candidate_t2_profit_window_pct": 19.6659
+        },
+        "trade_date": "2026-02-03",
+        "action_level": "cautious_go",
+        "action_label": "谨慎出手"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "300757.SZ",
+          "300842.SZ",
+          "688025.SH"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 11.9175
+        },
+        "trade_date": "2026-02-03",
+        "action_level": "cautious_go",
+        "action_label": "谨慎出手"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "300265.SZ",
+          "003035.SZ"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 11.6774,
+          "best_candidate_t2_profit_window_pct": 19.432
+        },
+        "trade_date": "2026-02-02",
+        "action_level": "observe_only",
+        "action_label": "仅观察"
+      },
+      {
+        "issue_key": "gate_missed_opportunity",
+        "severity": "warning",
+        "title": "总闸门可能错杀机会",
+        "summary": "当日被降到观察/不做，但候选池整体 T+2 利润窗口和正收益率仍偏强。",
+        "affected_codes": [
+          "300265.SZ",
+          "300215.SZ",
+          "002606.SZ"
+        ],
+        "metrics": {
+          "candidate_positive_t2_rate_pct": 70.0,
+          "candidate_avg_t2_profit_window_pct": 7.8019
+        },
+        "trade_date": "2026-02-02",
+        "action_level": "observe_only",
+        "action_label": "仅观察"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "300731.SZ",
+          "688167.SH"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 0.1447,
+          "best_candidate_t2_profit_window_pct": 19.8508
+        },
+        "trade_date": "2026-01-30",
+        "action_level": "cautious_go",
+        "action_label": "谨慎出手"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "300731.SZ",
+          "603863.SH",
+          "600963.SH"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 4.6722
+        },
+        "trade_date": "2026-01-30",
+        "action_level": "cautious_go",
+        "action_label": "谨慎出手"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "600649.SH",
+          "600339.SH"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 0.9107,
+          "best_candidate_t2_profit_window_pct": 7.3563
+        },
+        "trade_date": "2026-01-29",
+        "action_level": "cautious_go",
+        "action_label": "谨慎出手"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "300191.SZ",
+          "600649.SH",
+          "000560.SZ"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 11.6018
+        },
+        "trade_date": "2026-01-29",
+        "action_level": "cautious_go",
+        "action_label": "谨慎出手"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "002080.SZ",
+          "300191.SZ"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 5.6,
+          "best_candidate_t2_profit_window_pct": 23.1029
+        },
+        "trade_date": "2026-01-28",
+        "action_level": "normal_go",
+        "action_label": "可正常出手"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "002080.SZ",
+          "300191.SZ",
+          "300164.SZ"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 4.2252
+        },
+        "trade_date": "2026-01-28",
+        "action_level": "normal_go",
+        "action_label": "可正常出手"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "300806.SZ",
+          "688110.SH",
+          "688702.SH"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 7.3331
+        },
+        "trade_date": "2026-01-27",
+        "action_level": "strong_go",
+        "action_label": "强烈可做"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "300316.SZ",
+          "300102.SZ"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 1.5425,
+          "best_candidate_t2_profit_window_pct": 12.0958
+        },
+        "trade_date": "2026-01-23",
+        "action_level": "normal_go",
+        "action_label": "可正常出手"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "300316.SZ",
+          "688270.SH",
+          "300724.SZ"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 7.6698
+        },
+        "trade_date": "2026-01-23",
+        "action_level": "normal_go",
+        "action_label": "可正常出手"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "300454.SZ",
+          "688390.SH"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 10.0496,
+          "best_candidate_t2_profit_window_pct": 13.8172
+        },
+        "trade_date": "2026-01-22",
+        "action_level": "cautious_go",
+        "action_label": "谨慎出手"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "600246.SH",
+          "601212.SH"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 2.8881,
+          "best_candidate_t2_profit_window_pct": 22.8673
+        },
+        "trade_date": "2026-01-21",
+        "action_level": "strong_go",
+        "action_label": "强烈可做"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "600246.SH",
+          "300757.SZ",
+          "300606.SZ"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 7.2309
+        },
+        "trade_date": "2026-01-21",
+        "action_level": "strong_go",
+        "action_label": "强烈可做"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "600893.SH",
+          "000506.SZ"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 7.5865,
+          "best_candidate_t2_profit_window_pct": 19.2474
+        },
+        "trade_date": "2026-01-19",
+        "action_level": "strong_go",
+        "action_label": "强烈可做"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "600893.SH",
+          "300111.SZ",
+          "002219.SZ"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 6.6663
+        },
+        "trade_date": "2026-01-19",
+        "action_level": "strong_go",
+        "action_label": "强烈可做"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "688234.SH",
+          "002156.SZ"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 3.2704,
+          "best_candidate_t2_profit_window_pct": 11.1579
+        },
+        "trade_date": "2026-01-16",
+        "action_level": "cautious_go",
+        "action_label": "谨慎出手"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "688234.SH",
+          "000620.SZ",
+          "688362.SH"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 4.7383
+        },
+        "trade_date": "2026-01-16",
+        "action_level": "cautious_go",
+        "action_label": "谨慎出手"
+      },
+      {
+        "issue_key": "main_slot_underperformed",
+        "severity": "warning",
+        "title": "主仓排序可能偏弱",
+        "summary": "候选池内存在明显优于主仓的标的，说明主仓排序可能需要继续校准。",
+        "affected_codes": [
+          "300236.SZ",
+          "301348.SZ"
+        ],
+        "metrics": {
+          "main_t2_profit_window_pct": 0.2355,
+          "best_candidate_t2_profit_window_pct": 22.7819
+        },
+        "trade_date": "2026-01-15",
+        "action_level": "cautious_go",
+        "action_label": "谨慎出手"
+      },
+      {
+        "issue_key": "drawdown_pressure_high",
+        "severity": "warning",
+        "title": "组合回撤压力偏高",
+        "summary": "默认组合的 T+2 平均最大回撤偏高，需要关注风险约束和入场位置。",
+        "affected_codes": [
+          "300236.SZ",
+          "600316.SH",
+          "301348.SZ"
+        ],
+        "metrics": {
+          "decision_avg_t2_max_drawdown_pct": 4.6629
+        },
+        "trade_date": "2026-01-15",
+        "action_level": "cautious_go",
+        "action_label": "谨慎出手"
+      }
+    ]
+  },
+  "daily": [
+    {
+      "trade_date": "2026-04-17",
+      "action_level": "normal_go",
+      "action_label": "可正常出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "full",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 199,
+      "result_count": 199,
+      "selected_count": 3,
+      "buy_ready_count": 2,
+      "main_ts_code": "300806.SZ",
+      "secondary_ts_code": "301319.SZ",
+      "watch_ts_code": "600703.SH"
+    },
+    {
+      "trade_date": "2026-04-16",
+      "action_level": "normal_go",
+      "action_label": "可正常出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "full",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 228,
+      "result_count": 228,
+      "selected_count": 3,
+      "buy_ready_count": 3,
+      "main_ts_code": "600549.SH",
+      "secondary_ts_code": "300738.SZ",
+      "watch_ts_code": "688668.SH"
+    },
+    {
+      "trade_date": "2026-04-15",
+      "action_level": "observe_only",
+      "action_label": "仅观察",
+      "recommendation_cap": "limited",
+      "action_checklist_mode": "disabled",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "weak",
+      "historical_validity_level": "general",
+      "candidate_count": 143,
+      "result_count": 143,
+      "selected_count": 3,
+      "buy_ready_count": 0,
+      "main_ts_code": "688166.SH",
+      "secondary_ts_code": "002361.SZ",
+      "watch_ts_code": "300798.SZ"
+    },
+    {
+      "trade_date": "2026-04-14",
+      "action_level": "cautious_go",
+      "action_label": "谨慎出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "simplified",
+      "market_environment_level": "medium",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 219,
+      "result_count": 219,
+      "selected_count": 3,
+      "buy_ready_count": 1,
+      "main_ts_code": "002407.SZ",
+      "secondary_ts_code": "002149.SZ",
+      "watch_ts_code": "002240.SZ"
+    },
+    {
+      "trade_date": "2026-04-13",
+      "action_level": "strong_go",
+      "action_label": "强烈可做",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "full",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 177,
+      "result_count": 177,
+      "selected_count": 3,
+      "buy_ready_count": 2,
+      "main_ts_code": "002240.SZ",
+      "secondary_ts_code": "301526.SZ",
+      "watch_ts_code": "600176.SH"
+    },
+    {
+      "trade_date": "2026-04-10",
+      "action_level": "cautious_go",
+      "action_label": "谨慎出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "simplified",
+      "market_environment_level": "medium",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 140,
+      "result_count": 140,
+      "selected_count": 3,
+      "buy_ready_count": 1,
+      "main_ts_code": "000762.SZ",
+      "secondary_ts_code": "300131.SZ",
+      "watch_ts_code": "002384.SZ"
+    },
+    {
+      "trade_date": "2026-04-09",
+      "action_level": "normal_go",
+      "action_label": "可正常出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "full",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 128,
+      "result_count": 128,
+      "selected_count": 3,
+      "buy_ready_count": 3,
+      "main_ts_code": "002281.SZ",
+      "secondary_ts_code": "600629.SH",
+      "watch_ts_code": "300548.SZ"
+    },
+    {
+      "trade_date": "2026-04-08",
+      "action_level": "strong_go",
+      "action_label": "强烈可做",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "full",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 597,
+      "result_count": 597,
+      "selected_count": 3,
+      "buy_ready_count": 3,
+      "main_ts_code": "688630.SH",
+      "secondary_ts_code": "300058.SZ",
+      "watch_ts_code": "301171.SZ"
+    },
+    {
+      "trade_date": "2026-04-07",
+      "action_level": "cautious_go",
+      "action_label": "谨慎出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "simplified",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "medium",
+      "historical_validity_level": "healthy",
+      "candidate_count": 165,
+      "result_count": 165,
+      "selected_count": 3,
+      "buy_ready_count": 1,
+      "main_ts_code": "605299.SH",
+      "secondary_ts_code": "002051.SZ",
+      "watch_ts_code": "300651.SZ"
+    },
+    {
+      "trade_date": "2026-04-03",
+      "action_level": "cautious_go",
+      "action_label": "谨慎出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "simplified",
+      "market_environment_level": "medium",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 92,
+      "result_count": 92,
+      "selected_count": 3,
+      "buy_ready_count": 1,
+      "main_ts_code": "603067.SH",
+      "secondary_ts_code": "688226.SH",
+      "watch_ts_code": "600869.SH"
+    },
+    {
+      "trade_date": "2026-04-02",
+      "action_level": "cautious_go",
+      "action_label": "谨慎出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "simplified",
+      "market_environment_level": "medium",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 82,
+      "result_count": 82,
+      "selected_count": 3,
+      "buy_ready_count": 1,
+      "main_ts_code": "688336.SH",
+      "secondary_ts_code": "600339.SH",
+      "watch_ts_code": "603122.SH"
+    },
+    {
+      "trade_date": "2026-04-01",
+      "action_level": "strong_go",
+      "action_label": "强烈可做",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "full",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 231,
+      "result_count": 231,
+      "selected_count": 3,
+      "buy_ready_count": 3,
+      "main_ts_code": "300436.SZ",
+      "secondary_ts_code": "688668.SH",
+      "watch_ts_code": "300394.SZ"
+    },
+    {
+      "trade_date": "2026-03-31",
+      "action_level": "cautious_go",
+      "action_label": "谨慎出手",
+      "recommendation_cap": "limited",
+      "action_checklist_mode": "simplified",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "medium",
+      "historical_validity_level": "general",
+      "candidate_count": 75,
+      "result_count": 75,
+      "selected_count": 3,
+      "buy_ready_count": 1,
+      "main_ts_code": "002082.SZ",
+      "secondary_ts_code": "002263.SZ",
+      "watch_ts_code": "603826.SH"
+    },
+    {
+      "trade_date": "2026-03-30",
+      "action_level": "normal_go",
+      "action_label": "可正常出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "full",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 130,
+      "result_count": 130,
+      "selected_count": 3,
+      "buy_ready_count": 3,
+      "main_ts_code": "002222.SZ",
+      "secondary_ts_code": "600219.SH",
+      "watch_ts_code": "000807.SZ"
+    },
+    {
+      "trade_date": "2026-03-27",
+      "action_level": "strong_go",
+      "action_label": "强烈可做",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "full",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 164,
+      "result_count": 164,
+      "selected_count": 3,
+      "buy_ready_count": 3,
+      "main_ts_code": "002460.SZ",
+      "secondary_ts_code": "001896.SZ",
+      "watch_ts_code": "002428.SZ"
+    },
+    {
+      "trade_date": "2026-03-26",
+      "action_level": "observe_only",
+      "action_label": "仅观察",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "disabled",
+      "market_environment_level": "medium",
+      "opportunity_quality_level": "medium",
+      "historical_validity_level": "healthy",
+      "candidate_count": 85,
+      "result_count": 85,
+      "selected_count": 3,
+      "buy_ready_count": 0,
+      "main_ts_code": "002149.SZ",
+      "secondary_ts_code": "002082.SZ",
+      "watch_ts_code": "002192.SZ"
+    },
+    {
+      "trade_date": "2026-03-25",
+      "action_level": "strong_go",
+      "action_label": "强烈可做",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "full",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 205,
+      "result_count": 205,
+      "selected_count": 3,
+      "buy_ready_count": 2,
+      "main_ts_code": "301196.SZ",
+      "secondary_ts_code": "601606.SH",
+      "watch_ts_code": "600316.SH"
+    },
+    {
+      "trade_date": "2026-03-24",
+      "action_level": "cautious_go",
+      "action_label": "谨慎出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "simplified",
+      "market_environment_level": "medium",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 274,
+      "result_count": 274,
+      "selected_count": 3,
+      "buy_ready_count": 1,
+      "main_ts_code": "688519.SH",
+      "secondary_ts_code": "000035.SZ",
+      "watch_ts_code": "301183.SZ"
+    },
+    {
+      "trade_date": "2026-03-23",
+      "action_level": "observe_only",
+      "action_label": "仅观察",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "disabled",
+      "market_environment_level": "medium",
+      "opportunity_quality_level": "medium",
+      "historical_validity_level": "healthy",
+      "candidate_count": 61,
+      "result_count": 61,
+      "selected_count": 3,
+      "buy_ready_count": 0,
+      "main_ts_code": "688268.SH",
+      "secondary_ts_code": "600032.SH",
+      "watch_ts_code": "603105.SH"
+    },
+    {
+      "trade_date": "2026-03-20",
+      "action_level": "observe_only",
+      "action_label": "仅观察",
+      "recommendation_cap": "limited",
+      "action_checklist_mode": "disabled",
+      "market_environment_level": "medium",
+      "opportunity_quality_level": "weak",
+      "historical_validity_level": "general",
+      "candidate_count": 92,
+      "result_count": 92,
+      "selected_count": 3,
+      "buy_ready_count": 0,
+      "main_ts_code": "688498.SH",
+      "secondary_ts_code": "301658.SZ",
+      "watch_ts_code": "000509.SZ"
+    },
+    {
+      "trade_date": "2026-03-19",
+      "action_level": "observe_only",
+      "action_label": "仅观察",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "disabled",
+      "market_environment_level": "medium",
+      "opportunity_quality_level": "medium",
+      "historical_validity_level": "healthy",
+      "candidate_count": 64,
+      "result_count": 64,
+      "selected_count": 3,
+      "buy_ready_count": 0,
+      "main_ts_code": "300332.SZ",
+      "secondary_ts_code": "688268.SH",
+      "watch_ts_code": "688048.SH"
+    },
+    {
+      "trade_date": "2026-03-18",
+      "action_level": "cautious_go",
+      "action_label": "谨慎出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "simplified",
+      "market_environment_level": "medium",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 202,
+      "result_count": 202,
+      "selected_count": 3,
+      "buy_ready_count": 1,
+      "main_ts_code": "002432.SZ",
+      "secondary_ts_code": "301306.SZ",
+      "watch_ts_code": "688319.SH"
+    },
+    {
+      "trade_date": "2026-03-17",
+      "action_level": "normal_go",
+      "action_label": "可正常出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "full",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 76,
+      "result_count": 76,
+      "selected_count": 3,
+      "buy_ready_count": 3,
+      "main_ts_code": "688295.SH",
+      "secondary_ts_code": "301667.SZ",
+      "watch_ts_code": "002470.SZ"
+    },
+    {
+      "trade_date": "2026-03-16",
+      "action_level": "observe_only",
+      "action_label": "仅观察",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "disabled",
+      "market_environment_level": "medium",
+      "opportunity_quality_level": "medium",
+      "historical_validity_level": "healthy",
+      "candidate_count": 149,
+      "result_count": 149,
+      "selected_count": 3,
+      "buy_ready_count": 0,
+      "main_ts_code": "600667.SH",
+      "secondary_ts_code": "300209.SZ",
+      "watch_ts_code": "300042.SZ"
+    },
+    {
+      "trade_date": "2026-03-13",
+      "action_level": "observe_only",
+      "action_label": "仅观察",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "disabled",
+      "market_environment_level": "medium",
+      "opportunity_quality_level": "medium",
+      "historical_validity_level": "healthy",
+      "candidate_count": 97,
+      "result_count": 97,
+      "selected_count": 3,
+      "buy_ready_count": 0,
+      "main_ts_code": "300677.SZ",
+      "secondary_ts_code": "601611.SH",
+      "watch_ts_code": "601669.SH"
+    },
+    {
+      "trade_date": "2026-03-12",
+      "action_level": "cautious_go",
+      "action_label": "谨慎出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "simplified",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "medium",
+      "historical_validity_level": "healthy",
+      "candidate_count": 136,
+      "result_count": 136,
+      "selected_count": 3,
+      "buy_ready_count": 1,
+      "main_ts_code": "688097.SH",
+      "secondary_ts_code": "600821.SH",
+      "watch_ts_code": "002150.SZ"
+    },
+    {
+      "trade_date": "2026-03-11",
+      "action_level": "normal_go",
+      "action_label": "可正常出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "full",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 161,
+      "result_count": 161,
+      "selected_count": 3,
+      "buy_ready_count": 2,
+      "main_ts_code": "002432.SZ",
+      "secondary_ts_code": "603629.SH",
+      "watch_ts_code": "301251.SZ"
+    },
+    {
+      "trade_date": "2026-03-10",
+      "action_level": "cautious_go",
+      "action_label": "谨慎出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "simplified",
+      "market_environment_level": "medium",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 251,
+      "result_count": 251,
+      "selected_count": 3,
+      "buy_ready_count": 1,
+      "main_ts_code": "688048.SH",
+      "secondary_ts_code": "300811.SZ",
+      "watch_ts_code": "688498.SH"
+    },
+    {
+      "trade_date": "2026-03-09",
+      "action_level": "normal_go",
+      "action_label": "可正常出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "full",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 130,
+      "result_count": 130,
+      "selected_count": 3,
+      "buy_ready_count": 2,
+      "main_ts_code": "003035.SZ",
+      "secondary_ts_code": "601877.SH",
+      "watch_ts_code": "300438.SZ"
+    },
+    {
+      "trade_date": "2026-03-06",
+      "action_level": "cautious_go",
+      "action_label": "谨慎出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "simplified",
+      "market_environment_level": "medium",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 188,
+      "result_count": 188,
+      "selected_count": 3,
+      "buy_ready_count": 1,
+      "main_ts_code": "001696.SZ",
+      "secondary_ts_code": "688176.SH",
+      "watch_ts_code": "688331.SH"
+    },
+    {
+      "trade_date": "2026-03-05",
+      "action_level": "cautious_go",
+      "action_label": "谨慎出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "simplified",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "medium",
+      "historical_validity_level": "healthy",
+      "candidate_count": 186,
+      "result_count": 186,
+      "selected_count": 3,
+      "buy_ready_count": 1,
+      "main_ts_code": "688031.SH",
+      "secondary_ts_code": "300072.SZ",
+      "watch_ts_code": "300895.SZ"
+    },
+    {
+      "trade_date": "2026-03-04",
+      "action_level": "observe_only",
+      "action_label": "仅观察",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "disabled",
+      "market_environment_level": "medium",
+      "opportunity_quality_level": "medium",
+      "historical_validity_level": "healthy",
+      "candidate_count": 137,
+      "result_count": 137,
+      "selected_count": 3,
+      "buy_ready_count": 0,
+      "main_ts_code": "600821.SH",
+      "secondary_ts_code": "600313.SH",
+      "watch_ts_code": "600108.SH"
+    },
+    {
+      "trade_date": "2026-03-03",
+      "action_level": "normal_go",
+      "action_label": "可正常出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "full",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 107,
+      "result_count": 107,
+      "selected_count": 3,
+      "buy_ready_count": 2,
+      "main_ts_code": "601919.SH",
+      "secondary_ts_code": "600188.SH",
+      "watch_ts_code": "600403.SH"
+    },
+    {
+      "trade_date": "2026-03-02",
+      "action_level": "cautious_go",
+      "action_label": "谨慎出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "simplified",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "medium",
+      "historical_validity_level": "healthy",
+      "candidate_count": 233,
+      "result_count": 233,
+      "selected_count": 3,
+      "buy_ready_count": 1,
+      "main_ts_code": "603083.SH",
+      "secondary_ts_code": "002155.SZ",
+      "watch_ts_code": "688205.SH"
+    },
+    {
+      "trade_date": "2026-02-27",
+      "action_level": "strong_go",
+      "action_label": "强烈可做",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "full",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 202,
+      "result_count": 202,
+      "selected_count": 3,
+      "buy_ready_count": 3,
+      "main_ts_code": "688480.SH",
+      "secondary_ts_code": "600010.SH",
+      "watch_ts_code": "300774.SZ"
+    },
+    {
+      "trade_date": "2026-02-26",
+      "action_level": "strong_go",
+      "action_label": "强烈可做",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "full",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 224,
+      "result_count": 224,
+      "selected_count": 3,
+      "buy_ready_count": 3,
+      "main_ts_code": "600498.SH",
+      "secondary_ts_code": "688629.SH",
+      "watch_ts_code": "300442.SZ"
+    },
+    {
+      "trade_date": "2026-02-25",
+      "action_level": "normal_go",
+      "action_label": "可正常出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "full",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 220,
+      "result_count": 220,
+      "selected_count": 3,
+      "buy_ready_count": 3,
+      "main_ts_code": "600111.SH",
+      "secondary_ts_code": "000547.SZ",
+      "watch_ts_code": "000657.SZ"
+    },
+    {
+      "trade_date": "2026-02-24",
+      "action_level": "normal_go",
+      "action_label": "可正常出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "full",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 253,
+      "result_count": 253,
+      "selected_count": 3,
+      "buy_ready_count": 3,
+      "main_ts_code": "000338.SZ",
+      "secondary_ts_code": "300191.SZ",
+      "watch_ts_code": "603306.SH"
+    },
+    {
+      "trade_date": "2026-02-13",
+      "action_level": "normal_go",
+      "action_label": "可正常出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "full",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 73,
+      "result_count": 73,
+      "selected_count": 3,
+      "buy_ready_count": 2,
+      "main_ts_code": "600893.SH",
+      "secondary_ts_code": "000021.SZ",
+      "watch_ts_code": "688702.SH"
+    },
+    {
+      "trade_date": "2026-02-12",
+      "action_level": "normal_go",
+      "action_label": "可正常出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "full",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 185,
+      "result_count": 185,
+      "selected_count": 3,
+      "buy_ready_count": 2,
+      "main_ts_code": "002080.SZ",
+      "secondary_ts_code": "300846.SZ",
+      "watch_ts_code": "300277.SZ"
+    },
+    {
+      "trade_date": "2026-02-11",
+      "action_level": "cautious_go",
+      "action_label": "谨慎出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "simplified",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "medium",
+      "historical_validity_level": "healthy",
+      "candidate_count": 116,
+      "result_count": 116,
+      "selected_count": 3,
+      "buy_ready_count": 1,
+      "main_ts_code": "000657.SZ",
+      "secondary_ts_code": "002340.SZ",
+      "watch_ts_code": "002270.SZ"
+    },
+    {
+      "trade_date": "2026-02-10",
+      "action_level": "cautious_go",
+      "action_label": "谨慎出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "simplified",
+      "market_environment_level": "medium",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 137,
+      "result_count": 137,
+      "selected_count": 3,
+      "buy_ready_count": 1,
+      "main_ts_code": "300251.SZ",
+      "secondary_ts_code": "000818.SZ",
+      "watch_ts_code": "300528.SZ"
+    },
+    {
+      "trade_date": "2026-02-09",
+      "action_level": "strong_go",
+      "action_label": "强烈可做",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "full",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 284,
+      "result_count": 284,
+      "selected_count": 3,
+      "buy_ready_count": 3,
+      "main_ts_code": "300620.SZ",
+      "secondary_ts_code": "301232.SZ",
+      "watch_ts_code": "300394.SZ"
+    },
+    {
+      "trade_date": "2026-02-06",
+      "action_level": "cautious_go",
+      "action_label": "谨慎出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "simplified",
+      "market_environment_level": "medium",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 142,
+      "result_count": 142,
+      "selected_count": 3,
+      "buy_ready_count": 1,
+      "main_ts_code": "301312.SZ",
+      "secondary_ts_code": "300953.SZ",
+      "watch_ts_code": "002506.SZ"
+    },
+    {
+      "trade_date": "2026-02-05",
+      "action_level": "cautious_go",
+      "action_label": "谨慎出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "simplified",
+      "market_environment_level": "medium",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 86,
+      "result_count": 86,
+      "selected_count": 3,
+      "buy_ready_count": 1,
+      "main_ts_code": "000636.SZ",
+      "secondary_ts_code": "300300.SZ",
+      "watch_ts_code": "300373.SZ"
+    },
+    {
+      "trade_date": "2026-02-04",
+      "action_level": "normal_go",
+      "action_label": "可正常出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "full",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 163,
+      "result_count": 163,
+      "selected_count": 3,
+      "buy_ready_count": 3,
+      "main_ts_code": "688223.SH",
+      "secondary_ts_code": "000983.SZ",
+      "watch_ts_code": "601699.SH"
+    },
+    {
+      "trade_date": "2026-02-03",
+      "action_level": "cautious_go",
+      "action_label": "谨慎出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "simplified",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "medium",
+      "historical_validity_level": "healthy",
+      "candidate_count": 364,
+      "result_count": 364,
+      "selected_count": 3,
+      "buy_ready_count": 1,
+      "main_ts_code": "300842.SZ",
+      "secondary_ts_code": "300757.SZ",
+      "watch_ts_code": "688025.SH"
+    },
+    {
+      "trade_date": "2026-02-02",
+      "action_level": "observe_only",
+      "action_label": "仅观察",
+      "recommendation_cap": "limited",
+      "action_checklist_mode": "disabled",
+      "market_environment_level": "medium",
+      "opportunity_quality_level": "medium",
+      "historical_validity_level": "general",
+      "candidate_count": 62,
+      "result_count": 62,
+      "selected_count": 3,
+      "buy_ready_count": 0,
+      "main_ts_code": "300265.SZ",
+      "secondary_ts_code": "600779.SH",
+      "watch_ts_code": "600550.SH"
+    },
+    {
+      "trade_date": "2026-01-30",
+      "action_level": "cautious_go",
+      "action_label": "谨慎出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "simplified",
+      "market_environment_level": "medium",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 162,
+      "result_count": 162,
+      "selected_count": 3,
+      "buy_ready_count": 1,
+      "main_ts_code": "300731.SZ",
+      "secondary_ts_code": "603863.SH",
+      "watch_ts_code": "600963.SH"
+    },
+    {
+      "trade_date": "2026-01-29",
+      "action_level": "cautious_go",
+      "action_label": "谨慎出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "simplified",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "medium",
+      "historical_validity_level": "healthy",
+      "candidate_count": 176,
+      "result_count": 176,
+      "selected_count": 3,
+      "buy_ready_count": 1,
+      "main_ts_code": "600649.SH",
+      "secondary_ts_code": "300191.SZ",
+      "watch_ts_code": "000560.SZ"
+    },
+    {
+      "trade_date": "2026-01-28",
+      "action_level": "normal_go",
+      "action_label": "可正常出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "full",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 203,
+      "result_count": 203,
+      "selected_count": 3,
+      "buy_ready_count": 3,
+      "main_ts_code": "002080.SZ",
+      "secondary_ts_code": "300191.SZ",
+      "watch_ts_code": "300164.SZ"
+    },
+    {
+      "trade_date": "2026-01-27",
+      "action_level": "strong_go",
+      "action_label": "强烈可做",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "full",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 220,
+      "result_count": 220,
+      "selected_count": 3,
+      "buy_ready_count": 3,
+      "main_ts_code": "300806.SZ",
+      "secondary_ts_code": "688110.SH",
+      "watch_ts_code": "688702.SH"
+    },
+    {
+      "trade_date": "2026-01-26",
+      "action_level": "cautious_go",
+      "action_label": "谨慎出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "simplified",
+      "market_environment_level": "medium",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 182,
+      "result_count": 182,
+      "selected_count": 3,
+      "buy_ready_count": 1,
+      "main_ts_code": "300139.SZ",
+      "secondary_ts_code": "600759.SH",
+      "watch_ts_code": "000630.SZ"
+    },
+    {
+      "trade_date": "2026-01-23",
+      "action_level": "normal_go",
+      "action_label": "可正常出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "full",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 405,
+      "result_count": 405,
+      "selected_count": 3,
+      "buy_ready_count": 3,
+      "main_ts_code": "300316.SZ",
+      "secondary_ts_code": "688270.SH",
+      "watch_ts_code": "300724.SZ"
+    },
+    {
+      "trade_date": "2026-01-22",
+      "action_level": "cautious_go",
+      "action_label": "谨慎出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "simplified",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "medium",
+      "historical_validity_level": "healthy",
+      "candidate_count": 210,
+      "result_count": 210,
+      "selected_count": 3,
+      "buy_ready_count": 1,
+      "main_ts_code": "300454.SZ",
+      "secondary_ts_code": "603256.SH",
+      "watch_ts_code": "300737.SZ"
+    },
+    {
+      "trade_date": "2026-01-21",
+      "action_level": "strong_go",
+      "action_label": "强烈可做",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "full",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 240,
+      "result_count": 240,
+      "selected_count": 3,
+      "buy_ready_count": 3,
+      "main_ts_code": "600246.SH",
+      "secondary_ts_code": "300757.SZ",
+      "watch_ts_code": "300606.SZ"
+    },
+    {
+      "trade_date": "2026-01-20",
+      "action_level": "strong_go",
+      "action_label": "强烈可做",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "full",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 118,
+      "result_count": 118,
+      "selected_count": 3,
+      "buy_ready_count": 3,
+      "main_ts_code": "601212.SH",
+      "secondary_ts_code": "601117.SH",
+      "watch_ts_code": "300986.SZ"
+    },
+    {
+      "trade_date": "2026-01-19",
+      "action_level": "strong_go",
+      "action_label": "强烈可做",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "full",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 259,
+      "result_count": 259,
+      "selected_count": 3,
+      "buy_ready_count": 2,
+      "main_ts_code": "600893.SH",
+      "secondary_ts_code": "300111.SZ",
+      "watch_ts_code": "002219.SZ"
+    },
+    {
+      "trade_date": "2026-01-16",
+      "action_level": "cautious_go",
+      "action_label": "谨慎出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "simplified",
+      "market_environment_level": "strong",
+      "opportunity_quality_level": "medium",
+      "historical_validity_level": "healthy",
+      "candidate_count": 238,
+      "result_count": 238,
+      "selected_count": 3,
+      "buy_ready_count": 1,
+      "main_ts_code": "688234.SH",
+      "secondary_ts_code": "000620.SZ",
+      "watch_ts_code": "688362.SH"
+    },
+    {
+      "trade_date": "2026-01-15",
+      "action_level": "cautious_go",
+      "action_label": "谨慎出手",
+      "recommendation_cap": "full",
+      "action_checklist_mode": "simplified",
+      "market_environment_level": "medium",
+      "opportunity_quality_level": "strong",
+      "historical_validity_level": "healthy",
+      "candidate_count": 157,
+      "result_count": 157,
+      "selected_count": 3,
+      "buy_ready_count": 1,
+      "main_ts_code": "300236.SZ",
+      "secondary_ts_code": "600316.SH",
+      "watch_ts_code": "301348.SZ"
+    }
+  ]
+}

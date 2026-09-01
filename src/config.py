@@ -56,6 +56,25 @@ NEWS_STRATEGY_WINDOWS: Dict[str, int] = {
     "medium": 7,
     "long": 30,
 }
+DEFAULT_REALTIME_SOURCE_PRIORITY = "tencent,akshare_sina,efinance,akshare_em"
+_REALTIME_SOURCE_PRIORITY_ALIASES = {
+    "tushare": "tushare",
+    "tusharepro": "tushare",
+    "tushareproapi": "tushare",
+    "tencent": "tencent",
+    "qq": "tencent",
+    "腾讯": "tencent",
+    "akshareqq": "tencent",
+    "aksharetencent": "tencent",
+    "sina": "akshare_sina",
+    "新浪": "akshare_sina",
+    "aksharesina": "akshare_sina",
+    "efinance": "efinance",
+    "eastmoney": "akshare_em",
+    "东财": "akshare_em",
+    "东方财富": "akshare_em",
+    "akshareem": "akshare_em",
+}
 
 
 def parse_env_bool(value: Optional[str], default: bool = False) -> bool:
@@ -169,6 +188,38 @@ def resolve_news_window_days(news_max_age_days: int, news_strategy_profile: Opti
     profile = normalize_news_strategy_profile(news_strategy_profile)
     profile_days = NEWS_STRATEGY_WINDOWS.get(profile, NEWS_STRATEGY_WINDOWS["short"])
     return max(1, min(max(1, int(news_max_age_days)), profile_days))
+
+
+def parse_realtime_source_priority(value: Optional[str]) -> Tuple[List[str], List[str]]:
+    """Parse realtime source priority into canonical internal provider keys."""
+    normalized_sources: List[str] = []
+    invalid_sources: List[str] = []
+    seen_sources = set()
+
+    for raw_token in re.split(r"[,\n]+", value or ""):
+        token = raw_token.strip()
+        if not token:
+            continue
+
+        compact_token = re.sub(r"[\s_\-./()]+", "", token).lower()
+        normalized_token = _REALTIME_SOURCE_PRIORITY_ALIASES.get(compact_token)
+        if normalized_token is None:
+            invalid_sources.append(token)
+            continue
+
+        if normalized_token in seen_sources:
+            continue
+
+        seen_sources.add(normalized_token)
+        normalized_sources.append(normalized_token)
+
+    return normalized_sources, invalid_sources
+
+
+def normalize_realtime_source_priority(value: Optional[str]) -> str:
+    """Return a comma-separated realtime source priority using internal keys."""
+    normalized_sources, _ = parse_realtime_source_priority(value)
+    return ",".join(normalized_sources)
 
 
 def canonicalize_llm_channel_protocol(value: Optional[str]) -> str:
@@ -687,6 +738,14 @@ class Config:
     realtime_source_priority: str = "tencent,akshare_sina,efinance,akshare_em"
     # 实时行情缓存时间（秒）
     realtime_cache_ttl: int = 600
+    # Momentum Screener 申万行业缓存 TTL（秒）
+    momentum_sector_cache_ttl_seconds: int = 21600
+    # Momentum Screener 默认表单配置
+    momentum_screener_default_profile: str = "standard"
+    momentum_screener_default_top_n: int = 30
+    momentum_screener_default_min_change_pct: float = 4.0
+    momentum_screener_default_min_amount_yi: float = 2.0
+    momentum_screener_default_min_turnover: float = 2.0
     # 熔断器冷却时间（秒）
     circuit_breaker_cooldown: int = 300
 
@@ -1368,6 +1427,42 @@ class Config:
             # - tushare: Tushare Pro，需要2000积分，数据全面
             realtime_source_priority=cls._resolve_realtime_source_priority(),
             realtime_cache_ttl=parse_env_int(os.getenv('REALTIME_CACHE_TTL'), 600, field_name='REALTIME_CACHE_TTL', minimum=0),
+            momentum_sector_cache_ttl_seconds=parse_env_int(
+                os.getenv('MOMENTUM_SECTOR_CACHE_TTL_SECONDS'),
+                21600,
+                field_name='MOMENTUM_SECTOR_CACHE_TTL_SECONDS',
+                minimum=0,
+            ),
+            momentum_screener_default_profile=(
+                os.getenv('MOMENTUM_SCREENER_DEFAULT_PROFILE', 'standard').strip().lower() or 'standard'
+            ),
+            momentum_screener_default_top_n=parse_env_int(
+                os.getenv('MOMENTUM_SCREENER_DEFAULT_TOP_N'),
+                30,
+                field_name='MOMENTUM_SCREENER_DEFAULT_TOP_N',
+                minimum=1,
+                maximum=100,
+            ),
+            momentum_screener_default_min_change_pct=parse_env_float(
+                os.getenv('MOMENTUM_SCREENER_DEFAULT_MIN_CHANGE_PCT'),
+                4.0,
+                field_name='MOMENTUM_SCREENER_DEFAULT_MIN_CHANGE_PCT',
+                minimum=0.0,
+                maximum=20.0,
+            ),
+            momentum_screener_default_min_amount_yi=parse_env_float(
+                os.getenv('MOMENTUM_SCREENER_DEFAULT_MIN_AMOUNT_YI'),
+                2.0,
+                field_name='MOMENTUM_SCREENER_DEFAULT_MIN_AMOUNT_YI',
+                minimum=0.0,
+            ),
+            momentum_screener_default_min_turnover=parse_env_float(
+                os.getenv('MOMENTUM_SCREENER_DEFAULT_MIN_TURNOVER'),
+                2.0,
+                field_name='MOMENTUM_SCREENER_DEFAULT_MIN_TURNOVER',
+                minimum=0.0,
+                maximum=100.0,
+            ),
             circuit_breaker_cooldown=parse_env_int(os.getenv('CIRCUIT_BREAKER_COOLDOWN'), 300, field_name='CIRCUIT_BREAKER_COOLDOWN', minimum=0),
             enable_fundamental_pipeline=os.getenv('ENABLE_FUNDAMENTAL_PIPELINE', 'true').lower() == 'true',
             fundamental_stage_timeout_seconds=parse_env_float(
@@ -1871,18 +1966,23 @@ class Config:
         so that the paid data source is utilized for realtime quotes as well.
         """
         explicit = os.getenv('REALTIME_SOURCE_PRIORITY')
-        default_priority = 'tencent,akshare_sina,efinance,akshare_em'
+        default_priority = DEFAULT_REALTIME_SOURCE_PRIORITY
 
         if explicit:
-            # User explicitly set priority, respect it
-            return explicit
+            normalized_explicit = normalize_realtime_source_priority(explicit)
+            if normalized_explicit:
+                return normalized_explicit
+
+            logger.warning(
+                "REALTIME_SOURCE_PRIORITY=%r did not contain any supported realtime providers; "
+                "falling back to defaults",
+                explicit,
+            )
 
         tushare_token = os.getenv('TUSHARE_TOKEN', '').strip()
         if tushare_token:
             # Token configured but no explicit priority override
             # Prepend tushare so the paid source is tried first
-            import logging
-            logger = logging.getLogger(__name__)
             resolved = f'tushare,{default_priority}'
             logger.info(
                 f"TUSHARE_TOKEN detected, auto-injecting tushare into realtime priority: {resolved}"

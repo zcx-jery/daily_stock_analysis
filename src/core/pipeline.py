@@ -328,6 +328,12 @@ class StockAnalysisPipeline:
                 code,
                 fundamental_context,
             )
+            fundamental_context = self._attach_chip_to_fundamental_context(
+                code,
+                fundamental_context,
+                chip_data,
+                realtime_quote,
+            )
 
             # P0: write-only snapshot, fail-open, no read dependency on this table.
             try:
@@ -711,6 +717,10 @@ class StockAnalysisPipeline:
 
         boards_block = enriched_context.get("boards")
         boards_status = boards_block.get("status") if isinstance(boards_block, dict) else None
+        boards_data = boards_block.get("data") if isinstance(boards_block, dict) else None
+        if isinstance(boards_data, dict) and isinstance(boards_data.get("belong_boards"), list):
+            enriched_context["belong_boards"] = list(boards_data.get("belong_boards", []))
+            return enriched_context
         coverage = enriched_context.get("coverage")
         boards_coverage = coverage.get("boards") if isinstance(coverage, dict) else None
         market = enriched_context.get("market")
@@ -736,8 +746,71 @@ class StockAnalysisPipeline:
         enriched_context["belong_boards"] = boards
         return enriched_context
 
+    def _attach_chip_to_fundamental_context(
+        self,
+        code: str,
+        fundamental_context: Optional[Dict[str, Any]],
+        chip_data: Optional[ChipDistribution],
+        realtime_quote: Any = None,
+    ) -> Dict[str, Any]:
+        """Attach chip evidence to the same context saved as fundamental snapshot."""
+        if isinstance(fundamental_context, dict):
+            enriched_context = dict(fundamental_context)
+        else:
+            enriched_context = self.fetcher_manager.build_failed_fundamental_context(
+                code,
+                "invalid fundamental context",
+            )
+
+        if chip_data is None:
+            return enriched_context
+
+        chip_payload = self._safe_to_dict(chip_data) or {}
+        current_price = getattr(realtime_quote, "price", None) if realtime_quote else None
+        try:
+            current_price_value = float(current_price) if current_price is not None else 0.0
+        except (TypeError, ValueError):
+            current_price_value = 0.0
+
+        chip_payload["chip_status"] = chip_data.get_chip_status(current_price_value)
+        chip_payload["chip_signal"] = self._derive_chip_signal(chip_data, current_price_value)
+        chip_payload["data_source"] = chip_payload.get("source") or getattr(chip_data, "source", "")
+
+        source = str(chip_payload.get("data_source") or "chip_distribution")
+        enriched_context["chip"] = {
+            "status": "ok",
+            "coverage": {"status": "ok"},
+            "source_chain": [{"provider": source, "result": "ok", "duration_ms": 0}],
+            "errors": [],
+            "data": chip_payload,
+        }
+
+        coverage = dict(enriched_context.get("coverage", {})) if isinstance(enriched_context.get("coverage"), dict) else {}
+        coverage["chip"] = "ok"
+        enriched_context["coverage"] = coverage
+        source_chain = list(enriched_context.get("source_chain", [])) if isinstance(enriched_context.get("source_chain"), list) else []
+        source_chain.append({"provider": source, "result": "ok", "duration_ms": 0})
+        enriched_context["source_chain"] = source_chain
+        if "tushare" in source.lower():
+            enriched_context["enhanced_by_tushare"] = True
+        return enriched_context
+
+    @staticmethod
+    def _derive_chip_signal(chip_data: ChipDistribution, current_price: float) -> str:
+        """Classify chip structure as lightweight evidence, not a trade command."""
+        profit_ratio = float(getattr(chip_data, "profit_ratio", 0.0) or 0.0)
+        concentration_90 = float(getattr(chip_data, "concentration_90", 0.0) or 0.0)
+        avg_cost = float(getattr(chip_data, "avg_cost", 0.0) or 0.0)
+        if profit_ratio >= 0.9:
+            return "overheated"
+        if current_price > 0 and avg_cost > 0 and current_price < avg_cost * 0.95:
+            return "pressure_heavy"
+        if 0.35 <= profit_ratio <= 0.85 and 0 < concentration_90 <= 0.15:
+            return "supportive"
+        return "neutral"
+
     def _analyze_with_agent(
-        self, 
+        self,
         code: str, 
         report_type: ReportType, 
         query_id: str,

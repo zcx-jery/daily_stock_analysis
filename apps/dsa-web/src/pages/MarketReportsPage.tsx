@@ -1,7 +1,5 @@
 import type React from 'react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import Markdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react';
 import { FileText, List, RefreshCcw } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { marketReportsApi } from '../api/marketReports';
@@ -10,6 +8,8 @@ import { ApiErrorAlert, Button, EmptyState } from '../components/common';
 import { markdownToPlainText } from '../utils/markdown';
 import { cn } from '../utils/cn';
 import type { MarketReportDetail, MarketReportItem } from '../types/marketReports';
+
+const MarkdownContent = lazy(() => import('../components/markdown/MarkdownContent'));
 
 const MarketReportsPage: React.FC = () => {
   const navigate = useNavigate();
@@ -247,22 +247,21 @@ const MarketReportsPage: React.FC = () => {
               </div>
 
               <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-                <div
-                  className="home-markdown-prose prose prose-invert prose-sm max-w-none
-                    prose-headings:text-foreground prose-headings:font-semibold prose-headings:mt-4 prose-headings:mb-2
-                    prose-h1:text-xl prose-h2:text-lg prose-h3:text-base
-                    prose-p:leading-relaxed prose-p:mb-3 prose-p:last:mb-0
-                    prose-strong:text-foreground prose-strong:font-semibold
-                    prose-ul:my-2 prose-ol:my-2 prose-li:my-1
-                    prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:before:content-none prose-code:after:content-none
-                    prose-pre:border prose-table:border-collapse prose-hr:my-4
-                    prose-a:no-underline hover:prose-a:underline prose-blockquote:text-secondary-text
-                    whitespace-pre-line break-words"
-                >
-                  <Markdown remarkPlugins={[remarkGfm]}>
-                    {selectedReport.content}
-                  </Markdown>
-                </div>
+                <Suspense fallback={<div className="text-sm text-secondary-text">正在加载 Markdown 内容...</div>}>
+                  <MarkdownContent
+                    content={selectedReport.content}
+                    className="home-markdown-prose prose prose-invert prose-sm max-w-none
+                      prose-headings:text-foreground prose-headings:font-semibold prose-headings:mt-4 prose-headings:mb-2
+                      prose-h1:text-xl prose-h2:text-lg prose-h3:text-base
+                      prose-p:leading-relaxed prose-p:mb-3 prose-p:last:mb-0
+                      prose-strong:text-foreground prose-strong:font-semibold
+                      prose-ul:my-2 prose-ol:my-2 prose-li:my-1
+                      prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:before:content-none prose-code:after:content-none
+                      prose-pre:border prose-table:border-collapse prose-hr:my-4
+                      prose-a:no-underline hover:prose-a:underline prose-blockquote:text-secondary-text
+                      whitespace-pre-line break-words"
+                  />
+                </Suspense>
               </div>
             </div>
           ) : (

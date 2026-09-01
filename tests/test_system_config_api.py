@@ -3,6 +3,7 @@
 
 import os
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -12,6 +13,19 @@ from fastapi import HTTPException
 from tests.litellm_stub import ensure_litellm_stub
 
 ensure_litellm_stub()
+
+import sys
+
+sys.modules.setdefault(
+    "fake_useragent",
+    types.SimpleNamespace(UserAgent=lambda *args, **kwargs: types.SimpleNamespace(random="pytest-agent")),
+)
+multipart_module = types.ModuleType("multipart")
+multipart_submodule = types.ModuleType("multipart.multipart")
+multipart_submodule.parse_options_header = lambda value: (value, {})
+multipart_module.__version__ = "0.0-test"
+sys.modules.setdefault("multipart", multipart_module)
+sys.modules.setdefault("multipart.multipart", multipart_submodule)
 
 from api.v1.endpoints import system_config
 from api.v1.schemas.system_config import (
@@ -57,11 +71,47 @@ class SystemConfigApiTestCase(unittest.TestCase):
         os.environ.pop("ENV_FILE", None)
         self.temp_dir.cleanup()
 
-    def test_get_config_returns_raw_secret_value(self) -> None:
+    def test_get_config_masks_secret_value(self) -> None:
         payload = system_config.get_system_config(include_schema=True, service=self.service).model_dump(by_alias=True)
         item_map = {item["key"]: item for item in payload["items"]}
-        self.assertEqual(item_map["GEMINI_API_KEY"]["value"], "secret-key-value")
-        self.assertFalse(item_map["GEMINI_API_KEY"]["is_masked"])
+        self.assertEqual(item_map["GEMINI_API_KEY"]["value"], "******")
+        self.assertTrue(item_map["GEMINI_API_KEY"]["is_masked"])
+        self.assertTrue(item_map["GEMINI_API_KEY"]["raw_value_exists"])
+
+    def test_get_config_includes_momentum_sector_cache_ttl_field(self) -> None:
+        payload = system_config.get_system_config(include_schema=True, service=self.service).model_dump(by_alias=True)
+        item_map = {item["key"]: item for item in payload["items"]}
+
+        self.assertIn("MOMENTUM_SECTOR_CACHE_TTL_SECONDS", item_map)
+        self.assertEqual(
+            item_map["MOMENTUM_SECTOR_CACHE_TTL_SECONDS"]["schema"]["default_value"],
+            "21600",
+        )
+
+    def test_get_config_includes_momentum_screener_default_fields(self) -> None:
+        payload = system_config.get_system_config(include_schema=True, service=self.service).model_dump(by_alias=True)
+        item_map = {item["key"]: item for item in payload["items"]}
+
+        self.assertEqual(
+            item_map["MOMENTUM_SCREENER_DEFAULT_PROFILE"]["schema"]["default_value"],
+            "standard",
+        )
+        self.assertEqual(
+            item_map["MOMENTUM_SCREENER_DEFAULT_TOP_N"]["schema"]["default_value"],
+            "30",
+        )
+        self.assertEqual(
+            item_map["MOMENTUM_SCREENER_DEFAULT_MIN_CHANGE_PCT"]["schema"]["default_value"],
+            "4",
+        )
+        self.assertEqual(
+            item_map["MOMENTUM_SCREENER_DEFAULT_MIN_AMOUNT_YI"]["schema"]["default_value"],
+            "2",
+        )
+        self.assertEqual(
+            item_map["MOMENTUM_SCREENER_DEFAULT_MIN_TURNOVER"]["schema"]["default_value"],
+            "2",
+        )
 
     def test_put_config_updates_secret_and_plain_field(self) -> None:
         current = system_config.get_system_config(include_schema=False, service=self.service).model_dump()

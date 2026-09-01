@@ -76,7 +76,42 @@ docker-compose -f ./docker/docker-compose.yml exec stock-analyzer bash
 docker-compose -f ./docker/docker-compose.yml exec stock-analyzer python main.py --no-notify
 ```
 
-### 5. Data Persistence
+### 5. Docker Disk Cleanup
+
+Frequent Docker rebuilds can leave old images, build cache, and occasionally unused volumes behind. The repository provides a conservative cleanup helper:
+
+```bash
+bash scripts/docker-cleanup.sh
+```
+
+For servers, run it daily at 03:00 with a systemd timer. By default, the script:
+
+- removes stopped containers older than 24 hours
+- removes unused images older than 72 hours
+- removes unused build cache older than 24 hours
+- when Docker supports BuildKit cache budget flags, caps build cache at 2GB and tries to keep at least 8GB free on the root filesystem
+- removes cache files older than 30 days under `data/cache`
+- prunes unused Docker volumes only when root disk usage reaches 90%
+
+The cleanup strength can be tuned with:
+
+- `DSA_DOCKER_BUILDER_KEEP_AGE`: build-cache retention window, default `24h`
+- `DSA_DOCKER_BUILDER_MAX_USED_SPACE`: BuildKit cache budget, default `2gb`
+- `DSA_DOCKER_BUILDER_MIN_FREE_SPACE`: minimum free-space target for the root filesystem, default `8gb`
+
+For normal code updates, prefer:
+
+```bash
+bash scripts/deploy-docker.sh rebuild
+```
+
+It reuses the build cache by default and runs the unified cleanup after the rebuild to reduce disk growth from repeated deployments. Use a full no-cache rebuild only when it is actually needed:
+
+```bash
+DSA_DOCKER_NO_CACHE=1 bash scripts/deploy-docker.sh rebuild
+```
+
+### 6. Data Persistence
 
 Data is automatically saved to host directories:
 - `./data/` - Database files
@@ -439,3 +474,7 @@ A: Each run takes about 2-5 minutes, 22 workdays per month = 44-110 minutes, wel
 ---
 
 **Wishing you a smooth deployment!**
+
+## Backtest Memory Note
+
+Momentum Screener V1 backtests and long-running secondary-decision jobs can push the Web/API process well beyond the default footprint. In the test environment, `stock-server` repeatedly hit `exitCode=137` under a `512M` cgroup limit, so keep the `server` container at `1G` or higher when backtest jobs are executed from the Web service.

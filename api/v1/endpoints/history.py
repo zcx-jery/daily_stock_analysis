@@ -43,6 +43,7 @@ from src.utils.data_processing import (
     normalize_model_used,
     extract_fundamental_detail_fields,
     extract_board_detail_fields,
+    extract_enhanced_detail_fields,
 )
 
 logger = logging.getLogger(__name__)
@@ -306,6 +307,10 @@ def get_history_detail(
             context_snapshot=result.get("context_snapshot"),
             fallback_fundamental_payload=fallback_fundamental,
         )
+        extracted_enhanced = extract_enhanced_detail_fields(
+            context_snapshot=result.get("context_snapshot"),
+            fallback_fundamental_payload=fallback_fundamental,
+        )
 
         details = ReportDetails(
             news_content=result.get("news_content"),
@@ -314,8 +319,14 @@ def get_history_detail(
             context_snapshot=result.get("context_snapshot"),
             financial_report=extracted_fundamental.get("financial_report"),
             dividend_metrics=extracted_fundamental.get("dividend_metrics"),
+            fundamental_metrics=extracted_fundamental.get("fundamental_metrics"),
             belong_boards=extracted_boards.get("belong_boards"),
             sector_rankings=extracted_boards.get("sector_rankings"),
+            board_linkage=extracted_boards.get("board_linkage"),
+            capital_flow_metrics=extracted_enhanced.get("capital_flow_metrics"),
+            chip_metrics=extracted_enhanced.get("chip_metrics"),
+            data_quality=extracted_enhanced.get("data_quality"),
+            tushare_enhancement=extracted_enhanced.get("tushare_enhancement"),
         )
         
         return AnalysisReport(

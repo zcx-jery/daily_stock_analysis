@@ -1,6 +1,5 @@
 import type React from 'react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Pie, PieChart, ResponsiveContainer, Tooltip, Legend, Cell } from 'recharts';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { portfolioApi } from '../api/portfolio';
 import type { ParsedApiError } from '../api/error';
 import { getParsedApiError } from '../api/error';
@@ -24,7 +23,8 @@ import type {
   PortfolioTradeListItem,
 } from '../types/portfolio';
 
-const PIE_COLORS = ['#00d4ff', '#00ff88', '#ffaa00', '#ff7a45', '#7f8cff', '#ff4466'];
+const PortfolioConcentrationChart = lazy(() => import('../components/portfolio/PortfolioConcentrationChart'));
+
 const DEFAULT_PAGE_SIZE = 20;
 const FALLBACK_BROKERS: PortfolioImportBrokerItem[] = [
   { broker: 'huatai', aliases: [], displayName: '华泰' },
@@ -992,35 +992,25 @@ const PortfolioPage: React.FC = () => {
           )}
         </Card>
 
-        <Card padding="md">
-          <h2 className="text-sm font-semibold text-foreground mb-3">{concentrationMode === 'sector' ? '行业集中度分布' : '行业数据暂不可用，当前展示个股集中度'}</h2>
-          {concentrationPieData.length > 0 ? (
-            <div className="h-64">
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie data={concentrationPieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={90}>
-                    {concentrationPieData.map((entry, index) => (
-                      <Cell key={`cell-${entry.name}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
-                    ))}
-                  </Pie>
-                  <Tooltip formatter={(value) => `${Number(value).toFixed(2)}%`} />
-                  <Legend />
-                </PieChart>
-              </ResponsiveContainer>
-            </div>
-          ) : (
-            <EmptyState
-              title="暂无集中度数据"
-              description="风险模块完成计算后，这里会展示行业或个股维度的集中度分布。"
-              className="border-none bg-transparent px-4 py-10 shadow-none"
-            />
+        <Suspense
+          fallback={(
+            <Card padding="md">
+              <h2 className="mb-3 text-sm font-semibold text-foreground">
+                {concentrationMode === 'sector' ? '行业集中度分布' : '行业数据暂不可用，当前展示个股集中度'}
+              </h2>
+              <div className="flex h-64 items-center justify-center text-sm text-secondary">加载图表中...</div>
+              <div className="mt-3 space-y-1 text-xs text-secondary">
+                <div>Top1 权重: {formatPct(risk?.sectorConcentration?.topWeightPct ?? risk?.concentration?.topWeightPct)}</div>
+              </div>
+            </Card>
           )}
-          <div className="mt-3 text-xs text-secondary space-y-1">
-            <div>展示口径: {concentrationMode === 'sector' ? '行业维度' : '个股维度（降级显示）'}</div>
-            <div>板块集中度告警: {risk?.sectorConcentration?.alert ? '是' : '否'}</div>
-            <div>Top1 权重: {formatPct(risk?.sectorConcentration?.topWeightPct ?? risk?.concentration?.topWeightPct)}</div>
-          </div>
-        </Card>
+        >
+          <PortfolioConcentrationChart
+            concentrationMode={concentrationMode}
+            concentrationPieData={concentrationPieData}
+            sectorAlert={Boolean(risk?.sectorConcentration?.alert)}
+          />
+        </Suspense>
       </section>
 
       {writeBlocked && hasAccounts ? (

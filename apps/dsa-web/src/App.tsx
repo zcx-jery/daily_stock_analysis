@@ -1,19 +1,27 @@
 import type React from 'react';
-import { useEffect } from 'react';
+import { Suspense, lazy, useEffect } from 'react';
 import { BrowserRouter as Router, Navigate, Route, Routes, useLocation } from 'react-router-dom';
-import HomePage from './pages/HomePage';
-import BacktestPage from './pages/BacktestPage';
-import SettingsPage from './pages/SettingsPage';
-import LoginPage from './pages/LoginPage';
-import NotFoundPage from './pages/NotFoundPage';
-import ChatPage from './pages/ChatPage';
-import PortfolioPage from './pages/PortfolioPage';
-import MarketReportsPage from './pages/MarketReportsPage';
-import MarketReviewPage from './pages/MarketReviewPage';
 import { ApiErrorAlert, Shell } from './components/common';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { useAgentChatStore } from './stores/agentChatStore';
 import './App.css';
+
+const HomePage = lazy(() => import('./pages/HomePage'));
+const BacktestPage = lazy(() => import('./pages/BacktestPage'));
+const SettingsPage = lazy(() => import('./pages/SettingsPage'));
+const LoginPage = lazy(() => import('./pages/LoginPage'));
+const NotFoundPage = lazy(() => import('./pages/NotFoundPage'));
+const ChatPage = lazy(() => import('./pages/ChatPage'));
+const PortfolioPage = lazy(() => import('./pages/PortfolioPage'));
+const MarketReportsPage = lazy(() => import('./pages/MarketReportsPage'));
+const MarketReviewPage = lazy(() => import('./pages/MarketReviewPage'));
+const MomentumScreenerPage = lazy(() => import('./pages/MomentumScreenerPage'));
+
+const RouteLoadingFallback: React.FC = () => (
+  <div className="flex min-h-screen items-center justify-center bg-base">
+    <div className="h-8 w-8 animate-spin rounded-full border-2 border-cyan/20 border-t-cyan" />
+  </div>
+);
 
 const AppContent: React.FC = () => {
   const location = useLocation();
@@ -61,20 +69,23 @@ const AppContent: React.FC = () => {
   }
 
   return (
-    <Routes>
-      <Route element={<Shell />}>
-        <Route path="/" element={<HomePage />} />
-        <Route path="/chat" element={<ChatPage />} />
-        <Route path="/portfolio" element={<PortfolioPage />} />
-        <Route path="/backtest" element={<BacktestPage />} />
-        <Route path="/market-review" element={<MarketReviewPage />} />
-        <Route path="/market-reports" element={<MarketReportsPage />} />
-        <Route path="/market-reports/:reportDate" element={<MarketReportsPage />} />
-        <Route path="/settings" element={<SettingsPage />} />
-        <Route path="*" element={<NotFoundPage />} />
-      </Route>
-      <Route path="/login" element={<LoginPage />} />
-    </Routes>
+    <Suspense fallback={<RouteLoadingFallback />}>
+      <Routes>
+        <Route element={<Shell />}>
+          <Route path="/" element={<HomePage />} />
+          <Route path="/chat" element={<ChatPage />} />
+          <Route path="/portfolio" element={<PortfolioPage />} />
+          <Route path="/screener" element={<MomentumScreenerPage />} />
+          <Route path="/backtest" element={<BacktestPage />} />
+          <Route path="/market-review" element={<MarketReviewPage />} />
+          <Route path="/market-reports" element={<MarketReportsPage />} />
+          <Route path="/market-reports/:reportDate" element={<MarketReportsPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
+          <Route path="*" element={<NotFoundPage />} />
+        </Route>
+        <Route path="/login" element={<LoginPage />} />
+      </Routes>
+    </Suspense>
   );
 };
 

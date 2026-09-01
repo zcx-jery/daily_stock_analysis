@@ -9,12 +9,45 @@ interface consumed by the AgentExecutor, via LiteLLM.
 import json
 import logging
 import time
+import types
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-import litellm
-from litellm import Router
+class _FallbackLiteLLMRateLimitError(Exception):
+    pass
+
+
+class _FallbackLiteLLMContextWindowExceededError(Exception):
+    pass
+
+
+try:
+    import litellm
+    from litellm import Router
+except ModuleNotFoundError:  # pragma: no cover - exercised when optional LiteLLM is absent
+    class _MissingLiteLLMRouter:
+        def __init__(self, *_args, **_kwargs) -> None:
+            raise RuntimeError("litellm is not installed")
+
+    litellm = types.SimpleNamespace(
+        completion=lambda **_kwargs: None,
+        Router=_MissingLiteLLMRouter,
+        RateLimitError=_FallbackLiteLLMRateLimitError,
+        ContextWindowExceededError=_FallbackLiteLLMContextWindowExceededError,
+    )
+    Router = _MissingLiteLLMRouter
+
+if not (
+    isinstance(getattr(litellm, "RateLimitError", None), type)
+    and issubclass(getattr(litellm, "RateLimitError"), BaseException)
+):
+    litellm.RateLimitError = _FallbackLiteLLMRateLimitError
+if not (
+    isinstance(getattr(litellm, "ContextWindowExceededError", None), type)
+    and issubclass(getattr(litellm, "ContextWindowExceededError"), BaseException)
+):
+    litellm.ContextWindowExceededError = _FallbackLiteLLMContextWindowExceededError
 
 from src.config import (
     extra_litellm_params,
@@ -322,31 +355,31 @@ class LLMToolAdapter:
                     max_tokens=max_tokens,
                     timeout=remaining_timeout,
                 )
-            except litellm.RateLimitError as e:
-                logger.warning("Agent LLM rate-limited on %s: %s", model, e)
-                last_error = e
-                hit_rate_limit = True
-
-                # Avoid blind backoff across different providers; cross-provider
-                # fallback usually means different accounts/rate-limit buckets.
-                should_backoff = (
-                    idx + 1 < len(models_to_try)
-                    and providers[idx] == providers[idx + 1]
-                )
-                if should_backoff:
-                    backoff_sleep = min(2.0, (time.time() - started_at) * 0.1 + 0.5)
-                    if timeout is not None and timeout > 0:
-                        remaining_timeout = max(0.0, float(timeout) - (time.time() - started_at))
-                        if remaining_timeout > 0:
-                            time.sleep(min(backoff_sleep, remaining_timeout))
-                    else:
-                        time.sleep(backoff_sleep)
-                continue
-            except litellm.ContextWindowExceededError as e:
-                logger.warning("Agent LLM context window exceeded on %s: %s", model, e)
-                last_error = e
-                continue
             except Exception as e:
+                if self._is_litellm_exception(e, "RateLimitError"):
+                    logger.warning("Agent LLM rate-limited on %s: %s", model, e)
+                    last_error = e
+                    hit_rate_limit = True
+
+                    # Avoid blind backoff across different providers; cross-provider
+                    # fallback usually means different accounts/rate-limit buckets.
+                    should_backoff = (
+                        idx + 1 < len(models_to_try)
+                        and providers[idx] == providers[idx + 1]
+                    )
+                    if should_backoff:
+                        backoff_sleep = min(2.0, (time.time() - started_at) * 0.1 + 0.5)
+                        if timeout is not None and timeout > 0:
+                            remaining_timeout = max(0.0, float(timeout) - (time.time() - started_at))
+                            if remaining_timeout > 0:
+                                time.sleep(min(backoff_sleep, remaining_timeout))
+                        else:
+                            time.sleep(backoff_sleep)
+                    continue
+                if self._is_litellm_exception(e, "ContextWindowExceededError"):
+                    logger.warning("Agent LLM context window exceeded on %s: %s", model, e)
+                    last_error = e
+                    continue
                 logger.warning("Agent LLM call failed with %s: %s", model, e)
                 last_error = e
                 continue
@@ -362,6 +395,15 @@ class LLMToolAdapter:
         if "/" in model:
             return model.split("/", 1)[0]
         return "openai"
+
+    @staticmethod
+    def _is_litellm_exception(exc: Exception, name: str) -> bool:
+        """Safely classify LiteLLM exceptions even when tests use a minimal stub."""
+
+        exc_type = getattr(litellm, name, None)
+        if isinstance(exc_type, type) and issubclass(exc_type, BaseException):
+            return isinstance(exc, exc_type)
+        return exc.__class__.__name__ == name
 
     def _call_litellm_model(
         self,

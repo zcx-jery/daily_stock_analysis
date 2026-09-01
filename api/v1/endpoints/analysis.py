@@ -62,6 +62,7 @@ from src.utils.data_processing import (
     parse_json_field,
     extract_fundamental_detail_fields,
     extract_board_detail_fields,
+    extract_enhanced_detail_fields,
 )
 
 logger = logging.getLogger(__name__)
@@ -778,9 +779,20 @@ def _build_analysis_report(
         context_snapshot=context_snapshot,
         fallback_fundamental_payload=fallback_fundamental_payload,
     )
+    extracted_enhanced = extract_enhanced_detail_fields(
+        context_snapshot=context_snapshot,
+        fallback_fundamental_payload=fallback_fundamental_payload,
+    )
     details = None
     has_board_details = bool(extracted_boards.get("belong_boards")) or extracted_boards.get("sector_rankings") is not None
-    if details_data or any(extracted_fundamental.values()) or has_board_details or context_snapshot is not None:
+    has_enhanced_details = any(extracted_enhanced.values())
+    if (
+        details_data
+        or any(extracted_fundamental.values())
+        or has_board_details
+        or has_enhanced_details
+        or context_snapshot is not None
+    ):
         details = ReportDetails(
             news_content=details_data.get("news_summary") or details_data.get("news_content"),
             raw_result=details_data,
@@ -788,8 +800,14 @@ def _build_analysis_report(
             context_snapshot=context_snapshot,
             financial_report=extracted_fundamental.get("financial_report"),
             dividend_metrics=extracted_fundamental.get("dividend_metrics"),
+            fundamental_metrics=extracted_fundamental.get("fundamental_metrics"),
             belong_boards=extracted_boards.get("belong_boards"),
             sector_rankings=extracted_boards.get("sector_rankings"),
+            board_linkage=extracted_boards.get("board_linkage"),
+            capital_flow_metrics=extracted_enhanced.get("capital_flow_metrics"),
+            chip_metrics=extracted_enhanced.get("chip_metrics"),
+            data_quality=extracted_enhanced.get("data_quality"),
+            tushare_enhancement=extracted_enhanced.get("tushare_enhancement"),
         )
 
     return AnalysisReport(

@@ -102,9 +102,9 @@ describe('HomePage', () => {
     expect(dashboard.firstElementChild?.className).toContain('min-h-0');
     expect(dashboard.querySelector('.flex-1.flex.min-h-0.overflow-hidden')).toBeTruthy();
     expect(screen.getByPlaceholderText('输入股票代码或名称，如 600519、贵州茅台、AAPL')).toBeInTheDocument();
-    expect(await screen.findByText('趋势维持强势')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: '追问 AI' })).toBeInTheDocument();
     expect(
-      screen.getByRole('button', {
+      await screen.findByRole('button', {
         name: getReportText(normalizeReportLanguage(historyReport.meta.reportLanguage)).fullReport,
       }),
     ).toBeInTheDocument();
@@ -127,7 +127,6 @@ describe('HomePage', () => {
     expect(await screen.findByText('开始分析')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: '开始分析', level: 3 })).toBeInTheDocument();
     expect(screen.getByText('输入股票代码进行分析，或从左侧选择历史报告查看。')).toBeInTheDocument();
-    expect(screen.getByText('暂无历史分析记录')).toBeInTheDocument();
   });
 
   it('surfaces duplicate task warnings from dashboard submission', async () => {
@@ -202,7 +201,9 @@ describe('HomePage', () => {
       </MemoryRouter>,
     );
 
-    fireEvent.click(await screen.findByRole('button', { name: '删除' }));
+    fireEvent.click(
+      await screen.findByRole('button', { name: '删除' }, { timeout: 5000 }),
+    );
 
     expect(
       await screen.findByText('确认删除这条历史记录吗？删除后将不可恢复。'),

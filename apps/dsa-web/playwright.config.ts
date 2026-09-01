@@ -11,17 +11,18 @@ function resolveBackendCommand() {
     return process.env.DSA_WEB_SMOKE_BACKEND_CMD;
   }
 
+  const smokeBackendScript = path.join(currentDir, 'scripts', 'run_smoke_backend.py');
   const unixVenvPython = path.join(repoRoot, '.venv', 'bin', 'python');
   if (fs.existsSync(unixVenvPython)) {
-    return `${unixVenvPython} main.py --webui-only --host 127.0.0.1 --port 8000`;
+    return `${unixVenvPython} ${smokeBackendScript}`;
   }
 
   const windowsVenvPython = path.join(repoRoot, '.venv', 'Scripts', 'python.exe');
   if (fs.existsSync(windowsVenvPython)) {
-    return `"${windowsVenvPython}" main.py --webui-only --host 127.0.0.1 --port 8000`;
+    return `"${windowsVenvPython}" "${smokeBackendScript}"`;
   }
 
-  return 'python main.py --webui-only --host 127.0.0.1 --port 8000';
+  return `python "${smokeBackendScript}"`;
 }
 
 export default defineConfig({

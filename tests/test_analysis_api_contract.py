@@ -4,15 +4,26 @@
 import asyncio
 from concurrent.futures import Future
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from tests.litellm_stub import ensure_litellm_stub
 
 ensure_litellm_stub()
+
+try:
+    import src.core.pipeline  # noqa: F401
+except Exception:  # pragma: no cover - optional dependency environments
+    import src.core as _src_core
+
+    _pipeline_stub = ModuleType("src.core.pipeline")
+    _pipeline_stub.StockAnalysisPipeline = object
+    sys.modules["src.core.pipeline"] = _pipeline_stub
+    setattr(_src_core, "pipeline", _pipeline_stub)
 
 try:
     from api.app import create_app
@@ -166,6 +177,18 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             context_snapshot={
                 "enhanced_context": {
                     "fundamental_context": {
+                        "valuation": {
+                            "status": "ok",
+                            "data": {"pe_ttm": 21.5, "pb_ratio": 7.8},
+                        },
+                        "profitability": {
+                            "status": "ok",
+                            "data": {"roe": 31.2, "gross_margin": 91.4},
+                        },
+                        "growth": {
+                            "status": "partial",
+                            "data": {"revenue_yoy": 12.3},
+                        },
                         "earnings": {
                             "data": {
                                 "financial_report": {"report_date": "2025-12-31", "revenue": 1000},
@@ -180,6 +203,74 @@ class AnalysisApiContractTestCase(unittest.TestCase):
 
         self.assertEqual(report.details.financial_report["report_date"], "2025-12-31")
         self.assertEqual(report.details.dividend_metrics["ttm_dividend_yield_pct"], 2.5)
+        self.assertEqual(report.details.fundamental_metrics["valuation"]["pe_ttm"], 21.5)
+        self.assertEqual(report.details.fundamental_metrics["profitability"]["roe"], 31.2)
+        self.assertEqual(report.details.fundamental_metrics["statuses"]["growth"], "partial")
+
+    def test_build_analysis_report_extracts_enhanced_detail_fields_from_snapshot(self) -> None:
+        if _build_analysis_report is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        report = _build_analysis_report(
+            report_data={
+                "meta": {},
+                "summary": {},
+                "strategy": {},
+                "details": {},
+            },
+            query_id="q1",
+            stock_code="600519",
+            stock_name="贵州茅台",
+            context_snapshot={
+                "fundamental_context": {
+                    "market": "cn",
+                    "status": "partial",
+                    "enhanced_by_tushare": True,
+                    "coverage": {
+                        "valuation": "ok",
+                        "capital_flow": "ok",
+                        "chip": "ok",
+                    },
+                    "source_chain": [
+                        {"provider": "tushare.daily_basic", "result": "ok", "duration_ms": 11},
+                        {"provider": "tushare.moneyflow_ths", "result": "ok", "duration_ms": 12},
+                    ],
+                    "errors": ["capital_flow_sector_fallback timeout"],
+                    "capital_flow": {
+                        "status": "ok",
+                        "source_chain": [{"provider": "tushare.moneyflow_ths", "result": "ok"}],
+                        "data": {
+                            "stock_flow": {"trade_date": "2026-05-07", "main_net_inflow": -1.2},
+                            "ths": {"trade_date": "2026-05-07", "net_amount": -120000000},
+                            "dc": {"trade_date": "2026-05-07", "net_amount": 5000000},
+                            "signal": "mixed_signal",
+                            "mixed_reason": "THS=outflow, DC=inflow",
+                        },
+                    },
+                    "chip": {
+                        "status": "ok",
+                        "source_chain": [{"provider": "tushare.cyq_chips", "result": "ok"}],
+                        "data": {
+                            "date": "2026-05-07",
+                            "data_source": "tushare.cyq_chips",
+                            "profit_ratio": 0.42,
+                            "avg_cost": 12.3,
+                            "chip_signal": "supportive",
+                        },
+                    },
+                }
+            },
+            fallback_fundamental_payload=None,
+        )
+
+        self.assertEqual(report.details.capital_flow_metrics["signal"], "mixed_signal")
+        self.assertEqual(report.details.capital_flow_metrics["trade_date"], "2026-05-07")
+        self.assertEqual(report.details.chip_metrics["chip_signal"], "supportive")
+        self.assertEqual(report.details.chip_metrics["source"], "tushare.cyq_chips")
+        self.assertTrue(report.details.data_quality["enhanced_by_tushare"])
+        self.assertEqual(report.details.data_quality["coverage"]["valuation"], "ok")
+        self.assertTrue(report.details.tushare_enhancement["enabled"])
+        self.assertIn("capital_flow", report.details.tushare_enhancement["blocks"])
 
     def test_build_analysis_report_extracts_related_board_fields_from_snapshot(self) -> None:
         if _build_analysis_report is None:
@@ -203,6 +294,11 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                             "data": {
                                 "top": [{"name": "白酒", "change_pct": 2.5}],
                                 "bottom": [],
+                                "relative_strength": {
+                                    "status": "aligned",
+                                    "matched_board": "白酒",
+                                    "reason": "belong board in top rankings",
+                                },
                             }
                         },
                     }
@@ -214,6 +310,8 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertEqual(report.details.belong_boards, [{"name": "白酒", "type": "行业"}])
         self.assertEqual(report.details.sector_rankings["top"][0]["name"], "白酒")
         self.assertEqual(report.details.sector_rankings["top"][0]["change_pct"], 2.5)
+        self.assertEqual(report.details.board_linkage["status"], "aligned")
+        self.assertEqual(report.details.board_linkage["matched_board"], "白酒")
 
     def test_build_analysis_report_normalizes_related_board_payloads(self) -> None:
         if _build_analysis_report is None:

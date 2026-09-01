@@ -57,7 +57,32 @@ class _LiteLLMStreamError(RuntimeError):
         self.partial_received = partial_received
 
 
-def check_content_integrity(result: "AnalysisResult") -> Tuple[bool, List[str]]:
+def _nested_dict(value: Any, *keys: str) -> Dict[str, Any]:
+    current = value
+    for key in keys:
+        if not isinstance(current, dict):
+            return {}
+        current = current.get(key)
+    return current if isinstance(current, dict) else {}
+
+
+def _has_non_empty_dict(value: Any) -> bool:
+    return isinstance(value, dict) and bool(value)
+
+
+def _has_non_empty_list(value: Any) -> bool:
+    return isinstance(value, list) and bool(value)
+
+
+def _has_non_empty_text(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def check_content_integrity(
+    result: "AnalysisResult",
+    *,
+    require_enhanced_evidence: bool = False,
+) -> Tuple[bool, List[str]]:
     """
     Check mandatory fields for report content integrity.
     Returns (pass, missing_fields). Module-level for use by pipeline (agent weak mode).
@@ -88,12 +113,26 @@ def check_content_integrity(result: "AnalysisResult") -> Tuple[bool, List[str]]:
         stop_loss = sp.get("stop_loss")
         if stop_loss is None or (isinstance(stop_loss, str) and not stop_loss.strip()):
             missing.append("dashboard.battle_plan.sniper_points.stop_loss")
+    if require_enhanced_evidence:
+        enhanced = _nested_dict(dash, "data_perspective", "enhanced_evidence")
+        if not _has_non_empty_dict(enhanced.get("short_term_weights")):
+            missing.append("dashboard.data_perspective.enhanced_evidence.short_term_weights")
+        if not _has_non_empty_dict(enhanced.get("medium_term_weights")):
+            missing.append("dashboard.data_perspective.enhanced_evidence.medium_term_weights")
+        if not _has_non_empty_list(enhanced.get("evidence_chain")):
+            missing.append("dashboard.data_perspective.enhanced_evidence.evidence_chain")
+
+        timeframe = _nested_dict(dash, "battle_plan", "timeframe_strategy")
+        for key in ("short_term", "medium_term", "conflict_resolution", "action_boundary"):
+            if not _has_non_empty_text(timeframe.get(key)):
+                missing.append(f"dashboard.battle_plan.timeframe_strategy.{key}")
     return len(missing) == 0, missing
 
 
 def apply_placeholder_fill(result: "AnalysisResult", missing_fields: List[str]) -> None:
     """Fill missing mandatory fields with placeholders (in-place). Module-level for pipeline."""
-    placeholder = get_placeholder_text(getattr(result, "report_language", "zh"))
+    report_language = normalize_report_language(getattr(result, "report_language", "zh"))
+    placeholder = get_placeholder_text(report_language)
     for field in missing_fields:
         if field == "sentiment_score":
             result.sentiment_score = 50
@@ -124,6 +163,51 @@ def apply_placeholder_fill(result: "AnalysisResult", missing_fields: List[str]) 
             if "sniper_points" not in result.dashboard["battle_plan"]:
                 result.dashboard["battle_plan"]["sniper_points"] = {}
             result.dashboard["battle_plan"]["sniper_points"]["stop_loss"] = placeholder
+        elif field.startswith("dashboard.data_perspective.enhanced_evidence."):
+            if not result.dashboard:
+                result.dashboard = {}
+            if "data_perspective" not in result.dashboard:
+                result.dashboard["data_perspective"] = {}
+            if "enhanced_evidence" not in result.dashboard["data_perspective"]:
+                result.dashboard["data_perspective"]["enhanced_evidence"] = {}
+            enhanced = result.dashboard["data_perspective"]["enhanced_evidence"]
+            if field.endswith(".short_term_weights"):
+                enhanced["short_term_weights"] = enhanced.get("short_term_weights") or {
+                    "technical": placeholder,
+                    "capital_flow": placeholder,
+                    "board_linkage": placeholder,
+                    "chip_structure": placeholder,
+                }
+            elif field.endswith(".medium_term_weights"):
+                enhanced["medium_term_weights"] = enhanced.get("medium_term_weights") or {
+                    "fundamentals": placeholder,
+                    "valuation": placeholder,
+                    "profitability_growth": placeholder,
+                    "sector_position": placeholder,
+                }
+            elif field.endswith(".evidence_chain"):
+                chain_labels = (
+                    ("Conclusion", "Evidence", "Risk", "Action boundary")
+                    if report_language == "en"
+                    else ("结论", "证据", "风险", "操作边界")
+                )
+                enhanced["evidence_chain"] = enhanced.get("evidence_chain") or [
+                    f"{chain_labels[0]}: {placeholder}",
+                    f"{chain_labels[1]}: {placeholder}",
+                    f"{chain_labels[2]}: {placeholder}",
+                    f"{chain_labels[3]}: {placeholder}",
+                ]
+        elif field.startswith("dashboard.battle_plan.timeframe_strategy."):
+            if not result.dashboard:
+                result.dashboard = {}
+            if "battle_plan" not in result.dashboard:
+                result.dashboard["battle_plan"] = {}
+            if "timeframe_strategy" not in result.dashboard["battle_plan"]:
+                result.dashboard["battle_plan"]["timeframe_strategy"] = {}
+            key = field.rsplit(".", 1)[-1]
+            result.dashboard["battle_plan"]["timeframe_strategy"][key] = (
+                result.dashboard["battle_plan"]["timeframe_strategy"].get(key) or placeholder
+            )
 
 
 # ---------- chip_structure fallback (Issue #589) ----------
@@ -566,6 +650,23 @@ class GeminiAnalyzer:
                 "avg_cost": 平均成本,
                 "concentration": 筹码集中度,
                 "chip_health": "健康/一般/警惕"
+            },
+            "enhanced_evidence": {
+                "short_term_weights": {
+                    "technical": "高/中/低或百分比",
+                    "capital_flow": "高/中/低或百分比",
+                    "board_linkage": "高/中/低或百分比",
+                    "chip_structure": "高/中/低或百分比"
+                },
+                "medium_term_weights": {
+                    "fundamentals": "高/中/低或百分比",
+                    "valuation": "高/中/低或百分比",
+                    "profitability_growth": "高/中/低或百分比",
+                    "sector_position": "高/中/低或百分比"
+                },
+                "evidence_chain": ["结论：...", "证据：...", "风险：...", "操作边界：..."],
+                "evidence_conflicts": ["冲突证据或空数组"],
+                "data_gaps": ["数据缺口或空数组"]
             }
         },
 
@@ -588,6 +689,12 @@ class GeminiAnalyzer:
                 "suggested_position": "建议仓位：X成",
                 "entry_plan": "分批建仓策略描述",
                 "risk_control": "风控策略描述"
+            },
+            "timeframe_strategy": {
+                "short_term": "短线1-3日策略：触发条件、观察点、止损",
+                "medium_term": "中线1-2周策略：基本面/估值/趋势确认条件",
+                "conflict_resolution": "短线与中线证据冲突时如何处理",
+                "action_boundary": "结论成立和失效的价格或条件边界"
             },
             "action_checklist": [
                 "✅/⚠️/❌ 检查项1：多头排列",
@@ -716,6 +823,23 @@ class GeminiAnalyzer:
                 "avg_cost": 平均成本,
                 "concentration": 筹码集中度,
                 "chip_health": "健康/一般/警惕"
+            },
+            "enhanced_evidence": {
+                "short_term_weights": {
+                    "technical": "高/中/低或百分比",
+                    "capital_flow": "高/中/低或百分比",
+                    "board_linkage": "高/中/低或百分比",
+                    "chip_structure": "高/中/低或百分比"
+                },
+                "medium_term_weights": {
+                    "fundamentals": "高/中/低或百分比",
+                    "valuation": "高/中/低或百分比",
+                    "profitability_growth": "高/中/低或百分比",
+                    "sector_position": "高/中/低或百分比"
+                },
+                "evidence_chain": ["结论：...", "证据：...", "风险：...", "操作边界：..."],
+                "evidence_conflicts": ["冲突证据或空数组"],
+                "data_gaps": ["数据缺口或空数组"]
             }
         },
 
@@ -738,6 +862,12 @@ class GeminiAnalyzer:
                 "suggested_position": "建议仓位：X成",
                 "entry_plan": "分批建仓策略描述",
                 "risk_control": "风控策略描述"
+            },
+            "timeframe_strategy": {
+                "short_term": "短线1-3日策略：触发条件、观察点、止损",
+                "medium_term": "中线1-2周策略：基本面/估值/趋势确认条件",
+                "conflict_resolution": "短线与中线证据冲突时如何处理",
+                "action_boundary": "结论成立和失效的价格或条件边界"
             },
             "action_checklist": [
                 "✅/⚠️/❌ 检查项1：当前结构是否满足激活技能条件",
@@ -1338,6 +1468,7 @@ class GeminiAnalyzer:
         try:
             # 格式化输入（包含技术面数据和新闻）
             prompt = self._format_prompt(context, name, news_context, report_language=report_language)
+            require_enhanced_evidence = self._requires_enhanced_evidence_integrity(context)
             
             config = self._get_runtime_config()
             model_name = config.litellm_model or "unknown"
@@ -1400,7 +1531,10 @@ class GeminiAnalyzer:
                 # 内容完整性校验（可选）
                 if not config.report_integrity_enabled:
                     break
-                pass_integrity, missing_fields = self._check_content_integrity(result)
+                pass_integrity, missing_fields = self._check_content_integrity(
+                    result,
+                    require_enhanced_evidence=require_enhanced_evidence,
+                )
                 if pass_integrity:
                     break
                 if retry_count < max_retries:
@@ -1452,6 +1586,74 @@ class GeminiAnalyzer:
                 report_language=report_language,
             )
     
+    @staticmethod
+    def _prompt_evidence_value(value: Any) -> str:
+        if value is None:
+            return "N/A"
+        if isinstance(value, str) and not value.strip():
+            return "N/A"
+        if isinstance(value, (list, tuple, set, dict)) and not value:
+            return "N/A"
+        return str(value)
+
+    def _format_enhanced_strategy_contract(
+        self,
+        *,
+        coverage: Dict[str, Any],
+        capital_signal: Any = None,
+        capital_reason: Any = None,
+        board_status: Any = None,
+        board_name: Any = None,
+        chip_signal: Any = None,
+        report_language: str = "zh",
+    ) -> str:
+        evidence_values = {
+            "capital_flow.signal": self._prompt_evidence_value(capital_signal),
+            "capital_flow.status": self._prompt_evidence_value(coverage.get("capital_flow")),
+            "capital_flow.reason": self._prompt_evidence_value(capital_reason),
+            "board_linkage.status": self._prompt_evidence_value(board_status),
+            "board_linkage.matched": self._prompt_evidence_value(board_name),
+            "board_linkage.coverage": self._prompt_evidence_value(coverage.get("boards")),
+            "chip_signal": self._prompt_evidence_value(chip_signal),
+            "chip.status": self._prompt_evidence_value(coverage.get("chip")),
+            "valuation.status": self._prompt_evidence_value(coverage.get("valuation")),
+            "profitability.status": self._prompt_evidence_value(coverage.get("profitability")),
+            "growth.status": self._prompt_evidence_value(coverage.get("growth")),
+        }
+        if all(value == "N/A" for value in evidence_values.values()):
+            return ""
+
+        snapshot = "；".join(f"{key}={value}" for key, value in evidence_values.items())
+        report_language = normalize_report_language(report_language)
+        if report_language == "en":
+            return f"""
+### Enhanced Evidence Decision Contract (enhanced_evidence_contract)
+- Evidence snapshot: {snapshot}.
+- `trend_prediction` and `operation_advice` must cite at least one available enhanced evidence dimension: capital flow, board linkage, chip structure, valuation, profitability, or growth. State whether it supports, conflicts with, or only weakens confidence in the conclusion.
+- If `capital_flow.signal` is `outflow_confirmed`, `mixed_signal`, or `weak_outflow`, do not recommend unconditional chasing. A short-term trial is acceptable only when the trigger price, stop loss, and invalidation condition are explicit.
+- If `board_linkage.status` is `lagging`, `isolated`, or `weak`, do not describe the move as a sector-led breakout. Explain the divergence between the stock and its board instead.
+- If `chip_signal` is `overheated`, `pressure_heavy`, `high_pressure`, or `divergent`, `operation_advice` must include no-chase or pullback-confirmation language and a concrete risk boundary.
+- For dimensions with `N/A`, `not_supported`, `failed`, `partial`, or `stale` status, use them only as uncertainty notes. Do not invent missing values or treat stale evidence as fresh support.
+- When fundamentals are weak but short-term momentum is strong, separate short-term trading advice from medium-term investment advice.
+- Fill `dashboard.data_perspective.enhanced_evidence.short_term_weights` and `dashboard.data_perspective.enhanced_evidence.medium_term_weights` to show how evidence is weighted across timeframes.
+- Fill `dashboard.data_perspective.enhanced_evidence.evidence_chain` in the fixed order: conclusion -> evidence -> risk -> action boundary.
+- Fill `dashboard.battle_plan.timeframe_strategy` with `short_term`, `medium_term`, `conflict_resolution`, and `action_boundary`; this must be consistent with `sniper_points.stop_loss`.
+"""
+
+        return f"""
+### 增强证据决策合同（enhanced_evidence_contract）
+- 证据快照：{snapshot}。
+- `trend_prediction` 与 `operation_advice` 必须至少引用一个已可用的增强证据维度：资金流、板块联动、筹码结构、估值、盈利能力或成长性，并说明它是支持、冲突，还是只用于降低结论置信度。
+- 若 `capital_flow.signal` 为 `outflow_confirmed`、`mixed_signal` 或 `weak_outflow`，不得给出无条件追买；只有同时写清触发价、止损位与失效条件时，才允许给短线试错或等待突破方案。
+- 若 `board_linkage.status` 为 `lagging`、`isolated` 或 `weak`，不得描述为板块带动的强突破，必须说明个股与所属板块不同步。
+- 若 `chip_signal` 为 `overheated`、`pressure_heavy`、`high_pressure` 或 `divergent`，`operation_advice` 必须包含不追高或回撤确认，并给出具体风险边界。
+- 状态为 `N/A`、`not_supported`、`failed`、`partial` 或 `stale` 的维度，只能作为不确定性提示，不得补写缺失数值，也不得把过期证据当作最新支撑。
+- 当基本面偏弱但短线走势较强时，必须区分短线交易建议与中线投资建议，不得把短线强势包装成中线投资建议。
+- 必须填写 `dashboard.data_perspective.enhanced_evidence.short_term_weights` 与 `dashboard.data_perspective.enhanced_evidence.medium_term_weights`，说明短线和中线分别如何给增强证据分配权重。
+- 必须填写 `dashboard.data_perspective.enhanced_evidence.evidence_chain`，并按“结论 -> 证据 -> 风险 -> 操作边界”的固定顺序组织。
+- 必须填写 `dashboard.battle_plan.timeframe_strategy` 下的 `short_term`、`medium_term`、`conflict_resolution`、`action_boundary`，且操作边界必须与 `sniper_points.stop_loss` 保持一致。
+"""
+
     def _format_prompt(
         self, 
         context: Dict[str, Any], 
@@ -1577,6 +1779,65 @@ class GeminiAnalyzer:
 
 > 若上述字段为 N/A 或缺失，请明确写“数据缺失，无法判断”，禁止编造。
 """
+
+        if isinstance(fundamental_context, dict):
+            def _block_data(block_name: str) -> Dict[str, Any]:
+                block = fundamental_context.get(block_name, {})
+                if not isinstance(block, dict):
+                    return {}
+                data = block.get("data", {})
+                return data if isinstance(data, dict) else {}
+
+            def _display(value: Any) -> Any:
+                return value if value not in (None, "", [], {}) else "N/A"
+
+            coverage = fundamental_context.get("coverage", {})
+            coverage = coverage if isinstance(coverage, dict) else {}
+            valuation_data = _block_data("valuation")
+            profitability_data = _block_data("profitability")
+            growth_data = _block_data("growth")
+            capital_flow_data = _block_data("capital_flow")
+            boards_data = _block_data("boards")
+            chip_context_data = _block_data("chip")
+            belong_boards = fundamental_context.get("belong_boards")
+            if not isinstance(belong_boards, list):
+                belong_boards = boards_data.get("belong_boards", []) if isinstance(boards_data, dict) else []
+            board_names = [
+                str(item.get("name", "")).strip()
+                for item in belong_boards
+                if isinstance(item, dict) and str(item.get("name", "")).strip()
+            ]
+            relative_strength = boards_data.get("relative_strength", {}) if isinstance(boards_data, dict) else {}
+            if not isinstance(relative_strength, dict):
+                relative_strength = {}
+            capital_signal = capital_flow_data.get("signal") if isinstance(capital_flow_data, dict) else None
+            chip_signal = chip_context_data.get("chip_signal") if isinstance(chip_context_data, dict) else None
+            if any(
+                isinstance(item, dict) and item
+                for item in (valuation_data, profitability_data, growth_data, capital_flow_data, boards_data, chip_context_data)
+            ) or board_names:
+                prompt += f"""
+### 增强数据证据（Tushare / fallback）
+| 维度 | 关键数据 | 数据状态 |
+|------|----------|----------|
+| 估值 | PE={_display(valuation_data.get('pe_ratio'))}，PE_TTM={_display(valuation_data.get('pe_ttm'))}，PB={_display(valuation_data.get('pb_ratio'))}，股息率={_display(valuation_data.get('dividend_yield_pct'))}% | {coverage.get('valuation', 'N/A')} |
+| 盈利能力 | ROE={_display(profitability_data.get('roe'))}，扣非ROE={_display(profitability_data.get('roe_dt'))}，毛利率={_display(profitability_data.get('gross_margin'))}%，净利率={_display(profitability_data.get('net_profit_margin'))}% | {coverage.get('profitability', 'N/A')} |
+| 成长性 | 营收同比={_display(growth_data.get('revenue_yoy'))}%，净利同比={_display(growth_data.get('net_profit_yoy'))}% | {coverage.get('growth', 'N/A')} |
+| 资金流 | 信号={_display(capital_signal)}，主力净流入={_display((capital_flow_data.get('stock_flow') or {}).get('main_net_inflow') if isinstance(capital_flow_data.get('stock_flow'), dict) else None)} | {coverage.get('capital_flow', 'N/A')} |
+| 板块联动 | 所属板块={', '.join(board_names[:5]) if board_names else 'N/A'}，相对状态={_display(relative_strength.get('status'))} | {coverage.get('boards', 'N/A')} |
+| 筹码结构 | 信号={_display(chip_signal)}，获利比例={_display(chip_context_data.get('profit_ratio'))}，90%集中度={_display(chip_context_data.get('concentration_90'))} | {coverage.get('chip', 'N/A')} |
+
+> 使用这些增强数据时必须标注数据日期或报告期；状态为 N/A、not_supported、failed、partial 时，请明确说明不确定性，不得补写缺失数值。
+"""
+                prompt += self._format_enhanced_strategy_contract(
+                    coverage=coverage,
+                    capital_signal=capital_signal,
+                    capital_reason=capital_flow_data.get("mixed_reason"),
+                    board_status=relative_strength.get("status"),
+                    board_name=relative_strength.get("matched_board"),
+                    chip_signal=chip_signal,
+                    report_language=report_language,
+                )
 
         # 添加筹码分布数据
         if 'chip' in context:
@@ -1870,9 +2131,46 @@ class GeminiAnalyzer:
 
         return snapshot
 
-    def _check_content_integrity(self, result: AnalysisResult) -> Tuple[bool, List[str]]:
+    def _check_content_integrity(
+        self,
+        result: AnalysisResult,
+        *,
+        require_enhanced_evidence: bool = False,
+    ) -> Tuple[bool, List[str]]:
         """Delegate to module-level check_content_integrity."""
-        return check_content_integrity(result)
+        return check_content_integrity(
+            result,
+            require_enhanced_evidence=require_enhanced_evidence,
+        )
+
+    @staticmethod
+    def _requires_enhanced_evidence_integrity(context: Dict[str, Any]) -> bool:
+        """Require Phase 3 evidence fields only when enhanced evidence entered the prompt."""
+        if not isinstance(context, dict):
+            return False
+        fundamental_context = context.get("fundamental_context")
+        if not isinstance(fundamental_context, dict):
+            return False
+
+        def _block_data(block_name: str) -> Dict[str, Any]:
+            block = fundamental_context.get(block_name, {})
+            if not isinstance(block, dict):
+                return {}
+            data = block.get("data", {})
+            return data if isinstance(data, dict) else {}
+
+        for block_name in ("valuation", "profitability", "growth", "capital_flow", "boards", "chip"):
+            if _block_data(block_name):
+                return True
+
+        belong_boards = fundamental_context.get("belong_boards")
+        if not isinstance(belong_boards, list):
+            boards_data = _block_data("boards")
+            belong_boards = boards_data.get("belong_boards", []) if isinstance(boards_data, dict) else []
+        return any(
+            isinstance(item, dict) and str(item.get("name", "")).strip()
+            for item in belong_boards or []
+        )
 
     def _build_integrity_complement_prompt(self, missing_fields: List[str], report_language: str = "zh") -> str:
         """Build complement instruction for missing mandatory fields."""
@@ -1892,6 +2190,14 @@ class GeminiAnalyzer:
                     lines.append("- dashboard.intelligence.risk_alerts: risk alert list (can be empty)")
                 elif f == "dashboard.battle_plan.sniper_points.stop_loss":
                     lines.append("- dashboard.battle_plan.sniper_points.stop_loss: stop-loss level")
+                elif f == "dashboard.data_perspective.enhanced_evidence.short_term_weights":
+                    lines.append("- dashboard.data_perspective.enhanced_evidence.short_term_weights: short-term evidence weights for technical, capital_flow, board_linkage, and chip_structure")
+                elif f == "dashboard.data_perspective.enhanced_evidence.medium_term_weights":
+                    lines.append("- dashboard.data_perspective.enhanced_evidence.medium_term_weights: medium-term evidence weights for fundamentals, valuation, profitability_growth, and sector_position")
+                elif f == "dashboard.data_perspective.enhanced_evidence.evidence_chain":
+                    lines.append("- dashboard.data_perspective.enhanced_evidence.evidence_chain: array in the fixed order conclusion -> evidence -> risk -> action boundary")
+                elif f.startswith("dashboard.battle_plan.timeframe_strategy."):
+                    lines.append(f"- {f}: timeframe strategy field; keep it consistent with sniper_points.stop_loss")
             return "\n".join(lines)
 
         lines = ["### 补全要求：请在上方分析基础上补充以下必填内容，并输出完整 JSON："]
@@ -1908,6 +2214,14 @@ class GeminiAnalyzer:
                 lines.append("- dashboard.intelligence.risk_alerts: 风险警报列表（可为空数组）")
             elif f == "dashboard.battle_plan.sniper_points.stop_loss":
                 lines.append("- dashboard.battle_plan.sniper_points.stop_loss: 止损价")
+            elif f == "dashboard.data_perspective.enhanced_evidence.short_term_weights":
+                lines.append("- dashboard.data_perspective.enhanced_evidence.short_term_weights: 短线证据权重，覆盖技术面、资金流、板块联动和筹码结构")
+            elif f == "dashboard.data_perspective.enhanced_evidence.medium_term_weights":
+                lines.append("- dashboard.data_perspective.enhanced_evidence.medium_term_weights: 中线证据权重，覆盖基本面、估值、盈利成长和板块位置")
+            elif f == "dashboard.data_perspective.enhanced_evidence.evidence_chain":
+                lines.append("- dashboard.data_perspective.enhanced_evidence.evidence_chain: 按“结论 -> 证据 -> 风险 -> 操作边界”顺序输出数组")
+            elif f.startswith("dashboard.battle_plan.timeframe_strategy."):
+                lines.append(f"- {f}: 短线/中线策略字段，必须与 sniper_points.stop_loss 的失效条件一致")
         return "\n".join(lines)
 
     def _build_integrity_retry_prompt(

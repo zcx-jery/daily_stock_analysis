@@ -142,6 +142,68 @@ class TestCheckContentIntegrity(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("dashboard.intelligence.risk_alerts", missing)
 
+    def test_enhanced_evidence_fields_required_when_enabled(self) -> None:
+        """Phase 3 evidence fields are mandatory only when enhanced evidence is expected."""
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            trend_prediction="震荡偏强",
+            sentiment_score=62,
+            operation_advice="等待回踩确认",
+            analysis_summary="资金和筹码有分歧。",
+            decision_type="hold",
+            dashboard={
+                "core_conclusion": {"one_sentence": "等待确认"},
+                "intelligence": {"risk_alerts": []},
+                "battle_plan": {"sniper_points": {"stop_loss": "1600元"}},
+            },
+        )
+
+        ok, missing = check_content_integrity(result, require_enhanced_evidence=True)
+
+        self.assertFalse(ok)
+        self.assertIn("dashboard.data_perspective.enhanced_evidence.short_term_weights", missing)
+        self.assertIn("dashboard.data_perspective.enhanced_evidence.medium_term_weights", missing)
+        self.assertIn("dashboard.data_perspective.enhanced_evidence.evidence_chain", missing)
+        self.assertIn("dashboard.battle_plan.timeframe_strategy.action_boundary", missing)
+
+    def test_enhanced_evidence_fields_pass_when_present(self) -> None:
+        """Phase 3 evidence fields satisfy integrity when filled."""
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            trend_prediction="震荡偏强",
+            sentiment_score=62,
+            operation_advice="等待回踩确认",
+            analysis_summary="资金和筹码有分歧。",
+            decision_type="hold",
+            dashboard={
+                "core_conclusion": {"one_sentence": "等待确认"},
+                "data_perspective": {
+                    "enhanced_evidence": {
+                        "short_term_weights": {"technical": "high", "capital_flow": "medium"},
+                        "medium_term_weights": {"fundamentals": "medium", "valuation": "low"},
+                        "evidence_chain": ["结论：等待", "证据：资金冲突", "风险：筹码过热", "操作边界：跌破1600元"],
+                    }
+                },
+                "intelligence": {"risk_alerts": []},
+                "battle_plan": {
+                    "sniper_points": {"stop_loss": "1600元"},
+                    "timeframe_strategy": {
+                        "short_term": "等待突破后试错",
+                        "medium_term": "等待业绩确认",
+                        "conflict_resolution": "短线强、中线弱时降仓",
+                        "action_boundary": "跌破1600元失效",
+                    },
+                },
+            },
+        )
+
+        ok, missing = check_content_integrity(result, require_enhanced_evidence=True)
+
+        self.assertTrue(ok)
+        self.assertEqual(missing, [])
+
 
 class TestApplyPlaceholderFill(unittest.TestCase):
     """Placeholder fill tests."""
@@ -194,6 +256,36 @@ class TestApplyPlaceholderFill(unittest.TestCase):
         apply_placeholder_fill(result, ["dashboard.intelligence.risk_alerts"])
         self.assertEqual(result.dashboard["intelligence"]["risk_alerts"], [])
 
+    def test_fills_enhanced_evidence_placeholders(self) -> None:
+        """Placeholder fill creates nested Phase 3 evidence structures."""
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            trend_prediction="看多",
+            sentiment_score=70,
+            operation_advice="持有",
+            analysis_summary="稳健",
+            decision_type="hold",
+            dashboard={},
+        )
+
+        apply_placeholder_fill(
+            result,
+            [
+                "dashboard.data_perspective.enhanced_evidence.short_term_weights",
+                "dashboard.data_perspective.enhanced_evidence.evidence_chain",
+                "dashboard.battle_plan.timeframe_strategy.action_boundary",
+            ],
+        )
+
+        enhanced = result.dashboard["data_perspective"]["enhanced_evidence"]
+        self.assertIn("capital_flow", enhanced["short_term_weights"])
+        self.assertEqual(len(enhanced["evidence_chain"]), 4)
+        self.assertEqual(
+            result.dashboard["battle_plan"]["timeframe_strategy"]["action_boundary"],
+            "待补充",
+        )
+
 
 class TestIntegrityRetryPrompt(unittest.TestCase):
     """Retry prompt construction tests."""
@@ -210,3 +302,20 @@ class TestIntegrityRetryPrompt(unittest.TestCase):
         self.assertIn("原始提示", prompt)
         self.assertIn('{"analysis_summary": "已有内容"}', prompt)
         self.assertIn("dashboard.core_conclusion.one_sentence", prompt)
+
+    def test_retry_prompt_describes_enhanced_evidence_fields(self) -> None:
+        """Retry prompt explains Phase 3 enhanced evidence fields."""
+        with patch.object(GeminiAnalyzer, "_init_litellm", return_value=None):
+            analyzer = GeminiAnalyzer()
+
+        prompt = analyzer._build_integrity_retry_prompt(
+            "原始提示",
+            '{"analysis_summary": "已有内容"}',
+            [
+                "dashboard.data_perspective.enhanced_evidence.evidence_chain",
+                "dashboard.battle_plan.timeframe_strategy.action_boundary",
+            ],
+        )
+
+        self.assertIn("结论 -> 证据 -> 风险 -> 操作边界", prompt)
+        self.assertIn("dashboard.battle_plan.timeframe_strategy.action_boundary", prompt)

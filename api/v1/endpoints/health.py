@@ -14,6 +14,7 @@ from datetime import datetime
 from fastapi import APIRouter
 
 from api.v1.schemas.common import HealthResponse
+from src.services.momentum_screener_service import MomentumScreenerService
 
 router = APIRouter()
 
@@ -30,5 +31,8 @@ async def health_check() -> HealthResponse:
     """
     return HealthResponse(
         status="ok",
-        timestamp=datetime.now().isoformat()
+        timestamp=datetime.now().isoformat(),
+        diagnostics={
+            "momentum_sector_cache": MomentumScreenerService.get_sector_cache_stats(),
+        },
     )

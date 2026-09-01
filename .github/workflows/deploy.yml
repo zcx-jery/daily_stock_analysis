@@ -4,6 +4,29 @@ on:
   push:
     branches: [main]
   workflow_dispatch: # 支持手动触发
+    inputs:
+      deploy_ref:
+        description: "Git branch or tag to deploy. Defaults to the workflow ref."
+        required: false
+        default: ""
+      start_momentum_backtest:
+        description: "Start a server-side V1.3 momentum backtest after deployment."
+        required: false
+        default: false
+        type: boolean
+      backtest_start_trade_date:
+        description: "Momentum backtest start date, YYYY-MM-DD."
+        required: false
+        default: "2026-01-22"
+      backtest_end_trade_date:
+        description: "Momentum backtest end date, YYYY-MM-DD."
+        required: false
+        default: "2026-04-24"
+      strict_strategy_health:
+        description: "Use strict 20/60 strategy-health replay instead of cached-only mode."
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   deploy:
@@ -16,8 +39,56 @@ jobs:
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           port: ${{ secrets.DEPLOY_PORT || 22 }}
+          command_timeout: 30m
           script: |
+            set -euo pipefail
             cd ${{ secrets.DEPLOY_PATH }}
-            git pull origin main
+            DEPLOY_REF="${{ github.event.inputs.deploy_ref || github.ref_name }}"
+            if [ -z "$DEPLOY_REF" ]; then
+              DEPLOY_REF="main"
+            fi
+            if [ -n "$(git status --porcelain)" ]; then
+              git status --porcelain
+              git stash push --include-untracked -m "pre-deploy-${DEPLOY_REF}-$(date -u +%Y%m%d%H%M%S)"
+            fi
+            git fetch origin "$DEPLOY_REF"
+            git switch "$DEPLOY_REF" || git switch -c "$DEPLOY_REF" "origin/$DEPLOY_REF"
+            git pull --ff-only origin "$DEPLOY_REF"
             bash scripts/deploy-docker.sh rebuild server
+            if [ "${{ github.event.inputs.start_momentum_backtest || 'false' }}" = "true" ]; then
+              docker exec -i stock-server python - "${{ github.event.inputs.backtest_start_trade_date || '2026-01-22' }}" "${{ github.event.inputs.backtest_end_trade_date || '2026-04-24' }}" "${{ github.event.inputs.strict_strategy_health || 'false' }}" <<'PY'
+            import json
+            import os
+            import sys
+            import urllib.error
+            import urllib.request
+
+            start_trade_date, end_trade_date, strict_strategy_health = sys.argv[1:4]
+            port = os.getenv("API_PORT") or os.getenv("WEBUI_PORT") or "8000"
+            payload = {
+                "start_trade_date": start_trade_date,
+                "end_trade_date": end_trade_date,
+                "strict_strategy_health": strict_strategy_health.lower() == "true",
+            }
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/v1/stocks/screener/momentum/backtests",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    body = response.read().decode("utf-8")
+            except urllib.error.HTTPError as exc:
+                print(exc.read().decode("utf-8", errors="replace"), file=sys.stderr)
+                raise
+
+            print(body)
+            data = json.loads(body)
+            run = data.get("run") if isinstance(data, dict) else {}
+            run_id = run.get("run_id") if isinstance(run, dict) else None
+            if run_id:
+                print(f"SERVER_BACKTEST_RUN_ID={run_id}")
+            PY
+            fi
             docker image prune -f

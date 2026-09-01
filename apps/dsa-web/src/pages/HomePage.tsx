@@ -1,14 +1,16 @@
 import type React from 'react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ApiErrorAlert, ConfirmDialog, Button, EmptyState, InlineAlert } from '../components/common';
 import { DashboardStateBlock } from '../components/dashboard';
 import { StockAutocomplete } from '../components/StockAutocomplete';
-import { HistoryList } from '../components/history';
-import { ReportMarkdown, ReportSummary } from '../components/report';
-import { TaskPanel } from '../components/tasks';
 import { useDashboardLifecycle, useHomeDashboardState } from '../hooks';
 import { getReportText, normalizeReportLanguage } from '../utils/reportLanguage';
+
+const HistoryList = lazy(() => import('../components/history').then((module) => ({ default: module.HistoryList })));
+const ReportMarkdown = lazy(() => import('../components/report').then((module) => ({ default: module.ReportMarkdown })));
+const ReportSummary = lazy(() => import('../components/report').then((module) => ({ default: module.ReportSummary })));
+const TaskPanel = lazy(() => import('../components/tasks').then((module) => ({ default: module.TaskPanel })));
 
 const HomePage: React.FC = () => {
   const navigate = useNavigate();
@@ -107,22 +109,26 @@ const HomePage: React.FC = () => {
   const sidebarContent = useMemo(
     () => (
       <div className="flex min-h-0 h-full flex-col gap-3 overflow-hidden">
-        <TaskPanel tasks={activeTasks} />
-        <HistoryList
-          items={historyItems}
-          isLoading={isLoadingHistory}
-          isLoadingMore={isLoadingMore}
-          hasMore={hasMore}
-          selectedId={selectedReport?.meta.id}
-          selectedIds={selectedIds}
-          isDeleting={isDeletingHistory}
-          onItemClick={handleHistoryItemClick}
-          onLoadMore={() => void loadMoreHistory()}
-          onToggleItemSelection={toggleHistorySelection}
-          onToggleSelectAll={toggleSelectAllVisible}
-          onDeleteSelected={() => setShowDeleteConfirm(true)}
-          className="flex-1 overflow-hidden"
-        />
+        <Suspense fallback={<div className="rounded-xl border border-subtle bg-surface/40 px-3 py-3 text-xs text-secondary-text">加载任务面板中...</div>}>
+          <TaskPanel tasks={activeTasks} />
+        </Suspense>
+        <Suspense fallback={<div className="flex-1 rounded-xl border border-subtle bg-surface/40 px-3 py-3 text-xs text-secondary-text">加载历史记录中...</div>}>
+          <HistoryList
+            items={historyItems}
+            isLoading={isLoadingHistory}
+            isLoadingMore={isLoadingMore}
+            hasMore={hasMore}
+            selectedId={selectedReport?.meta.id}
+            selectedIds={selectedIds}
+            isDeleting={isDeletingHistory}
+            onItemClick={handleHistoryItemClick}
+            onLoadMore={() => void loadMoreHistory()}
+            onToggleItemSelection={toggleHistorySelection}
+            onToggleSelectAll={toggleSelectAllVisible}
+            onDeleteSelected={() => setShowDeleteConfirm(true)}
+            className="flex-1 overflow-hidden"
+          />
+        </Suspense>
       </div>
     ),
     [
@@ -276,7 +282,9 @@ const HomePage: React.FC = () => {
                     {reportText.fullReport}
                   </Button>
                 </div>
-                <ReportSummary data={selectedReport} isHistory />
+                <Suspense fallback={<div className="rounded-2xl border border-subtle bg-surface/40 px-4 py-6 text-sm text-secondary-text">加载报告摘要中...</div>}>
+                  <ReportSummary data={selectedReport} isHistory />
+                </Suspense>
               </div>
             ) : (
               <div className="flex h-full items-center justify-center">
@@ -297,13 +305,15 @@ const HomePage: React.FC = () => {
       </div>
 
       {markdownDrawerOpen && selectedReport?.meta.id ? (
-        <ReportMarkdown
-          recordId={selectedReport.meta.id}
-          stockName={selectedReport.meta.stockName || ''}
-          stockCode={selectedReport.meta.stockCode}
-          reportLanguage={reportLanguage}
-          onClose={closeMarkdownDrawer}
-        />
+        <Suspense fallback={<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 text-sm text-white">加载完整报告中...</div>}>
+          <ReportMarkdown
+            recordId={selectedReport.meta.id}
+            stockName={selectedReport.meta.stockName || ''}
+            stockCode={selectedReport.meta.stockCode}
+            reportLanguage={reportLanguage}
+            onClose={closeMarkdownDrawer}
+          />
+        </Suspense>
       ) : null}
 
       <ConfirmDialog

@@ -20,6 +20,10 @@ except ValueError:
 
 if not json_repair_available and "json_repair" not in sys.modules:
     sys.modules["json_repair"] = MagicMock()
+if "markdown2" not in sys.modules:
+    sys.modules["markdown2"] = MagicMock()
+if "newspaper" not in sys.modules:
+    sys.modules["newspaper"] = MagicMock()
 
 from data_provider.base import DataFetcherManager
 from data_provider.realtime_types import RealtimeSource, UnifiedRealtimeQuote
@@ -107,6 +111,40 @@ def test_manager_does_not_warn_when_fallback_source_succeeds(mock_get_config, ca
     assert quote.name == "贵州茅台"
     assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
     assert "所有数据源均不可用" not in caplog.text
+
+
+@patch("src.config.get_config")
+def test_manager_normalizes_display_label_realtime_priority_at_runtime(mock_get_config):
+    mock_get_config.return_value = SimpleNamespace(
+        enable_realtime_quote=True,
+        realtime_source_priority="Tushare Pro",
+    )
+    manager = DataFetcherManager(
+        fetchers=[
+            _DummyFetcher("TushareFetcher", 0, result=_make_quote()),
+        ]
+    )
+
+    quote = manager.get_realtime_quote("600519")
+
+    assert quote is not None
+
+
+@patch("src.config.get_config")
+def test_manager_falls_back_to_default_priority_when_runtime_value_is_invalid(mock_get_config):
+    mock_get_config.return_value = SimpleNamespace(
+        enable_realtime_quote=True,
+        realtime_source_priority="DefinitelyNotAProvider",
+    )
+    manager = DataFetcherManager(
+        fetchers=[
+            _DummyFetcher("EfinanceFetcher", 0, result=_make_quote()),
+        ]
+    )
+
+    quote = manager.get_realtime_quote("600519")
+
+    assert quote is not None
 
 
 def test_pipeline_warns_once_when_all_realtime_sources_fail(caplog):

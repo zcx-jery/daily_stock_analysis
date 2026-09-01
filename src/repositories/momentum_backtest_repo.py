@@ -1,0 +1,509 @@
+"""Repository helpers for V1 momentum screener backtests."""
+
+from __future__ import annotations
+
+import logging
+from datetime import date, datetime
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, TypeVar
+
+from sqlalchemy import and_, delete, desc, func, select
+from sqlalchemy.exc import OperationalError
+
+from src.storage import (
+    DatabaseManager,
+    MomentumBacktestCandidateRecord,
+    MomentumBacktestDailySummary,
+    MomentumBacktestDecisionRecord,
+    MomentumBacktestOutcomeRecord,
+    MomentumBacktestRun,
+)
+
+T = TypeVar("T")
+logger = logging.getLogger(__name__)
+
+
+class MomentumBacktestRepository:
+    """Database access layer for V1 momentum screener backtests."""
+
+    def __init__(self, db_manager: Optional[DatabaseManager] = None) -> None:
+        self.db = db_manager or DatabaseManager.get_instance()
+
+    def _run_write(self, operation_name: str, write_operation: Callable[[Any], T]) -> T:
+        """Run write-side backtest mutations through SQLite lock retry handling."""
+        run_write_transaction = getattr(self.db, "_run_write_transaction", None)
+        if callable(run_write_transaction):
+            return run_write_transaction(operation_name, write_operation)
+
+        with self.db.get_session() as session:
+            try:
+                result = write_operation(session)
+                session.commit()
+                return result
+            except Exception:
+                session.rollback()
+                raise
+
+    def create_run(self, run: MomentumBacktestRun) -> MomentumBacktestRun:
+        def write(session) -> str:
+            session.add(run)
+            return run.run_id
+
+        run_id = self._run_write("momentum_backtest.create_run", write)
+        created = self.get_run(run_id)
+        if created is None:
+            raise RuntimeError(f"Backtest run was not persisted: {run_id}")
+        return created
+
+    def get_run(self, run_id: str) -> Optional[MomentumBacktestRun]:
+        with self.db.get_session() as session:
+            return session.execute(
+                select(MomentumBacktestRun)
+                .where(MomentumBacktestRun.run_id == run_id)
+                .limit(1)
+            ).scalar_one_or_none()
+
+    def list_runs(
+        self,
+        *,
+        limit: int = 10,
+        profile: Optional[str] = None,
+        statuses: Optional[Sequence[str]] = None,
+        ascending: bool = False,
+    ) -> List[MomentumBacktestRun]:
+        with self.db.get_session() as session:
+            query = select(MomentumBacktestRun)
+            if profile:
+                query = query.where(MomentumBacktestRun.profile == profile)
+            if statuses:
+                query = query.where(MomentumBacktestRun.status.in_(list(statuses)))
+            order_by = (
+                (MomentumBacktestRun.created_at.asc(), MomentumBacktestRun.id.asc())
+                if ascending
+                else (desc(MomentumBacktestRun.created_at), desc(MomentumBacktestRun.id))
+            )
+            rows = session.execute(
+                query.order_by(*order_by).limit(limit)
+            ).scalars().all()
+            return list(rows)
+
+    def count_runs(
+        self,
+        *,
+        profile: Optional[str] = None,
+        statuses: Optional[Sequence[str]] = None,
+    ) -> int:
+        with self.db.get_session() as session:
+            query = select(func.count()).select_from(MomentumBacktestRun)
+            if profile:
+                query = query.where(MomentumBacktestRun.profile == profile)
+            if statuses:
+                query = query.where(MomentumBacktestRun.status.in_(list(statuses)))
+            return int(session.execute(query).scalar_one() or 0)
+
+    def get_first_run_by_statuses(
+        self,
+        statuses: Sequence[str],
+        *,
+        profile: Optional[str] = None,
+        ascending: bool = True,
+    ) -> Optional[MomentumBacktestRun]:
+        with self.db.get_session() as session:
+            query = select(MomentumBacktestRun).where(MomentumBacktestRun.status.in_(list(statuses)))
+            if profile:
+                query = query.where(MomentumBacktestRun.profile == profile)
+            order_by = (
+                (MomentumBacktestRun.created_at.asc(), MomentumBacktestRun.id.asc())
+                if ascending
+                else (MomentumBacktestRun.created_at.desc(), MomentumBacktestRun.id.desc())
+            )
+            return session.execute(query.order_by(*order_by).limit(1)).scalar_one_or_none()
+
+    def find_run_by_params(
+        self,
+        *,
+        start_trade_date: date,
+        end_trade_date: date,
+        profile: str,
+        top_n: int,
+        strategy_health_mode: Optional[str] = None,
+        engine_version: Optional[str] = None,
+        entry_baseline_version: Optional[str] = None,
+        market_scope_version: Optional[str] = None,
+        statuses: Optional[Sequence[str]] = None,
+    ) -> Optional[MomentumBacktestRun]:
+        with self.db.get_session() as session:
+            filters = [
+                MomentumBacktestRun.start_trade_date == start_trade_date,
+                MomentumBacktestRun.end_trade_date == end_trade_date,
+                MomentumBacktestRun.profile == profile,
+                MomentumBacktestRun.top_n == top_n,
+            ]
+            if strategy_health_mode:
+                filters.append(MomentumBacktestRun.strategy_health_mode == strategy_health_mode)
+            if engine_version:
+                filters.append(MomentumBacktestRun.engine_version == engine_version)
+            if entry_baseline_version:
+                filters.append(MomentumBacktestRun.entry_baseline_version == entry_baseline_version)
+            if market_scope_version:
+                filters.append(MomentumBacktestRun.market_scope_version == market_scope_version)
+            if statuses:
+                filters.append(MomentumBacktestRun.status.in_(list(statuses)))
+            return session.execute(
+                select(MomentumBacktestRun)
+                .where(and_(*filters))
+                .order_by(desc(MomentumBacktestRun.created_at), desc(MomentumBacktestRun.id))
+                .limit(1)
+            ).scalar_one_or_none()
+
+    def reset_running_runs_to_queued(self) -> int:
+        with self.db.get_session() as session:
+            rows = session.execute(
+                select(MomentumBacktestRun).where(MomentumBacktestRun.status == "running")
+            ).scalars().all()
+            count = 0
+            now = datetime.now()
+            for row in rows:
+                if bool(getattr(row, "cancel_requested", False)):
+                    row.status = "cancelled"
+                    row.current_stage_key = "cancelled"
+                    row.current_stage_label = "任务已取消"
+                    row.error_message = "任务在服务重启前已请求取消，已停止继续回放"
+                    row.finished_at = now
+                else:
+                    row.status = "queued"
+                    row.current_stage_key = "queued"
+                    row.current_stage_label = "等待后台调度"
+                    row.finished_at = None
+                row.cancel_requested = False
+                if not getattr(row, "strategy_health_mode", None):
+                    row.strategy_health_mode = "cached_only"
+                row.started_at = None
+                row.updated_at = now
+                count += 1
+            if count:
+                session.commit()
+            return count
+
+    def update_run(self, run_id: str, **fields) -> Optional[MomentumBacktestRun]:
+        def write(session) -> Optional[str]:
+            run = session.execute(
+                select(MomentumBacktestRun)
+                .where(MomentumBacktestRun.run_id == run_id)
+                .limit(1)
+            ).scalar_one_or_none()
+            if run is None:
+                return None
+            for key, value in fields.items():
+                setattr(run, key, value)
+            run.updated_at = datetime.now()
+            return run.run_id
+
+        updated_run_id = self._run_write("momentum_backtest.update_run", write)
+        return self.get_run(updated_run_id) if updated_run_id else None
+
+    def delete_run(self, run_id: str) -> bool:
+        def write(session) -> bool:
+            run = session.execute(
+                select(MomentumBacktestRun)
+                .where(MomentumBacktestRun.run_id == run_id)
+                .limit(1)
+            ).scalar_one_or_none()
+            if run is None:
+                return False
+            session.execute(
+                delete(MomentumBacktestOutcomeRecord).where(MomentumBacktestOutcomeRecord.run_id == run_id)
+            )
+            session.execute(
+                delete(MomentumBacktestDecisionRecord).where(MomentumBacktestDecisionRecord.run_id == run_id)
+            )
+            session.execute(
+                delete(MomentumBacktestCandidateRecord).where(MomentumBacktestCandidateRecord.run_id == run_id)
+            )
+            session.execute(
+                delete(MomentumBacktestDailySummary).where(MomentumBacktestDailySummary.run_id == run_id)
+            )
+            session.delete(run)
+            return True
+
+        return self._run_write("momentum_backtest.delete_run", write)
+
+    def verify_storage_integrity(self) -> Dict[str, Any]:
+        verifier = getattr(self.db, "verify_sqlite_integrity", None)
+        if callable(verifier):
+            return dict(verifier())
+        return {"ok": True, "skipped": True, "reason": "integrity_check_unavailable"}
+
+    def wipe_backtest_cache(self) -> Dict[str, int]:
+        """Delete local momentum backtest runs and frozen artifacts."""
+
+        def write(session) -> Dict[str, int]:
+            counts = {
+                "outcome_records": int(session.query(MomentumBacktestOutcomeRecord).delete(synchronize_session=False) or 0),
+                "decision_records": int(session.query(MomentumBacktestDecisionRecord).delete(synchronize_session=False) or 0),
+                "candidate_records": int(session.query(MomentumBacktestCandidateRecord).delete(synchronize_session=False) or 0),
+                "daily_summaries": int(session.query(MomentumBacktestDailySummary).delete(synchronize_session=False) or 0),
+                "runs": int(session.query(MomentumBacktestRun).delete(synchronize_session=False) or 0),
+            }
+            return counts
+
+        return self._run_write("momentum_backtest.wipe_backtest_cache", write)
+
+    def replace_daily_summary(self, summary: MomentumBacktestDailySummary) -> None:
+        def write(session) -> None:
+            session.execute(
+                delete(MomentumBacktestDailySummary).where(
+                    and_(
+                        MomentumBacktestDailySummary.run_id == summary.run_id,
+                        MomentumBacktestDailySummary.trade_date == summary.trade_date,
+                    )
+                )
+            )
+            session.add(summary)
+
+        self._run_write("momentum_backtest.replace_daily_summary", write)
+
+    def replace_candidate_records(
+        self,
+        *,
+        run_id: str,
+        trade_date: date,
+        records: Iterable[MomentumBacktestCandidateRecord],
+    ) -> int:
+        return self._replace_records(
+            model=MomentumBacktestCandidateRecord,
+            run_id=run_id,
+            trade_date=trade_date,
+            records=list(records),
+        )
+
+    def replace_decision_records(
+        self,
+        *,
+        run_id: str,
+        trade_date: date,
+        records: Iterable[MomentumBacktestDecisionRecord],
+    ) -> int:
+        return self._replace_records(
+            model=MomentumBacktestDecisionRecord,
+            run_id=run_id,
+            trade_date=trade_date,
+            records=list(records),
+        )
+
+    def replace_outcome_records(
+        self,
+        *,
+        run_id: str,
+        trade_date: date,
+        records: Iterable[MomentumBacktestOutcomeRecord],
+    ) -> int:
+        return self._replace_records(
+            model=MomentumBacktestOutcomeRecord,
+            run_id=run_id,
+            trade_date=trade_date,
+            records=list(records),
+        )
+
+    def list_daily_summaries(self, run_id: str) -> List[MomentumBacktestDailySummary]:
+        with self.db.get_session() as session:
+            rows = session.execute(
+                select(MomentumBacktestDailySummary)
+                .where(MomentumBacktestDailySummary.run_id == run_id)
+                .order_by(desc(MomentumBacktestDailySummary.trade_date))
+            ).scalars().all()
+            return list(rows)
+
+    def list_daily_summaries_resilient(
+        self,
+        run_id: str,
+    ) -> tuple[List[MomentumBacktestDailySummary], List[date]]:
+        """List daily summaries, skipping isolated corrupted rows if SQLite cannot fetch all."""
+        try:
+            return self.list_daily_summaries(run_id), []
+        except OperationalError as exc:
+            logger.warning(
+                "Momentum backtest daily summary full scan failed; falling back to per-date reads: "
+                "run_id=%s error=%s",
+                run_id,
+                exc,
+            )
+
+        trade_dates = self.list_artifact_trade_dates(run_id)
+        rows: List[MomentumBacktestDailySummary] = []
+        skipped_dates: List[date] = []
+        for trade_dt in trade_dates:
+            try:
+                row = self.get_daily_summary(run_id, trade_dt)
+            except OperationalError as exc:
+                logger.warning(
+                    "Momentum backtest daily summary row skipped after read failure: "
+                    "run_id=%s trade_date=%s error=%s",
+                    run_id,
+                    trade_dt.isoformat(),
+                    exc,
+                )
+                skipped_dates.append(trade_dt)
+                continue
+            if row is None:
+                skipped_dates.append(trade_dt)
+                continue
+            rows.append(row)
+
+        if not rows:
+            raise OperationalError(
+                "select daily summaries",
+                {"run_id": run_id},
+                RuntimeError("No readable daily summaries after resilient fallback"),
+            )
+        rows.sort(key=lambda row: row.trade_date, reverse=True)
+        skipped_dates.sort(reverse=True)
+        return rows, skipped_dates
+
+    def list_artifact_trade_dates(self, run_id: str) -> List[date]:
+        """Return trade dates with any frozen backtest artifacts for a run."""
+        trade_dates: set[date] = set()
+        models = (
+            MomentumBacktestOutcomeRecord,
+            MomentumBacktestCandidateRecord,
+            MomentumBacktestDecisionRecord,
+            MomentumBacktestDailySummary,
+        )
+        with self.db.get_session() as session:
+            for model in models:
+                try:
+                    rows = session.execute(
+                        select(model.trade_date)
+                        .where(model.run_id == run_id)
+                        .distinct()
+                    ).scalars().all()
+                except OperationalError as exc:
+                    logger.warning(
+                        "Momentum backtest artifact date scan failed: run_id=%s table=%s error=%s",
+                        run_id,
+                        model.__tablename__,
+                        exc,
+                    )
+                    continue
+                trade_dates.update(row for row in rows if row is not None)
+        return sorted(trade_dates, reverse=True)
+
+    def get_daily_summary(self, run_id: str, trade_date: date) -> Optional[MomentumBacktestDailySummary]:
+        with self.db.get_session() as session:
+            return session.execute(
+                select(MomentumBacktestDailySummary)
+                .where(
+                    and_(
+                        MomentumBacktestDailySummary.run_id == run_id,
+                        MomentumBacktestDailySummary.trade_date == trade_date,
+                    )
+                )
+                .limit(1)
+            ).scalar_one_or_none()
+
+    def list_candidate_records(
+        self,
+        run_id: str,
+        trade_date: date,
+        *,
+        view_scope: Optional[str] = None,
+    ) -> List[MomentumBacktestCandidateRecord]:
+        with self.db.get_session() as session:
+            query = select(MomentumBacktestCandidateRecord).where(
+                and_(
+                    MomentumBacktestCandidateRecord.run_id == run_id,
+                    MomentumBacktestCandidateRecord.trade_date == trade_date,
+                )
+            )
+            if view_scope:
+                query = query.where(MomentumBacktestCandidateRecord.view_scope == view_scope)
+            rows = session.execute(
+                query.order_by(MomentumBacktestCandidateRecord.rank.asc(), MomentumBacktestCandidateRecord.ts_code.asc())
+            ).scalars().all()
+            return list(rows)
+
+    def list_candidate_records_for_run(
+        self,
+        run_id: str,
+        *,
+        view_scope: Optional[str] = None,
+    ) -> List[MomentumBacktestCandidateRecord]:
+        with self.db.get_session() as session:
+            query = select(MomentumBacktestCandidateRecord).where(MomentumBacktestCandidateRecord.run_id == run_id)
+            if view_scope:
+                query = query.where(MomentumBacktestCandidateRecord.view_scope == view_scope)
+            rows = session.execute(
+                query.order_by(
+                    desc(MomentumBacktestCandidateRecord.trade_date),
+                    MomentumBacktestCandidateRecord.rank.asc(),
+                    MomentumBacktestCandidateRecord.ts_code.asc(),
+                )
+            ).scalars().all()
+            return list(rows)
+
+    def list_decision_records(self, run_id: str, trade_date: date) -> List[MomentumBacktestDecisionRecord]:
+        with self.db.get_session() as session:
+            rows = session.execute(
+                select(MomentumBacktestDecisionRecord)
+                .where(
+                    and_(
+                        MomentumBacktestDecisionRecord.run_id == run_id,
+                        MomentumBacktestDecisionRecord.trade_date == trade_date,
+                    )
+                )
+                .order_by(
+                    MomentumBacktestDecisionRecord.rank.asc().nulls_last(),
+                    MomentumBacktestDecisionRecord.ts_code.asc(),
+                )
+            ).scalars().all()
+            return list(rows)
+
+    def list_decision_records_for_run(self, run_id: str) -> List[MomentumBacktestDecisionRecord]:
+        with self.db.get_session() as session:
+            rows = session.execute(
+                select(MomentumBacktestDecisionRecord)
+                .where(MomentumBacktestDecisionRecord.run_id == run_id)
+                .order_by(
+                    desc(MomentumBacktestDecisionRecord.trade_date),
+                    MomentumBacktestDecisionRecord.rank.asc().nulls_last(),
+                    MomentumBacktestDecisionRecord.ts_code.asc(),
+                )
+            ).scalars().all()
+            return list(rows)
+
+    def list_outcomes(
+        self,
+        run_id: str,
+        *,
+        trade_date: Optional[date] = None,
+        view_scope: Optional[str] = None,
+    ) -> List[MomentumBacktestOutcomeRecord]:
+        with self.db.get_session() as session:
+            query = select(MomentumBacktestOutcomeRecord).where(MomentumBacktestOutcomeRecord.run_id == run_id)
+            if trade_date is not None:
+                query = query.where(MomentumBacktestOutcomeRecord.trade_date == trade_date)
+            if view_scope:
+                query = query.where(MomentumBacktestOutcomeRecord.view_scope == view_scope)
+            rows = session.execute(
+                query.order_by(
+                    desc(MomentumBacktestOutcomeRecord.trade_date),
+                    MomentumBacktestOutcomeRecord.view_scope.asc(),
+                    MomentumBacktestOutcomeRecord.ts_code.asc(),
+                )
+            ).scalars().all()
+            return list(rows)
+
+    def _replace_records(self, *, model, run_id: str, trade_date: date, records: list) -> int:
+        def write(session) -> int:
+            session.execute(
+                delete(model).where(
+                    and_(
+                        model.run_id == run_id,
+                        model.trade_date == trade_date,
+                    )
+                )
+            )
+            if records:
+                session.add_all(records)
+            return len(records)
+
+        return self._run_write(f"momentum_backtest.replace_{model.__tablename__}", write)

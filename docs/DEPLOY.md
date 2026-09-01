@@ -81,7 +81,42 @@ docker compose --env-file .env -f ./docker/docker-compose.yml exec stock-analyze
 
 > 注意：如果你通过 `.env` 设置了 `API_PORT`，部署命令必须显式带上 `--env-file .env`。否则 Compose 会把 `${API_PORT:-8000}` 解析回默认值 `8000`，很容易和 Nginx 反向代理端口不一致，导致 `502 Bad Gateway`。
 
-### 5. 数据持久化
+### 5. Docker 磁盘清理
+
+频繁重建 Docker 服务后，旧镜像、构建缓存和异常残留卷可能持续占用磁盘。仓库提供了保守清理脚本：
+
+```bash
+bash scripts/docker-cleanup.sh
+```
+
+推荐在服务器上用 systemd timer 每天凌晨 3 点执行该脚本。脚本默认行为：
+
+- 清理 24 小时前停止的容器
+- 清理 72 小时前未使用的镜像
+- 清理 24 小时前未使用的构建缓存
+- 当 Docker 支持 BuildKit 缓存预算参数时，将构建缓存控制在 2GB 以内，并尽量保留至少 8GB 根分区可用空间
+- 清理 `data/cache` 下 30 天前的缓存文件
+- 仅当根分区使用率达到 90% 时清理未使用 Docker volume
+
+可通过以下环境变量调整清理强度：
+
+- `DSA_DOCKER_BUILDER_KEEP_AGE`：构建缓存保留时间，默认 `24h`
+- `DSA_DOCKER_BUILDER_MAX_USED_SPACE`：BuildKit 构建缓存上限，默认 `2gb`
+- `DSA_DOCKER_BUILDER_MIN_FREE_SPACE`：根分区最小可用空间目标，默认 `8gb`
+
+如果只是更新代码并重建服务，优先使用：
+
+```bash
+bash scripts/deploy-docker.sh rebuild
+```
+
+该命令默认复用构建缓存，并在重建完成后执行统一清理，减少重复构建后的磁盘增长。只有在确实需要完全重建镜像时，才使用：
+
+```bash
+DSA_DOCKER_NO_CACHE=1 bash scripts/deploy-docker.sh rebuild
+```
+
+### 6. 数据持久化
 
 数据自动保存在宿主机目录：
 - `./data/` - 数据库文件

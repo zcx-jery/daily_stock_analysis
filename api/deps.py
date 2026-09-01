@@ -10,14 +10,26 @@ API 依赖注入模块
 3. 提供服务层依赖
 """
 
-from typing import Generator
+import logging
+from typing import TYPE_CHECKING, Any, Generator
 
 from fastapi import Request
 from sqlalchemy.orm import Session
 
 from src.storage import DatabaseManager
 from src.config import get_config, Config
+from src.services.momentum_screener_service import MomentumScreenerService
+from src.services.momentum_backtest_service import MomentumBacktestService
+from src.services.momentum_screening_run_service import MomentumScreeningRunService
+from src.services.momentum_secondary_decision_service import MomentumSecondaryDecisionService
+from src.services.stock_service import StockService
 from src.services.system_config_service import SystemConfigService
+
+if TYPE_CHECKING:
+    from src.services.momentum_screener_ai_commentary_service import MomentumScreenerAICommentaryService
+
+
+logger = logging.getLogger(__name__)
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -68,4 +80,112 @@ def get_system_config_service(request: Request) -> SystemConfigService:
     if service is None:
         service = SystemConfigService()
         request.app.state.system_config_service = service
+    return service
+
+
+def get_momentum_screener_service(request: Request) -> MomentumScreenerService:
+    """Get app-lifecycle shared MomentumScreenerService instance."""
+    service = getattr(request.app.state, "momentum_screener_service", None)
+    if service is None:
+        service = MomentumScreenerService()
+        request.app.state.momentum_screener_service = service
+    return service
+
+
+def get_momentum_secondary_decision_service(request: Request) -> MomentumSecondaryDecisionService:
+    """Get app-lifecycle shared MomentumSecondaryDecisionService instance."""
+    service = getattr(request.app.state, "momentum_secondary_decision_service", None)
+    if service is None:
+        screener_service = getattr(request.app.state, "momentum_screener_service", None)
+        stock_service = getattr(request.app.state, "stock_service", None)
+        if stock_service is None:
+            stock_service = StockService()
+            request.app.state.stock_service = stock_service
+        service = MomentumSecondaryDecisionService(
+            screener_service=screener_service,
+            stock_service=stock_service,
+        )
+        request.app.state.momentum_secondary_decision_service = service
+    return service
+
+
+def initialize_momentum_backtest_service(
+    app: Any,
+    *,
+    use_shared_screener_service: bool = False,
+) -> MomentumBacktestService:
+    """Initialize the shared backtest worker so queued/running runs resume at startup."""
+    service = getattr(app.state, "momentum_backtest_service", None)
+    if service is None:
+        if not bool(getattr(app.state, "start_momentum_backtest_worker", False)):
+            service = MomentumBacktestService(start_worker=False)
+            app.state.momentum_backtest_service = service
+            return service
+        try:
+            screener_service = None
+            if use_shared_screener_service:
+                screener_service = getattr(app.state, "momentum_screener_service", None)
+            if screener_service is None:
+                screener_service = MomentumScreenerService()
+            if use_shared_screener_service and not hasattr(app.state, "momentum_screener_service"):
+                app.state.momentum_screener_service = screener_service
+            # Backtest needs a dedicated secondary-decision service so its
+            # synchronous historical validation mode does not leak into the
+            # interactive screener page's shared async/warming instance.
+            decision_service = MomentumSecondaryDecisionService(
+                screener_service=screener_service,
+                )
+            service = MomentumBacktestService(
+                screener_service=screener_service,
+                decision_service=decision_service,
+            )
+        except RuntimeError as exc:
+            if "TUSHARE_TOKEN" not in str(exc):
+                raise
+            # Historical backtest records are repository-backed and should stay
+            # readable even when the current process cannot execute new Tushare
+            # work. Creating a read-only service keeps list/detail/diagnosis
+            # pages available while create/run still fails fast on execution.
+            service = MomentumBacktestService(start_worker=False)
+            logger.warning("Momentum backtest worker started in read-only mode because TUSHARE_TOKEN is unavailable")
+        app.state.momentum_backtest_service = service
+    return service
+
+
+def get_momentum_backtest_service(request: Request) -> MomentumBacktestService:
+    """Get app-lifecycle shared MomentumBacktestService instance."""
+    return initialize_momentum_backtest_service(request.app, use_shared_screener_service=True)
+
+
+def get_momentum_screening_run_service(request: Request) -> MomentumScreeningRunService:
+    """Get app-lifecycle shared MomentumScreeningRunService instance."""
+    service = getattr(request.app.state, "momentum_screening_run_service", None)
+    if service is None:
+        screener_service = getattr(request.app.state, "momentum_screener_service", None)
+        if screener_service is None:
+            screener_service = MomentumScreenerService()
+            request.app.state.momentum_screener_service = screener_service
+        decision_service = MomentumSecondaryDecisionService(
+            screener_service=screener_service,
+        )
+        service = MomentumScreeningRunService(
+            screener_service=screener_service,
+            decision_service=decision_service,
+        )
+        request.app.state.momentum_screening_run_service = service
+    return service
+
+
+def _get_momentum_screener_ai_commentary_service_cls():
+    from src.services.momentum_screener_ai_commentary_service import MomentumScreenerAICommentaryService
+
+    return MomentumScreenerAICommentaryService
+
+
+def get_momentum_screener_ai_commentary_service(request: Request) -> "MomentumScreenerAICommentaryService":
+    """Get app-lifecycle shared MomentumScreenerAICommentaryService instance."""
+    service = getattr(request.app.state, "momentum_screener_ai_commentary_service", None)
+    if service is None:
+        service = _get_momentum_screener_ai_commentary_service_cls()()
+        request.app.state.momentum_screener_ai_commentary_service = service
     return service
